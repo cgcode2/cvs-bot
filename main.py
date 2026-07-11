@@ -11,8 +11,7 @@ app = Flask('')
 def home(): 
     return "Coupon Calculator is running 24/7!"
 def run_server(): 
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))
 def keep_alive(): 
     Thread(target=run_server).start()
 
