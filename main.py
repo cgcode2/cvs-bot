@@ -21,7 +21,7 @@ keep_alive()
 # 2. DISCORD BOT ENGINE
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None) # Disables default help to use our custom one
 
 current_session = {"items": [], "coupons": []}
 
@@ -52,9 +52,43 @@ def calculate_best_bundles(items, coupons):
 async def on_ready():
     print(f'🤖 Coupon Calculator is officially online via Replit!')
 
+@bot.command(name="help")
+async def help_menu(ctx):
+    embed = discord.Embed(
+        title="📖 CVS Coupon Calculator — Help Menu", 
+        description="Follow this quick blueprint to maximize your coupon values and slash your out-of-pocket register total.", 
+        color=0xcc0000
+    )
+    
+    embed.add_field(
+        name="🎟️ 1. Load Your Coupons", 
+        value="Tell the bot what coupons you have available.\n`!coupons [value1] [value2] ...`\n*Example:* `!coupons 8 8 5`", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🛒 2. Add Cart Items", 
+        value="Scan items in as you shop using a single-word name and price.\n`!add [item_name] [price]`\n*Example:* `!add shampoo 6.59`", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📊 3. Calculate Strategy", 
+        value="Run the engine to sort items into optimized register bundles.\n`!optimize`", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🧹 4. Clear Session", 
+        value="Wipe the current cart and coupon stack to start fresh.\n`!clear`", 
+        inline=False
+    )
+    
+    embed.set_footer(text="Tip: Keep item names to a single word for best formatting.")
+    await ctx.send(embed=embed)
+
 @bot.command(name="add")
 async def add_item(ctx, item_name: str, price: float):
-    # Store both the item name and price as a combined dictionary object
     current_session["items"].append({"name": item_name, "price": price})
     
     embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
@@ -88,7 +122,6 @@ async def optimize_cart(ctx):
     for idx, coupon_val in enumerate(coupons):
         group_items = bundling.get(idx, [])
         if group_items:
-            # Display item names along with their price details
             item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
             subtotal = sum(item['price'] for item in group_items)
             due = max(0.0, subtotal - coupon_val)
@@ -103,7 +136,8 @@ async def optimize_cart(ctx):
 @bot.command(name="clear")
 async def clear_cart(ctx):
     current_session["items"] = []
-    await ctx.send("🧹 Cart cleared!")
+    current_session["coupons"] = []
+    await ctx.send("🧹 Cart and coupons cleared!")
 
 token = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
 bot.run(token)
