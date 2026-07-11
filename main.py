@@ -25,6 +25,28 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 current_session = {"items": [], "coupons": [], "cart_message": None}
 
+COLOR_NAMES = {
+    "red": 0xe74c3c, "dark red": 0x992d22, "orange": 0xe67e22, "yellow": 0xf1c40f,
+    "gold": 0xf1c40f, "green": 0x2ecc71, "dark green": 0x1f8b4c, "teal": 0x1abc9c,
+    "cyan": 0x00ffff, "blue": 0x3498db, "dark blue": 0x206694, "navy": 0x2c3e50,
+    "purple": 0x9b59b6, "dark purple": 0x71368a, "magenta": 0xe91e63, "pink": 0xff69b4,
+    "brown": 0x795548, "black": 0x23272a, "white": 0xffffff, "gray": 0x95a5a6,
+    "grey": 0x95a5a6, "dark gray": 0x2c2f33, "dark grey": 0x2c2f33, "lime": 0x32cd32,
+    "blurple": 0x5865f2, "fuchsia": 0xff00ff, "indigo": 0x4b0082, "maroon": 0x800000,
+}
+
+def resolve_color(color_input):
+    """Resolves a color from a plain color name (e.g. 'red') or a hex code (e.g. '#ff0000')."""
+    if not color_input:
+        return discord.Color.default()
+    key = color_input.strip().lower()
+    if key in COLOR_NAMES:
+        return discord.Color(COLOR_NAMES[key])
+    try:
+        return discord.Color(int(key.lstrip('#'), 16))
+    except ValueError:
+        return None
+
 async def send_cart_embed(ctx, embed):
     """Sends the cart embed, deleting the previous one so only one is ever visible."""
     old_message = current_session.get("cart_message")
@@ -142,7 +164,7 @@ async def help_menu(ctx):
         if author_perms.manage_messages:
             mod_lines.append("`!nuke [amount]` or `!nuke all` — bulk delete messages")
         if author_perms.manage_roles:
-            mod_lines.append("`!createrole [name] [#hexcolor]` — create a new role")
+            mod_lines.append("`!createrole [name] [color]` — create a new role\n*Example:* `!createrole VIP dark green`")
             mod_lines.append("`!deleterole [name]` — delete a role")
             mod_lines.append("`!roleadd [@member] [role name]` — give a member a role")
             mod_lines.append("`!roleremove [@member] [role name]` — take a role away")
@@ -334,20 +356,18 @@ async def nuke(ctx, amount: str):
 
 @bot.command(name="createrole")
 @commands.has_permissions(manage_roles=True)
-async def create_role(ctx, role_name: str, color_hex: str = None):
+async def create_role(ctx, role_name: str, *, color_name: str = None):
     await safely_delete_message(ctx)
 
     if discord.utils.get(ctx.guild.roles, name=role_name):
         await ctx.send(f"⚠️ A role named `{role_name}` already exists!", delete_after=6)
         return
 
-    color = discord.Color.default()
-    if color_hex:
-        try:
-            color = discord.Color(int(color_hex.lstrip('#'), 16))
-        except ValueError:
-            await ctx.send("❌ Invalid color. Use a hex code like `#ff0000`.", delete_after=6)
-            return
+    color = resolve_color(color_name)
+    if color is None:
+        available = ", ".join(sorted(COLOR_NAMES.keys()))
+        await ctx.send(f"❌ Unknown color `{color_name}`. Try a name like `red`, `blue`, `dark green`, etc.\n*Available:* {available}", delete_after=15)
+        return
 
     new_role = await ctx.guild.create_role(name=role_name, color=color, reason=f"Created by {ctx.author}")
     await ctx.send(f"✅ Created role {new_role.mention}!", delete_after=6)
