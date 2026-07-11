@@ -126,10 +126,14 @@ async def help_menu(ctx):
         color=0xcc0000
     )
     embed.add_field(name="🎟️ 1. Load Your Coupons", value="`!coupons [value1] [value2] ...`\n*Example:* `!coupons 8 8 5`", inline=False)
-    embed.add_field(name="🛒 2. Add Cart Items", value="`!add [item_name] [price]`\n*Example:* `!add Fairlife 4.49`", inline=False)
-    embed.add_field(name="❌ 3. Remove Cart Items", value="`!remove [item_name]`\n*Example:* `!remove Fairlife`", inline=False)
-    embed.add_field(name="📊 4. Calculate Strategy", value="`!optimize`", inline=False)
-    embed.add_field(name="🧹 5. Clear Session", value="`!clear`", inline=False)
+    embed.add_field(name="🛒 2. Add Cart Items", value="`!add [item_name] [price] ...`\n*Example:* `!add Fairlife 4.49 shampoo 6.59`", inline=False)
+    embed.add_field(name="↩️ 3. Undo Last Add", value="`!undo`", inline=False)
+    embed.add_field(name="❌ 4. Remove Cart Items", value="`!remove [item_name]`\n*Example:* `!remove Fairlife`", inline=False)
+    embed.add_field(name="👀 5. View Cart", value="`!cart`", inline=False)
+    embed.add_field(name="📊 6. Calculate Strategy", value="`!optimize`", inline=False)
+    embed.add_field(name="🧹 7. Clear Session", value="`!clear`", inline=False)
+    embed.add_field(name="🏓 8. Bot Status", value="`!ping`", inline=False)
+    embed.add_field(name="ℹ️ 9. About This Bot", value="`!about`", inline=False)
     embed.set_footer(text="Tip: Keep item names to a single word for best formatting.")
     await ctx.send(embed=embed)
 
@@ -164,6 +168,34 @@ async def add_item(ctx, *args):
     embed.add_field(name=f"Added: {', '.join(added)}", value="\u200b", inline=False)
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
+    await send_cart_embed(ctx, embed)
+
+@bot.command(name="undo")
+async def undo_item(ctx):
+    await safely_delete_message(ctx)
+    if not current_session["items"]:
+        await ctx.send("❌ Nothing to undo — your cart is empty!", delete_after=5)
+        return
+
+    removed_item = current_session["items"].pop()
+    embed = discord.Embed(title="↩️ Last Item Undone", color=0xe67e22)
+    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
+    subtotal = sum(item['price'] for item in current_session["items"])
+    embed.add_field(name=f"Removed: {removed_item['name']} (${removed_item['price']:.2f})", value="\u200b", inline=False)
+    embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
+    embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
+    await send_cart_embed(ctx, embed)
+
+@bot.command(name="cart")
+async def view_cart(ctx):
+    await safely_delete_message(ctx)
+    embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
+    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
+    subtotal = sum(item['price'] for item in current_session["items"])
+    coupon_str = ", ".join([f"${c:.2f}" for c in current_session["coupons"]]) or "None loaded yet."
+    embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
+    embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=False)
+    embed.add_field(name="🎟️ Loaded Coupons", value=coupon_str, inline=False)
     await send_cart_embed(ctx, embed)
 
 @bot.command(name="remove")
@@ -252,6 +284,23 @@ async def clear_cart(ctx):
     current_session["coupons"] = []
     current_session["cart_message"] = None
     await ctx.send("🧹 Cart and coupons cleared!")
+
+@bot.command(name="ping")
+async def ping(ctx):
+    await safely_delete_message(ctx)
+    await ctx.send(f"🏓 Pong! Latency: **{round(bot.latency * 1000)}ms**", delete_after=8)
+
+@bot.command(name="about")
+async def about(ctx):
+    await safely_delete_message(ctx)
+    embed = discord.Embed(
+        title="ℹ️ About the CVS Coupon Calculator",
+        description="A combinatorics-powered assistant that splits your cart across coupons to minimize what you pay at register.",
+        color=0xcc0000
+    )
+    embed.add_field(name="Commands", value="Run `!help` for the full walkthrough.", inline=False)
+    embed.add_field(name="Hosting", value="Running 24/7 on Replit.", inline=False)
+    await ctx.send(embed=embed)
 
 # Checks security against the core Discord account token creator
 @bot.event
