@@ -132,9 +132,26 @@ async def help_menu(ctx):
     embed.add_field(name="👀 5. View Cart", value="`!cart`", inline=False)
     embed.add_field(name="📊 6. Calculate Strategy", value="`!optimize`", inline=False)
     embed.add_field(name="🧹 7. Clear Session", value="`!clear`", inline=False)
-    embed.add_field(name="🧨 8. Nuke Messages", value="`!nuke [amount]` or `!nuke all`\n*Requires Manage Messages permission.*", inline=False)
-    embed.add_field(name="🏓 9. Bot Status", value="`!ping`", inline=False)
-    embed.add_field(name="ℹ️ 10. About This Bot", value="`!about`", inline=False)
+    embed.add_field(name="🏓 8. Bot Status", value="`!ping`", inline=False)
+    embed.add_field(name="ℹ️ 9. About This Bot", value="`!about`", inline=False)
+
+    # Moderator-only commands: only visible to members with Manage Messages
+    author_perms = ctx.channel.permissions_for(ctx.author)
+    if author_perms.manage_messages:
+        embed.add_field(
+            name="🛡️ Moderator Commands",
+            value="`!nuke [amount]` or `!nuke all` — bulk delete messages\n*Requires Manage Messages permission.*",
+            inline=False
+        )
+
+    # Owner-only commands: only visible to the bot's application owner
+    if await bot.is_owner(ctx.author):
+        embed.add_field(
+            name="👑 Owner Commands",
+            value="`!setup` — create the private optimizer channel\n`!permit [@member]` — grant a member access to it",
+            inline=False
+        )
+
     embed.set_footer(text="Tip: Keep item names to a single word for best formatting.")
     await ctx.send(embed=embed)
 
