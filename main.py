@@ -124,12 +124,34 @@ async def help_menu(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="add")
-async def add_item(ctx, item_name: str, price: float):
+async def add_item(ctx, *args):
     await safely_delete_message(ctx)
-    current_session["items"].append({"name": item_name, "price": price})
+
+    if len(args) == 0 or len(args) % 2 != 0:
+        await ctx.send(
+            "❌ Format error. Provide item/price pairs.\n*Example:* `!add shampoo 6.59 soap 2.99 gum 1.29`",
+            delete_after=8
+        )
+        return
+
+    added = []
+    try:
+        for i in range(0, len(args), 2):
+            item_name = args[i]
+            price = float(args[i + 1])
+            current_session["items"].append({"name": item_name, "price": price})
+            added.append(item_name)
+    except ValueError:
+        await ctx.send(
+            "❌ Format error. Each item must be followed by a numeric price.\n*Example:* `!add shampoo 6.59 soap 2.99`",
+            delete_after=8
+        )
+        return
+
     embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
     item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
     subtotal = sum(item['price'] for item in current_session["items"])
+    embed.add_field(name=f"Added: {', '.join(added)}", value="\u200b", inline=False)
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
     await ctx.send(embed=embed)
