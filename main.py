@@ -27,7 +27,8 @@ current_session = {"items": [], "coupons": []}
 
 def calculate_best_bundles(items, coupons):
     num_groups = len(coupons)
-    if num_groups == 0: return sum(items), {0: items}
+    if num_groups == 0: 
+        return sum(item['price'] for item in items), {0: items}
     best_total_due = float('inf')
     best_distribution = None
 
@@ -38,7 +39,7 @@ def calculate_best_bundles(items, coupons):
         
         current_total_due = 0
         for group_idx, group_items in groups.items():
-            group_sum = sum(group_items)
+            group_sum = sum(item['price'] for item in group_items)
             coupon_val = coupons[group_idx]
             current_total_due += max(0.0, group_sum - coupon_val)
 
@@ -52,12 +53,16 @@ async def on_ready():
     print(f'🤖 Coupon Calculator is officially online via Replit!')
 
 @bot.command(name="add")
-async def add_item(ctx, price: float):
-    current_session["items"].append(price)
+async def add_item(ctx, item_name: str, price: float):
+    # Store both the item name and price as a combined dictionary object
+    current_session["items"].append({"name": item_name, "price": price})
+    
     embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
-    item_str = "\n".join([f"Item {i+1}: **${p:.2f}**" for i, p in enumerate(current_session["items"])])
-    embed.add_field(name="Scanned Prices", value=item_str or "No items", inline=False)
-    embed.add_field(name="Current Subtotal", value=f"**${sum(current_session['items']):.2f}**")
+    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
+    subtotal = sum(item['price'] for item in current_session["items"])
+    
+    embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
+    embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
     await ctx.send(embed=embed)
 
 @bot.command(name="coupons")
@@ -83,8 +88,9 @@ async def optimize_cart(ctx):
     for idx, coupon_val in enumerate(coupons):
         group_items = bundling.get(idx, [])
         if group_items:
-            item_details = "\n".join([f"• Item: **${item:.2f}**" for item in group_items])
-            subtotal = sum(group_items)
+            # Display item names along with their price details
+            item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
+            subtotal = sum(item['price'] for item in group_items)
             due = max(0.0, subtotal - coupon_val)
             embed.add_field(
                 name=f"Transaction {idx+1}: Use ${coupon_val:.2f} Coupon",
@@ -99,6 +105,5 @@ async def clear_cart(ctx):
     current_session["items"] = []
     await ctx.send("🧹 Cart cleared!")
 
-# Grab the secret token that you just stored
 token = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
 bot.run(token)
