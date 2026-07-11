@@ -21,6 +21,7 @@ keep_alive()
 # 2. DISCORD BOT ENGINE
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Required for !whocansee to list guild members
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 current_session = {"items": [], "coupons": [], "cart_message": None}
