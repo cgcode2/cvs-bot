@@ -23,7 +23,17 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-current_session = {"items": [], "coupons": []}
+current_session = {"items": [], "coupons": [], "cart_message": None}
+
+async def send_cart_embed(ctx, embed):
+    """Sends the cart embed, deleting the previous one so only one is ever visible."""
+    old_message = current_session.get("cart_message")
+    if old_message is not None:
+        try:
+            await old_message.delete()
+        except Exception as e:
+            print(f"❌ Old cart embed deletion failed! Error Type: {type(e).__name__} | Details: {e}", file=sys.stderr)
+    current_session["cart_message"] = await ctx.send(embed=embed)
 
 async def safely_delete_message(ctx):
     try:
@@ -154,7 +164,7 @@ async def add_item(ctx, *args):
     embed.add_field(name=f"Added: {', '.join(added)}", value="\u200b", inline=False)
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
-    await ctx.send(embed=embed)
+    await send_cart_embed(ctx, embed)
 
 @bot.command(name="remove")
 async def remove_item(ctx, item_name: str):
@@ -172,7 +182,7 @@ async def remove_item(ctx, item_name: str):
         embed.add_field(name=f"Removed item: {item_name}", value=f"Here is your updated cart list:", inline=False)
         embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
         embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
-        await ctx.send(embed=embed)
+        await send_cart_embed(ctx, embed)
     else:
         await ctx.send(f"⚠️ Could not find an item named '**{item_name}**' inside your current cart.", delete_after=5)
 
@@ -240,6 +250,7 @@ async def clear_cart(ctx):
     await safely_delete_message(ctx)
     current_session["items"] = []
     current_session["coupons"] = []
+    current_session["cart_message"] = None
     await ctx.send("🧹 Cart and coupons cleared!")
 
 # Checks security against the core Discord account token creator
