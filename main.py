@@ -1,173 +1,104 @@
-"""
-CVS Coupon & Price Optimizer Discord Bot
-==========================================
-
-A discord.py 2.3.2 bot that helps optimize CVS shopping trips by finding the
-best combination of items + coupons/deals using combinatorics (this is where
-you'll paste your exact pricing/coupon-matching logic).
-
-A tiny background Flask server is included so the bot can be pinged by an
-uptime monitor (e.g. UptimeRobot) to help keep it running 24/7.
-
-Setup:
-- Requires the DISCORD_BOT_TOKEN secret to be set (see Replit Secrets).
-- Uses discord.py==2.3.2 and Flask (already installed).
-"""
-
-import os
-import threading
-import logging
-from itertools import combinations
-
 import discord
 from discord.ext import commands
+import itertools
 from flask import Flask
+from threading import Thread
+import os
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-log = logging.getLogger("cvs-bot")
-
-# ---------------------------------------------------------------------------
-# Keep-alive Flask server
-# ---------------------------------------------------------------------------
-# Runs in a background thread on the PORT Replit assigns. An external uptime
-# monitor can ping "/" to keep the container awake.
-
-keep_alive_app = Flask(__name__)
-
-
-@keep_alive_app.route("/")
-def home():
-    return "CVS Optimizer Bot is alive!"
-
-
-@keep_alive_app.route("/health")
-def health():
-    return {"status": "ok"}
-
-
-def run_flask():
+# 1. BACKGROUND WEB SERVER (Keeps the bot running 24/7)
+app = Flask('')
+@app.route('/')
+def home(): 
+    return "Coupon Calculator is running 24/7!"
+def run_server(): 
     port = int(os.environ.get("PORT", 8000))
-    # use_reloader must be False since this runs in a background thread
-    keep_alive_app.run(host="0.0.0.0", port=port, use_reloader=False)
+    app.run(host='0.0.0.0', port=port)
+def keep_alive(): 
+    Thread(target=run_server).start()
 
+keep_alive()
 
-def keep_alive():
-    t = threading.Thread(target=run_flask, daemon=True)
-    t.start()
-
-
-# ---------------------------------------------------------------------------
-# Discord bot setup
-# ---------------------------------------------------------------------------
-
+# 2. DISCORD BOT ENGINE
 intents = discord.Intents.default()
 intents.message_content = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+current_session = {"items": [], "coupons": []}
+
+def calculate_best_bundles(items, coupons):
+    num_groups = len(coupons)
+    if num_groups == 0: return sum(items), {0: items}
+    best_total_due = float('inf')
+    best_distribution = None
+
+    for distribution in itertools.product(range(num_groups), repeat=len(items)):
+        groups = {i: [] for i in range(num_groups)}
+        for item_idx, group_idx in enumerate(distribution):
+            groups[group_idx].append(items[item_idx])
+        
+        current_total_due = 0
+        for group_idx, group_items in groups.items():
+            group_sum = sum(group_items)
+            coupon_val = coupons[group_idx]
+            current_total_due += max(0.0, group_sum - coupon_val)
+
+        if current_total_due < best_total_due:
+            best_total_due = current_total_due
+            best_distribution = groups
+    return best_total_due, best_distribution
 
 @bot.event
 async def on_ready():
-    log.info("Logged in as %s (id: %s)", bot.user, bot.user.id if bot.user else "?")
+    print(f'🤖 Coupon Calculator is officially online via Replit!')
 
+@bot.command(name="add")
+async def add_item(ctx, price: float):
+    current_session["items"].append(price)
+    embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
+    item_str = "\n".join([f"Item {i+1}: **${p:.2f}**" for i, p in enumerate(current_session["items"])])
+    embed.add_field(name="Scanned Prices", value=item_str or "No items", inline=False)
+    embed.add_field(name="Current Subtotal", value=f"**${sum(current_session['items']):.2f}**")
+    await ctx.send(embed=embed)
 
-# ---------------------------------------------------------------------------
-# CVS combinatorics logic
-# ---------------------------------------------------------------------------
-# This is a placeholder implementation. Paste your exact pricing/coupon
-# optimization logic here (or replace this section entirely). The general
-# shape: given a list of items (with price + eligible coupons/deals), find
-# the combination that minimizes out-of-pocket cost / maximizes savings,
-# typically by brute-forcing subsets of applicable coupons since CVS deals
-# are usually small in number per trip.
-
-
-def optimize_cart(items: list[dict], coupons: list[dict]) -> dict:
-    """
-    Placeholder optimizer.
-
-    items:   [{"name": str, "price": float}, ...]
-    coupons: [{"name": str, "discount": float, "applies_to": list[str] | None}, ...]
-
-    Returns the best combination of coupons (by total savings) found by
-    brute-forcing all subsets of coupons -- replace with your real logic.
-    """
-    subtotal = sum(i["price"] for i in items)
-
-    best = {"coupons": [], "savings": 0.0, "total": subtotal}
-
-    for r in range(len(coupons) + 1):
-        for combo in combinations(coupons, r):
-            savings = sum(c["discount"] for c in combo)
-            savings = min(savings, subtotal)  # can't discount below $0
-            if savings > best["savings"]:
-                best = {
-                    "coupons": [c["name"] for c in combo],
-                    "savings": savings,
-                    "total": subtotal - savings,
-                }
-
-    return best
-
-
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-
-
-@bot.command(name="ping")
-async def ping(ctx: commands.Context):
-    await ctx.send("Pong! Bot is running.")
-
+@bot.command(name="coupons")
+async def set_coupons(ctx, *args):
+    try:
+        coupons = sorted([float(x) for x in args], reverse=True)
+        current_session["coupons"] = coupons
+        await ctx.send(f"✅ Loaded Coupons: " + ", ".join([f"${c:.2f}" for c in coupons]))
+    except ValueError:
+        await ctx.send("❌ Format error. Example: `!coupons 8 8 5`")
 
 @bot.command(name="optimize")
-async def optimize(ctx: commands.Context):
-    """
-    Example command wiring for the optimizer. Replace the sample items/coupons
-    below with real parsing of user input once you paste your logic.
-    """
-    sample_items = [
-        {"name": "Toothpaste", "price": 4.99},
-        {"name": "Shampoo", "price": 6.49},
-    ]
-    sample_coupons = [
-        {"name": "$2 off Toothpaste", "discount": 2.0, "applies_to": ["Toothpaste"]},
-        {"name": "$1 off Shampoo", "discount": 1.0, "applies_to": ["Shampoo"]},
-    ]
+async def optimize_cart(ctx):
+    items = current_session["items"]
+    coupons = current_session["coupons"]
+    if not items:
+        await ctx.send("❌ Your cart is empty!")
+        return
+        
+    total_due, bundling = calculate_best_bundles(items, coupons)
+    embed = discord.Embed(title="🧾 Optimized CVS Checkout Strategy", color=0x00ff00)
+    
+    for idx, coupon_val in enumerate(coupons):
+        group_items = bundling.get(idx, [])
+        if group_items:
+            item_details = "\n".join([f"• Item: **${item:.2f}**" for item in group_items])
+            subtotal = sum(group_items)
+            due = max(0.0, subtotal - coupon_val)
+            embed.add_field(
+                name=f"Transaction {idx+1}: Use ${coupon_val:.2f} Coupon",
+                value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
+                inline=False
+            )
+    embed.add_field(name="📊 Final Register Total Due", value=f"### **${total_due:.2f}**", inline=False)
+    await ctx.send(embed=embed)
 
-    result = optimize_cart(sample_items, sample_coupons)
+@bot.command(name="clear")
+async def clear_cart(ctx):
+    current_session["items"] = []
+    await ctx.send("🧹 Cart cleared!")
 
-    lines = [
-        "**CVS Trip Optimizer (sample data)**",
-        f"Best coupon combo: {', '.join(result['coupons']) or 'none'}",
-        f"Total savings: ${result['savings']:.2f}",
-        f"Final total: ${result['total']:.2f}",
-    ]
-    await ctx.send("\n".join(lines))
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
-def main():
-    token = os.environ.get("DISCORD_BOT_TOKEN")
-    if not token:
-        raise RuntimeError(
-            "DISCORD_BOT_TOKEN is not set. Add it via Replit Secrets before running the bot."
-        )
-
-    keep_alive()
-    bot.run(token)
-
-
-if __name__ == "__main__":
-    main()
+# Grab the secret token that you just stored
+token = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
+bot.run(token)
