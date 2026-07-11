@@ -221,7 +221,14 @@ async def clear_cart(ctx):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.NotOwner):
-        await ctx.send("⛔ Security Error: Only the server creator can manage permissions for this bot.", delete_after=5)
+        await ctx.send("⛔ Security Error: Only the bot's application owner can run this command.", delete_after=10)
+    elif isinstance(error, discord.Forbidden):
+        await ctx.send(f"❌ Permission Error: The bot is missing Discord permissions to do that (needs **Manage Channels**). Details: {error.text}", delete_after=15)
+    elif isinstance(error, commands.CommandNotFound):
+        pass
+    else:
+        print(f"❌ Command Error in '{ctx.command}': {type(error).__name__} | Details: {error}", file=sys.stderr)
+        await ctx.send(f"❌ Unexpected error running `{ctx.command}`: `{type(error).__name__}: {error}`", delete_after=15)
 
 token = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
 bot.run(token)
