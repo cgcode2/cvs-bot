@@ -63,11 +63,14 @@ async def on_ready():
 async def setup_channel(ctx):
     await safely_delete_message(ctx)
     guild = ctx.guild
-    
+
+    # guild.owner can be None if the member isn't cached (no Members intent) — fetch it explicitly
+    owner = guild.owner or await guild.fetch_member(guild.owner_id)
+
     # Configure permission rules: Block everyone, but allow the server owner and the bot
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.owner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
+        owner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True, manage_messages=True)
     }
     
