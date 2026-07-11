@@ -53,7 +53,7 @@ def health():
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8000))
     # use_reloader must be False since this runs in a background thread
     keep_alive_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
