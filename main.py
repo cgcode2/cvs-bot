@@ -170,6 +170,8 @@ async def help_menu(ctx):
             mod_lines.append("`!roleadd [@member] [role name]` — give a member a role")
             mod_lines.append("`!roleremove [@member] [role name]` — take a role away")
         if author_perms.manage_channels:
+            mod_lines.append("`!blockrole [role] [#channel]` — hide a channel from a role (defaults to current channel)")
+            mod_lines.append("`!unblockrole [role] [#channel]` — undo a block, resetting to default access")
             mod_lines.append("`!whocansee [#channel]` — list members who can view a channel (defaults to current)")
         embed.add_field(
             name="🛡️ Moderator Commands",
@@ -414,6 +416,22 @@ async def role_remove(ctx, member: discord.Member, *, role_name: str):
     await member.remove_roles(role, reason=f"Removed by {ctx.author}")
     await ctx.send(f"✅ Removed the `{role_name}` role from {member.mention}.", delete_after=6)
 
+@bot.command(name="blockrole")
+@commands.has_permissions(manage_channels=True)
+async def block_role(ctx, role: discord.Role, channel: discord.TextChannel = None):
+    await safely_delete_message(ctx)
+    channel = channel or ctx.channel
+    await channel.set_permissions(role, view_channel=False, reason=f"Blocked by {ctx.author}")
+    await ctx.send(f"🚫 The `{role.name}` role can no longer see #{channel.name}.", delete_after=6)
+
+@bot.command(name="unblockrole")
+@commands.has_permissions(manage_channels=True)
+async def unblock_role(ctx, role: discord.Role, channel: discord.TextChannel = None):
+    await safely_delete_message(ctx)
+    channel = channel or ctx.channel
+    await channel.set_permissions(role, overwrite=None, reason=f"Unblocked by {ctx.author}")
+    await ctx.send(f"✅ Reset `{role.name}`'s view access for #{channel.name} back to default.", delete_after=6)
+
 @bot.command(name="whocansee")
 @commands.has_permissions(manage_channels=True)
 async def who_can_see(ctx, channel: discord.abc.GuildChannel = None):
@@ -477,6 +495,8 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.MissingPermissions):
         missing = ", ".join(p.replace('_', ' ').title() for p in error.missing_permissions)
         await ctx.send(f"⛔ Permission Error: You need the **{missing}** permission to run that.", delete_after=8)
+    elif isinstance(error, (commands.RoleNotFound, commands.ChannelNotFound, commands.MemberNotFound)):
+        await ctx.send(f"❌ {error}", delete_after=8)
     else:
         print(f"❌ Command Error in '{ctx.command}': {type(error).__name__} | Details: {error}", file=sys.stderr)
         await ctx.send(f"❌ Unexpected error running `{ctx.command}`: `{type(error).__name__}: {error}`", delete_after=15)
