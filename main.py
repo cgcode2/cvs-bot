@@ -132,8 +132,9 @@ async def help_menu(ctx):
     embed.add_field(name="👀 5. View Cart", value="`!cart`", inline=False)
     embed.add_field(name="📊 6. Calculate Strategy", value="`!optimize`", inline=False)
     embed.add_field(name="🧹 7. Clear Session", value="`!clear`", inline=False)
-    embed.add_field(name="🏓 8. Bot Status", value="`!ping`", inline=False)
-    embed.add_field(name="ℹ️ 9. About This Bot", value="`!about`", inline=False)
+    embed.add_field(name="🧨 8. Nuke Messages", value="`!nuke [amount]` or `!nuke all`\n*Requires Manage Messages permission.*", inline=False)
+    embed.add_field(name="🏓 9. Bot Status", value="`!ping`", inline=False)
+    embed.add_field(name="ℹ️ 10. About This Bot", value="`!about`", inline=False)
     embed.set_footer(text="Tip: Keep item names to a single word for best formatting.")
     await ctx.send(embed=embed)
 
@@ -285,6 +286,27 @@ async def clear_cart(ctx):
     current_session["cart_message"] = None
     await ctx.send("🧹 Cart and coupons cleared!")
 
+@bot.command(name="nuke")
+@commands.has_permissions(manage_messages=True)
+async def nuke(ctx, amount: str):
+    await safely_delete_message(ctx)
+
+    if amount.lower() == "all":
+        deleted = await ctx.channel.purge(limit=None)
+    else:
+        try:
+            count = int(amount)
+        except ValueError:
+            await ctx.send("❌ Format error. Use a number or `all`.\n*Example:* `!nuke 5` or `!nuke all`", delete_after=8)
+            return
+        if count <= 0:
+            await ctx.send("❌ Please provide a number greater than 0.", delete_after=8)
+            return
+        deleted = await ctx.channel.purge(limit=count)
+
+    confirmation = await ctx.send(f"🧨 Nuked **{len(deleted)}** message(s)!")
+    await confirmation.delete(delay=5)
+
 @bot.command(name="ping")
 async def ping(ctx):
     await safely_delete_message(ctx)
@@ -311,6 +333,8 @@ async def on_command_error(ctx, error):
         await ctx.send(f"❌ Permission Error: The bot is missing Discord permissions to do that (needs **Manage Channels**). Details: {error.text}", delete_after=15)
     elif isinstance(error, commands.CommandNotFound):
         pass
+    elif isinstance(error, commands.MissingPermissions):
+        await ctx.send("⛔ Permission Error: You need the **Manage Messages** permission to run that.", delete_after=8)
     else:
         print(f"❌ Command Error in '{ctx.command}': {type(error).__name__} | Details: {error}", file=sys.stderr)
         await ctx.send(f"❌ Unexpected error running `{ctx.command}`: `{type(error).__name__}: {error}`", delete_after=15)
