@@ -137,10 +137,18 @@ async def help_menu(ctx):
 
     # Moderator-only commands: only visible to members with Manage Messages
     author_perms = ctx.channel.permissions_for(ctx.author)
-    if author_perms.manage_messages:
+    if author_perms.manage_messages or author_perms.manage_roles:
+        mod_lines = []
+        if author_perms.manage_messages:
+            mod_lines.append("`!nuke [amount]` or `!nuke all` — bulk delete messages")
+        if author_perms.manage_roles:
+            mod_lines.append("`!createrole [name] [#hexcolor]` — create a new role")
+            mod_lines.append("`!deleterole [name]` — delete a role")
+            mod_lines.append("`!roleadd [@member] [role name]` — give a member a role")
+            mod_lines.append("`!roleremove [@member] [role name]` — take a role away")
         embed.add_field(
             name="🛡️ Moderator Commands",
-            value="`!nuke [amount]` or `!nuke all` — bulk delete messages\n*Requires Manage Messages permission.*",
+            value="\n".join(mod_lines),
             inline=False
         )
 
@@ -324,6 +332,65 @@ async def nuke(ctx, amount: str):
     confirmation = await ctx.send(f"🧨 Nuked **{len(deleted)}** message(s)!")
     await confirmation.delete(delay=5)
 
+@bot.command(name="createrole")
+@commands.has_permissions(manage_roles=True)
+async def create_role(ctx, role_name: str, color_hex: str = None):
+    await safely_delete_message(ctx)
+
+    if discord.utils.get(ctx.guild.roles, name=role_name):
+        await ctx.send(f"⚠️ A role named `{role_name}` already exists!", delete_after=6)
+        return
+
+    color = discord.Color.default()
+    if color_hex:
+        try:
+            color = discord.Color(int(color_hex.lstrip('#'), 16))
+        except ValueError:
+            await ctx.send("❌ Invalid color. Use a hex code like `#ff0000`.", delete_after=6)
+            return
+
+    new_role = await ctx.guild.create_role(name=role_name, color=color, reason=f"Created by {ctx.author}")
+    await ctx.send(f"✅ Created role {new_role.mention}!", delete_after=6)
+
+@bot.command(name="deleterole")
+@commands.has_permissions(manage_roles=True)
+async def delete_role(ctx, *, role_name: str):
+    await safely_delete_message(ctx)
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send(f"❌ No role named `{role_name}` found.", delete_after=6)
+        return
+    await role.delete(reason=f"Deleted by {ctx.author}")
+    await ctx.send(f"🗑️ Deleted role `{role_name}`.", delete_after=6)
+
+@bot.command(name="roleadd")
+@commands.has_permissions(manage_roles=True)
+async def role_add(ctx, member: discord.Member, *, role_name: str):
+    await safely_delete_message(ctx)
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send(f"❌ No role named `{role_name}` found. Use `!createrole` first.", delete_after=6)
+        return
+    if role in member.roles:
+        await ctx.send(f"⚠️ {member.mention} already has the `{role_name}` role.", delete_after=6)
+        return
+    await member.add_roles(role, reason=f"Added by {ctx.author}")
+    await ctx.send(f"✅ Gave {member.mention} the `{role_name}` role.", delete_after=6)
+
+@bot.command(name="roleremove")
+@commands.has_permissions(manage_roles=True)
+async def role_remove(ctx, member: discord.Member, *, role_name: str):
+    await safely_delete_message(ctx)
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send(f"❌ No role named `{role_name}` found.", delete_after=6)
+        return
+    if role not in member.roles:
+        await ctx.send(f"⚠️ {member.mention} doesn't have the `{role_name}` role.", delete_after=6)
+        return
+    await member.remove_roles(role, reason=f"Removed by {ctx.author}")
+    await ctx.send(f"✅ Removed the `{role_name}` role from {member.mention}.", delete_after=6)
+
 @bot.command(name="ping")
 async def ping(ctx):
     await safely_delete_message(ctx)
@@ -351,7 +418,8 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.CommandNotFound):
         pass
     elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("⛔ Permission Error: You need the **Manage Messages** permission to run that.", delete_after=8)
+        missing = ", ".join(p.replace('_', ' ').title() for p in error.missing_permissions)
+        await ctx.send(f"⛔ Permission Error: You need the **{missing}** permission to run that.", delete_after=8)
     else:
         print(f"❌ Command Error in '{ctx.command}': {type(error).__name__} | Details: {error}", file=sys.stderr)
         await ctx.send(f"❌ Unexpected error running `{ctx.command}`: `{type(error).__name__}: {error}`", delete_after=15)
