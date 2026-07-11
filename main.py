@@ -168,6 +168,8 @@ async def help_menu(ctx):
             mod_lines.append("`!deleterole [name]` — delete a role")
             mod_lines.append("`!roleadd [@member] [role name]` — give a member a role")
             mod_lines.append("`!roleremove [@member] [role name]` — take a role away")
+        if author_perms.manage_channels:
+            mod_lines.append("`!whocansee [#channel]` — list members who can view a channel (defaults to current)")
         embed.add_field(
             name="🛡️ Moderator Commands",
             value="\n".join(mod_lines),
@@ -410,6 +412,40 @@ async def role_remove(ctx, member: discord.Member, *, role_name: str):
         return
     await member.remove_roles(role, reason=f"Removed by {ctx.author}")
     await ctx.send(f"✅ Removed the `{role_name}` role from {member.mention}.", delete_after=6)
+
+@bot.command(name="whocansee")
+@commands.has_permissions(manage_channels=True)
+async def who_can_see(ctx, channel: discord.abc.GuildChannel = None):
+    await safely_delete_message(ctx)
+    channel = channel or ctx.channel
+
+    async with ctx.typing():
+        members_with_access = []
+        async for member in ctx.guild.fetch_members(limit=None):
+            perms = channel.permissions_for(member)
+            if perms.view_channel:
+                members_with_access.append(member)
+
+    members_with_access.sort(key=lambda m: m.display_name.lower())
+
+    embed = discord.Embed(title=f"👀 Who Can See #{channel.name}", color=0x3498db)
+    if not members_with_access:
+        embed.description = "No members currently have access."
+    else:
+        lines = [f"• {m.mention}" for m in members_with_access]
+        chunk = ""
+        field_count = 1
+        for line in lines:
+            if len(chunk) + len(line) + 1 > 1024:
+                embed.add_field(name=f"Members ({field_count})", value=chunk, inline=False)
+                chunk = ""
+                field_count += 1
+            chunk += line + "\n"
+        if chunk:
+            embed.add_field(name=f"Members ({field_count})", value=chunk, inline=False)
+        embed.set_footer(text=f"Total: {len(members_with_access)} member(s) can view this channel.")
+
+    await ctx.send(embed=embed)
 
 @bot.command(name="ping")
 async def ping(ctx):
