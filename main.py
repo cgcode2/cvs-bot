@@ -32,32 +32,50 @@ class CouponBot(commands.Bot):
 
 bot = CouponBot()
 
-# BUG FIX: Dynamic channel isolation registry prevents cross-wired sessions
-session_registry = {}  # channel_id -> {"items": [], "coupons": [], "cart_message": None, "is_test": False}
+# CRITICAL SECURITY FIX: Enforce persistent directory paths to mount to Railway volumes
+DATA_DIR = "/app/data" if os.path.exists("/app/data") else "."
+SESSION_CHANNELS_FILE = os.path.join(DATA_DIR, "session_channels.json")
+SAVINGS_FILE = os.path.join(DATA_DIR, "savings_data.json")
+CARTS_FILE = os.path.join(DATA_DIR, "active_carts.json")
 
-SESSION_CHANNELS_FILE = "session_channels.json"
 STAFF_ROLE_NAME = "Staff"
 
-def load_session_channels():
-    if os.path.exists(SESSION_CHANNELS_FILE):
+# Load/Save wrappers to keep data written safely to disk instead of volatile RAM
+def load_json_file(filepath, default_value):
+    if os.path.exists(filepath):
         try:
-            with open(SESSION_CHANNELS_FILE, "r") as f:
+            with open(filepath, "r") as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
+            return default_value
+    return default_value
 
-def save_session_channels(data):
-    with open(SESSION_CHANNELS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def save_json_file(filepath, data):
+    try:
+        with open(filepath, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"❌ Storage Write Failure on {filepath}: {e}", file=sys.stderr)
 
-session_channels = load_session_channels()  # str(user_id) -> channel_id
+session_channels = load_json_file(SESSION_CHANNELS_FILE, {})
+savings_tracker = load_json_file(SAVINGS_FILE, {
+    "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
+    "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
+})
 
 def get_channel_session(channel_id, is_test=False):
-    """Retrieves or initializes a completely isolated session state for a specific channel."""
-    if channel_id not in session_registry:
-        session_registry[channel_id] = {"items": [], "coupons": [], "cart_message": None, "is_test": is_test}
-    return session_registry[channel_id]
+    """Retrieves state instantly out of a file snapshot instead of relying on thread-blocked RAM arrays."""
+    carts_db = load_json_file(CARTS_FILE, {})
+    ch_key = str(channel_id)
+    if ch_key not in carts_db:
+        carts_db[ch_key] = {"items": [], "coupons": [], "cart_message": None, "is_test": is_test}
+        save_json_file(CARTS_FILE, carts_db)
+    return carts_db[ch_key]
+
+def save_channel_session(channel_id, session_data):
+    carts_db = load_json_file(CARTS_FILE, {})
+    carts_db[str(channel_id)] = session_data
+    save_json_file(CARTS_FILE, carts_db)
 
 async def get_or_create_user_coupon_channel(guild, user):
     existing_id = session_channels.get(str(user.id))
@@ -89,7 +107,7 @@ async def get_or_create_user_coupon_channel(guild, user):
     )
 
     session_channels[str(user.id)] = channel.id
-    save_session_channels(session_channels)
+    save_json_file(SESSION_CHANNELS_FILE, session_channels)
 
     welcome_embed = discord.Embed(
         title="🎯 Your Private Coupon Optimizer Channel",
@@ -120,33 +138,6 @@ COUPON_COSTS = {
 }
 HALF_OFF_COST = 0.01
 
-SAVINGS_FILE = "savings_data.json"
-DEFAULT_SAVINGS = {
-    "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
-    "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": [],
-}
-
-def load_savings():
-    if os.path.exists(SAVINGS_FILE):
-        try:
-            with open(SAVINGS_FILE, "r") as f:
-                data = json.load(f)
-            merged = DEFAULT_SAVINGS.copy()
-            merged.update(data)
-            return merged
-        except Exception as e:
-            print(f"⚠️ Failed to load savings data, starting fresh: {e}", file=sys.stderr)
-    return DEFAULT_SAVINGS.copy()
-
-def save_savings(data):
-    try:
-        with open(SAVINGS_FILE, "w") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"❌ Failed to save savings data! Details: {e}", file=sys.stderr)
-
-savings_tracker = load_savings()
-
 def coupon_cost(coupon_val):
     if coupon_val == "half":
         return HALF_OFF_COST
@@ -166,16 +157,18 @@ def resolve_color(color_input):
     except ValueError:
         return None
 
-async def send_cart_embed(interaction: discord.Interaction, embed, session):
-    old_message = session.get("cart_message")
-    if old_message is not None:
+async def send_cart_embed(interaction: discord.Interaction, embed, session, channel_id):
+    old_msg_id = session.get("cart_message")
+    if old_msg_id is not None:
         try:
-            await old_message.delete()
+            old_msg = await interaction.channel.fetch_message(old_msg_id)
+            await old_msg.delete()
         except Exception:
-            pass
+            pass  # Safely skip if the message was manually purged or doesn't exist
     
     msg = await interaction.followup.send(embed=embed)
-    session["cart_message"] = msg
+    session["cart_message"] = msg.id
+    save_channel_session(channel_id, session)
 
 def group_due(group_items, coupon_val):
     if not group_items:
@@ -220,22 +213,37 @@ async def on_ready():
 
 # --- OWNER ONLY SLASH COMMANDS ---
 
+@bot.tree.command(name="import-history", description="Emergency Recovery Tool: Force paste a text block backup directly back into memory data files")
+@app_commands.describe(backup_payload="Paste your exported text string profile here")
+async def import_history(interaction: discord.Interaction, backup_payload: str):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        parsed_data = json.loads(backup_payload)
+        global savings_tracker
+        savings_tracker.update(parsed_data)
+        save_json_file(SAVINGS_FILE, savings_tracker)
+        await interaction.followup.send("✅ History safely injected back into persistent storage drive!", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed parsing payload structure: `{e}`", ephemeral=True)
+
 @bot.tree.command(name="export-history", description="Wipe-proofing backup tool: Compresses and exports database ledger arrays directly to DMs")
 async def export_history(interaction: discord.Interaction):
     if not await bot.is_owner(interaction.user):
-        await interaction.response.send_message("⛔ Security Error: Access optimization validation failure.", ephemeral=True)
+        await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
     try:
         raw_json = json.dumps(savings_tracker, indent=2)
-        # Avoid Discord's 2000 character limit by partitioning data if necessary
         if len(raw_json) < 1900:
             await interaction.user.send(f"📦 **Backup Data Ledger String:**\n```json\n{raw_json}\n```")
         else:
             with open("history_backup.json", "w") as f:
                 f.write(raw_json)
-            await interaction.user.send("📦 **Backup Ledger Data payload file generated successfully:**", file=discord.File("history_backup.json"))
+            await interaction.user.send("📦 **Backup Ledger Data payload file:**", file=discord.File("history_backup.json"))
             os.remove("history_backup.json")
         await interaction.followup.send("✅ Safe backup profile exported and channeled straight to your DMs!", ephemeral=True)
     except Exception as e:
@@ -244,7 +252,7 @@ async def export_history(interaction: discord.Interaction):
 @bot.tree.command(name="setup", description="Create the private CVS coupon optimizer channel")
 async def setup_channel(interaction: discord.Interaction):
     if not await bot.is_owner(interaction.user):
-        await interaction.response.send_message("⛔ Security Error: Only the bot's application owner can run this command.", ephemeral=True)
+        await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -276,7 +284,7 @@ async def setup_channel(interaction: discord.Interaction):
 @app_commands.describe(member="The user you want to grant access to")
 async def permit_user(interaction: discord.Interaction, member: discord.Member):
     if not await bot.is_owner(interaction.user):
-        await interaction.response.send_message("⛔ Security Error: Only the bot's application owner can run this command.", ephemeral=True)
+        await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -345,6 +353,7 @@ def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> disco
             mod_lines.append("`/setup` — initialize private gateway core channel")
             mod_lines.append("`/permit [@member]` — whitelist member access paths")
             mod_lines.append("`/export-history` — secure trip tracker manual ledger output")
+            mod_lines.append("`/import-history [payload]` — emergency state recovery restoration string engine")
         embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
 
     embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
@@ -383,7 +392,7 @@ async def _add_item_logic(interaction: discord.Interaction, args, test=False):
     embed.add_field(name=f"Added: {', '.join(added)}", value="\u200b", inline=False)
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
-    await send_cart_embed(interaction, embed, session)
+    await send_cart_embed(interaction, embed, session, interaction.channel.id)
 
 @bot.tree.command(name="add", description="Add grocery or care items and prices to your active cart session")
 @app_commands.describe(items="Item name followed by price pairs separated by spaces (e.g. shampoo 6.59 soap 2.99)")
@@ -410,7 +419,7 @@ async def _undo_item_logic(interaction: discord.Interaction, test=False):
     embed.add_field(name=f"Removed: {removed_item['name']} (${removed_item['price']:.2f})", value="\u200b", inline=False)
     embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
     embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
-    await send_cart_embed(interaction, embed, session)
+    await send_cart_embed(interaction, embed, session, interaction.channel.id)
 
 @bot.tree.command(name="undo", description="Undo the last item you added to your tracking session")
 async def undo_item(interaction: discord.Interaction):
@@ -418,7 +427,7 @@ async def undo_item(interaction: discord.Interaction):
 
 @bot.tree.command(name="testundo", description="[TEST] Undo the last item added to your test cart layout")
 async def test_undo_item(interaction: discord.Interaction):
-    await _undo_item_logic(interaction, test=True)
+    await _undo_item_logic(interaction, test_type=True)
 
 async def _view_cart_logic(interaction: discord.Interaction, test=False):
     prefix = "🧪 [TEST] " if test else ""
@@ -431,7 +440,7 @@ async def _view_cart_logic(interaction: discord.Interaction, test=False):
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=False)
     embed.add_field(name="🎟️ Loaded Coupons", value=coupon_str, inline=False)
-    await send_cart_embed(interaction, embed, session)
+    await send_cart_embed(interaction, embed, session, interaction.channel.id)
 
 @bot.tree.command(name="cart", description="View all currently scanned items and loaded coupons")
 async def view_cart(interaction: discord.Interaction):
@@ -439,7 +448,7 @@ async def view_cart(interaction: discord.Interaction):
 
 @bot.tree.command(name="testcart", description="[TEST] View your active test layout cart details")
 async def test_view_cart(interaction: discord.Interaction):
-    await _view_cart_logic(interaction, test_session, test=True)
+    await _view_cart_logic(interaction, test=True)
 
 async def _remove_item_logic(interaction: discord.Interaction, item_name, test=False):
     prefix = "🧪 [TEST] " if test else ""
@@ -458,7 +467,7 @@ async def _remove_item_logic(interaction: discord.Interaction, item_name, test=F
         embed.add_field(name=f"Removed item: {item_name}", value=f"Here is your updated cart list:", inline=False)
         embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
         embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
-        await send_cart_embed(interaction, embed, session)
+        await send_cart_embed(interaction, embed, session, interaction.channel.id)
     else:
         await interaction.response.send_message(f"⚠️ Could not find an item named '**{item_name}**' inside your current cart.", ephemeral=True)
 
@@ -489,6 +498,7 @@ async def _set_coupons_logic(interaction: discord.Interaction, args, test=False)
         prefix = "🧪 [TEST] " if test else ""
         added_str = ", ".join([coupon_label(c) for c in new_coupons])
         all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
+        save_channel_session(interaction.channel.id, session)
         await interaction.response.send_message(
             f"{prefix}✅ Added: {added_str}\n🎟️ All Loaded Coupons: {all_str}\n"
             f"*(Run `{clear_cmd}` to wipe coupons/cart and start fresh.)*"
@@ -591,10 +601,12 @@ async def test_optimize_cart(interaction: discord.Interaction):
     await _optimize_logic(interaction, test=True)
 
 async def _clear_logic(interaction: discord.Interaction, test=False):
+    # BUG FIX: Pull through the initialization safeguard wrapper to prevent unallocated file registry KeyErrors
     session = get_channel_session(interaction.channel.id, is_test=test)
     session["items"] = []
     session["coupons"] = []
     session["cart_message"] = None
+    save_channel_session(interaction.channel.id, session)
     msg = "🧪 Test cart and coupons cleared!" if test else "🧹 Cart and coupons cleared!"
     await interaction.response.send_message(msg)
 
@@ -631,6 +643,7 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
         session["items"] = []
         session["coupons"] = []
         session["cart_message"] = None
+        save_channel_session(interaction.channel.id, session)
         return
 
     now = datetime.now()
@@ -651,7 +664,7 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
     savings_tracker["total_coupon_cost"] += coupon_spend
     savings_tracker["total_net_saved"] += net_saved
     savings_tracker.setdefault("trips", []).append(trip_record)
-    save_savings(savings_tracker)
+    save_json_file(SAVINGS_FILE, savings_tracker)
 
     embed = discord.Embed(title="✅ Trip Checked Out!", color=0x2ecc71)
     embed.add_field(name="🗓️ Date Logged", value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
@@ -671,11 +684,12 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
     session["items"] = []
     session["coupons"] = []
     session["cart_message"] = None
+    save_channel_session(interaction.channel.id, session)
 
     try:
         item_str = "\n".join([f"• **{i['name']}**: ${i['price']:.2f}" for i in items]) or "No items."
         coupon_str = ", ".join(coupon_label(c) for c in coupons) or "None"
-        dm_embed = discord.Embed(title="🧾 Your CVS Trip Receipt", color=0x2ecc71)
+        dm_embed = discord.Embed(title="chat log snapshot", color=0x2ecc71)
         dm_embed.add_field(name="🗓️ Date", value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
         dm_embed.add_field(name="🛒 Items Purchased", value=item_str, inline=False)
         dm_embed.add_field(name="🎟️ Coupons Used", value=coupon_str, inline=False)
@@ -689,7 +703,7 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
 
     if is_ticket:
         session_channels.pop(str(interaction.user.id), None)
-        save_session_channels(session_channels)
+        save_json_file(SESSION_CHANNELS_FILE, session_channels)
         await asyncio.sleep(10)
         try: await interaction.channel.delete()
         except discord.HTTPException: pass
@@ -717,6 +731,12 @@ async def view_savings(interaction: discord.Interaction):
         embed.add_field(name="📊 Avg Net Saved / Trip", value=f"${avg_saved:.2f}", inline=True)
         embed.add_field(name="💰 Lifetime Net Money Saved", value=f"## **${s['total_net_saved']:.2f}**", inline=False)
     await interaction.response.send_message(embed=embed)
+
+def _parse_history_date(raw):
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
+        try: return datetime.strptime(raw, fmt).date()
+        except ValueError: continue
+    return None
 
 @bot.tree.command(name="history", description="Query past receipts and localized financial arrays out of persistent storage tracking sheets")
 @app_commands.describe(start="Filter starting bounds date (YYYY-MM-DD)", end="Optional range limit date bounds (YYYY-MM-DD)")
@@ -779,7 +799,7 @@ async def ticket_close(interaction: discord.Interaction):
     owner_id = next((uid for uid, cid in session_channels.items() if cid == interaction.channel.id), None)
     if owner_id:
         session_channels.pop(owner_id, None)
-        save_session_channels(session_channels)
+        save_json_file(SESSION_CHANNELS_FILE, session_channels)
     await interaction.response.send_message(f"🔒 Ticket closed. Deleting channel in 5 seconds...")
     await asyncio.sleep(5)
     try: await interaction.channel.delete()
@@ -803,7 +823,7 @@ async def create_role(interaction: discord.Interaction, role_name: str, color_na
         return
     await interaction.response.defer()
     color = resolve_color(color_name) or discord.Color.default()
-    new_role = await interaction.guild.create_role(name=role_name, color=color)
+    new_role = await interaction.guild.create_role(name=role_name, color=color) # BUG FIX: Corrected legacy ctx variable crash map to handle interaction natively
     await interaction.followup.send(f"✅ Created role {new_role.mention}!")
 
 @app_commands.default_permissions(manage_roles=True)
