@@ -169,7 +169,6 @@ async def send_cart_embed(interaction: discord.Interaction, embed, session):
         except Exception:
             pass
     
-    # Store the actual message reference returned from the interaction send
     msg = await interaction.followup.send(embed=embed)
     session["cart_message"] = msg
 
@@ -260,6 +259,7 @@ def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> disco
     embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
     return embed
 
+@app_commands.default_permissions(send_messages=True)
 @bot.tree.command(name="help", description="Show the CVS Coupon Calculator help menu (only visible to you)")
 async def slash_help(interaction: discord.Interaction):
     author_perms = interaction.channel.permissions_for(interaction.user) if interaction.guild else discord.Permissions.none()
@@ -660,9 +660,9 @@ async def view_history(interaction: discord.Interaction, start: str = None, end:
         )
     await interaction.response.send_message(embed=embed)
 
+@app_commands.default_permissions(manage_messages=True)
 @bot.tree.command(name="nuke", description="Bulk drop message indexes backward to clear active operating rooms logs")
 @app_commands.describe(amount="Quantity of records to scrub out (or text string match keyword 'all')")
-@app_commands.checks.has_permissions(manage_messages=True)
 async def nuke(interaction: discord.Interaction, amount: str):
     await interaction.response.defer(ephemeral=True)
     if amount.lower() == "all":
@@ -694,8 +694,8 @@ async def ticket_close(interaction: discord.Interaction):
     try: await interaction.channel.delete()
     except discord.HTTPException: pass
 
+@app_commands.default_permissions(manage_channels=True)
 @bot.tree.command(name="whocansee", description="List members who can view a channel")
-@app_commands.checks.has_permissions(manage_channels=True)
 async def who_can_see(interaction: discord.Interaction):
     await interaction.response.defer()
     members_with_access = [m for m in interaction.guild.members if interaction.channel.permissions_for(m).view_channel]
