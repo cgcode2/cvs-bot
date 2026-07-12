@@ -31,6 +31,77 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 current_session = {"items": [], "coupons": [], "cart_message": None}
 test_session = {"items": [], "coupons": [], "cart_message": None}
 
+# Per-user private coupon optimizer channels
+SESSION_CHANNELS_FILE = "session_channels.json"
+STAFF_ROLE_NAME = "Staff"
+
+def load_session_channels():
+    if os.path.exists(SESSION_CHANNELS_FILE):
+        try:
+            with open(SESSION_CHANNELS_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+def save_session_channels(data):
+    with open(SESSION_CHANNELS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+session_channels = load_session_channels()  # str(user_id) -> channel_id
+
+async def get_or_create_user_coupon_channel(ctx):
+    """Returns the invoking user's private coupon-optimizer channel, creating it (visible only
+    to them, staff, and the bot) if it doesn't already exist. Returns None outside a guild."""
+    guild = ctx.guild
+    if guild is None:
+        return None
+
+    existing_id = session_channels.get(str(ctx.author.id))
+    if existing_id:
+        channel = guild.get_channel(existing_id)
+        if channel is not None:
+            return channel
+        # Stale entry (channel was deleted) — fall through and recreate it
+
+    safe_name = "".join(c for c in ctx.author.name.lower() if c.isalnum() or c in ("-", "_")) or str(ctx.author.id)
+    channel_name = f"coupons-{safe_name}"[:100]
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        ctx.author: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True, manage_messages=True),
+    }
+    staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
+
+    reference_channel = discord.utils.get(guild.text_channels, name="cvs-coupon-optimizer")
+    parent_category = reference_channel.category if reference_channel else ctx.channel.category
+
+    channel = await guild.create_text_channel(
+        name=channel_name,
+        category=parent_category,
+        overwrites=overwrites,
+        reason=f"Private coupon optimizer channel for {ctx.author}"
+    )
+
+    session_channels[str(ctx.author.id)] = channel.id
+    save_session_channels(session_channels)
+
+    welcome_embed = discord.Embed(
+        title="🎯 Your Private Coupon Optimizer Channel",
+        description=(
+            f"Hey {ctx.author.mention}! This is your own space to run the full coupon flow "
+            "without cluttering the main chat. Only you"
+            + (f" and the `{STAFF_ROLE_NAME}` role" if staff_role else "")
+            + " can see this channel.\n\nRun `!help` (or `/help`) here anytime for the full command list."
+        ),
+        color=0xcc0000
+    )
+    await channel.send(embed=welcome_embed)
+    return channel
+
 COLOR_NAMES = {
     "red": 0xe74c3c, "dark red": 0x992d22, "orange": 0xe67e22, "yellow": 0xf1c40f,
     "gold": 0xf1c40f, "green": 0x2ecc71, "dark green": 0x1f8b4c, "teal": 0x1abc9c,
@@ -416,8 +487,9 @@ async def test_remove_item(ctx, item_name: str):
 
 HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
 
-async def _set_coupons_logic(ctx, session, args, test=False):
+async def _set_coupons_logic(ctx, session, args, test=False, target_channel=None):
     await safely_delete_message(ctx)
+    destination = target_channel or ctx.channel
     cmd = "!testcoupons" if test else "!coupons"
     clear_cmd = "!testclear" if test else "!clear"
     try:
@@ -432,20 +504,32 @@ async def _set_coupons_logic(ctx, session, args, test=False):
         prefix = "🧪 [TEST] " if test else ""
         added_str = ", ".join([coupon_label(c) for c in new_coupons])
         all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
-        await ctx.send(
+        await destination.send(
             f"{prefix}✅ Added: {added_str}\n🎟️ All Loaded Coupons: {all_str}\n"
             f"*(Run `{clear_cmd}` to wipe coupons/cart and start fresh.)*"
         )
     except ValueError:
-        await ctx.send(f"❌ Format error. Example: `{cmd} 8 8 5 half`")
+        await destination.send(f"❌ Format error. Example: `{cmd} 8 8 5 half`")
 
 @bot.hybrid_command(name="coupons", description="Add coupon values to your session (e.g. 8 8 5 half)")
 async def set_coupons(ctx, *, values: str):
-    await _set_coupons_logic(ctx, current_session, values.split(), test=False)
+    target_channel = await get_or_create_user_coupon_channel(ctx)
+    if target_channel and ctx.channel.id != target_channel.id:
+        await ctx.send(
+            f"🔒 {ctx.author.mention} I've got your private coupon optimizer room ready: {target_channel.mention}",
+            delete_after=8
+        )
+    await _set_coupons_logic(ctx, current_session, values.split(), test=False, target_channel=target_channel)
 
 @bot.hybrid_command(name="testcoupons", description="[TEST] Add coupon values to your test session")
 async def test_set_coupons(ctx, *, values: str):
-    await _set_coupons_logic(ctx, test_session, values.split(), test=True)
+    target_channel = await get_or_create_user_coupon_channel(ctx)
+    if target_channel and ctx.channel.id != target_channel.id:
+        await ctx.send(
+            f"🔒 {ctx.author.mention} I've got your private coupon optimizer room ready: {target_channel.mention}",
+            delete_after=8
+        )
+    await _set_coupons_logic(ctx, test_session, values.split(), test=True, target_channel=target_channel)
 
 async def _optimize_logic(ctx, session, test=False):
     await safely_delete_message(ctx)
