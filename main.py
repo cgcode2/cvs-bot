@@ -275,7 +275,16 @@ async def help_menu(ctx):
         )
 
     embed.set_footer(text="Tip: Keep item names to a single word for best formatting.")
-    await ctx.send(embed=embed)
+
+    try:
+        await ctx.author.send(embed=embed)
+        if ctx.guild is not None:
+            await ctx.send(f"📬 {ctx.author.mention}, I sent you the help menu in your DMs!", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send(
+            f"⚠️ {ctx.author.mention} I couldn't DM you the help menu — please enable DMs from server members and try again.",
+            delete_after=8
+        )
 
 async def _add_item_logic(ctx, session, args, test=False):
     await safely_delete_message(ctx)
