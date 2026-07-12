@@ -253,7 +253,7 @@ def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> disco
     if author_perms.manage_messages or author_perms.manage_roles:
         mod_lines = []
         if author_perms.manage_messages: mod_lines.append("`/nuke [amount]` — bulk delete messages")
-        if author_perms.manage_channels: mod_lines.append("`/ticket close` — close active optimizer ticket channels")
+        if author_perms.manage_channels: mod_lines.append("`/ticket-close` — close active optimizer ticket channels")
         if mod_lines: embed.add_field(name="🛡️ Moderator Commands", value="\n".join(mod_lines), inline=False)
 
     embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
@@ -675,11 +675,7 @@ async def nuke(interaction: discord.Interaction, amount: str):
         deleted = await interaction.channel.purge(limit=count)
     await interaction.followup.send(f"🧨 Nuked **{len(deleted)}** message entries!")
 
-@bot.tree.group(name="ticket", description="Administrative commands to regulate text pipeline rooms clusters")
-async def ticket(interaction: discord.Interaction):
-    pass
-
-@ticket.command(name="close", description="Close this coupon optimizer ticket channel environment directly")
+@bot.tree.command(name="ticket-close", description="Close this coupon optimizer ticket channel environment directly")
 async def ticket_close(interaction: discord.Interaction):
     if not (interaction.user.guild_permissions.manage_channels or discord.utils.get(interaction.user.roles, name=STAFF_ROLE_NAME)):
         await interaction.response.send_message("⛔ Account access authorization evaluation missing.", ephemeral=True)
