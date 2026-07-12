@@ -352,15 +352,16 @@ async def on_ready():
 
 # --- OWNER ONLY DIAGNOSTIC OPERATIONS COMMANDS ---
 
-@bot.tree.command(name="run-stress-test", description="Emergency Suite: Automatically injects mock items and coupons under full database transaction loads")
+@bot.tree.command(name="run-stress-test", description="High-Intensity Suite: Automates a 5-cycle loop firing 35 total structural additions")
 async def run_stress_test(interaction: discord.Interaction):
     if not await bot.is_owner(interaction.user):
         await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
+    await interaction.followup.send("⏳ **Initiating High-Intensity Stress Test Loop...** Cleard sandbox state. Firing consecutive database writes...", ephemeral=True)
     
-    # 1. Atomic clear transaction
+    # Phase 1: Clear the environment slate completely
     async def _test_clear(s):
         s["items"] = []
         s["coupons"] = []
@@ -369,23 +370,36 @@ async def run_stress_test(interaction: discord.Interaction):
         return s
     await update_channel_session(interaction.channel.id, _test_clear, is_test=True)
 
-    # 2. Atomic mock add transaction (shampoo 6.59 soap 2.99 milk 4.49 cookies 5.00)
-    async def _test_add(s):
-        mock_items = [("shampoo", 6.59), ("soap", 2.99), ("milk", 4.49), ("cookies", 5.00)]
-        for name, price in mock_items:
-            s["items"].append({"name": name, "price": price})
-        return s
-    await update_channel_session(interaction.channel.id, _test_add, is_test=True)
+    # Phase 2: Execute an automated 5-cycle back-to-back command loop simulation
+    for cycle in range(1, 6):
+        # Dynamic variable mutation based on current cycle loop context
+        mock_items = [
+            (f"ItemA_C{cycle}", 2.50 * cycle),
+            (f"ItemB_C{cycle}", 1.15 * cycle),
+            (f"ItemC_C{cycle}", 3.99 * cycle),
+            (f"ItemD_C{cycle}", 0.75 * cycle)
+        ]
+        mock_coupons = [float(2 * cycle), float(cycle), "half"]
 
-    # 3. Atomic mock coupons transaction (8.00 5.00 half)
-    async def _test_coupons(s):
-        s["coupons"].extend([8.00, 5.00, "half"])
-        s["coupons"].sort(key=lambda c: -1 if c == "half" else c, reverse=True)
-        return s
-    await update_channel_session(interaction.channel.id, _test_coupons, is_test=True)
+        # 1. Simulate rapid /testadd data writing mutations
+        async def _loop_add(s, items=mock_items):
+            for name, price in items:
+                s["items"].append({"name": name, "price": price})
+            return s
+        await update_channel_session(interaction.channel.id, lambda s: _loop_add(s, mock_items), is_test=True)
 
-    # 4. Fire optimization sequence pipeline immediately to trigger layout displays
-    await interaction.followup.send("🧪 **Stress Test Orchestrated!** Mock cart injected. Computing allocation models...", ephemeral=True)
+        # 2. Simulate rapid /testcoupons loading expansions
+        async def _loop_coupons(s, coupons=mock_coupons):
+            s["coupons"].extend(coupons)
+            s["coupons"].sort(key=lambda c: -1 if c == "half" else c, reverse=True)
+            return s
+        await update_channel_session(interaction.channel.id, lambda s: _loop_coupons(s, mock_coupons), is_test=True)
+        
+        # Micro-sleep to test rapid data serialization settling pacing
+        await asyncio.sleep(0.1)
+
+    # Phase 3: Unleash the core combinatorics optimizer over the massive 35-item/coupon matrix
+    await interaction.followup.send("📊 **Cycles Complete.** Firing full combinatorics calculation loops...", ephemeral=True)
     await _optimize_logic(interaction, test=True)
 
 @bot.tree.command(name="export-bug-logs", description="Admin Tool: Packages all silent exceptions since your last check and flushes the vault disk cache")
@@ -784,7 +798,6 @@ async def _optimize_logic(interaction: discord.Interaction, test=False):
         await interaction.response.send_message("❌ Your cart is empty!", ephemeral=True)
         return
 
-    # Check to maintain followup continuity maps across automated stress loops
     if not interaction.response.is_done():
         await interaction.response.defer()
         
