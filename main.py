@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import itertools
 from flask import Flask
@@ -160,6 +161,13 @@ def calculate_best_bundles(items, coupons):
 @bot.event
 async def on_ready():
     print(f'🤖 Coupon Calculator is officially online via Replit!')
+    try:
+        for guild in bot.guilds:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+        print(f'✅ Synced slash commands to {len(bot.guilds)} guild(s).')
+    except Exception as e:
+        print(f'⚠️ Slash command sync failed: {e}', file=sys.stderr)
 
 @bot.command(name="setup")
 @commands.is_owner()
@@ -210,9 +218,7 @@ async def permit_user(ctx, member: discord.Member):
     await channel.set_permissions(member, view_channel=True, send_messages=True, read_messages=True)
     await ctx.send(f"✅ Granted access to {member.mention} to use the optimizer room!", delete_after=5)
 
-@bot.command(name="help")
-async def help_menu(ctx):
-    await safely_delete_message(ctx)
+def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> discord.Embed:
     embed = discord.Embed(
         title="📖 CVS Coupon Calculator — Help Menu", 
         description="Follow this quick blueprint to maximize your coupon values and slash your out-of-pocket register total.", 
@@ -245,7 +251,6 @@ async def help_menu(ctx):
     )
 
     # Moderator-only commands: only visible to members with Manage Messages
-    author_perms = ctx.channel.permissions_for(ctx.author)
     if author_perms.manage_messages or author_perms.manage_roles:
         mod_lines = []
         if author_perms.manage_messages:
@@ -267,24 +272,30 @@ async def help_menu(ctx):
         )
 
     # Owner-only commands: only visible to the bot's application owner
-    if await bot.is_owner(ctx.author):
+    if is_owner:
         embed.add_field(
             name="👑 Owner Commands",
             value="`!setup` — create the private optimizer channel\n`!permit [@member]` — grant a member access to it",
             inline=False
         )
 
-    embed.set_footer(text="Tip: Keep item names to a single word for best formatting.")
+    embed.set_footer(text="Tip: Keep item names to a single word for best formatting. This menu is only visible to you.")
+    return embed
 
-    try:
-        await ctx.author.send(embed=embed)
-        if ctx.guild is not None:
-            await ctx.send(f"📬 {ctx.author.mention}, I sent you the help menu in your DMs!", delete_after=5)
-    except discord.Forbidden:
-        await ctx.send(
-            f"⚠️ {ctx.author.mention} I couldn't DM you the help menu — please enable DMs from server members and try again.",
-            delete_after=8
-        )
+@bot.command(name="help")
+async def help_menu(ctx):
+    await safely_delete_message(ctx)
+    await ctx.send(
+        f"{ctx.author.mention} Use **`/help`** instead — it shows the menu as a private message only you can see, with a Dismiss button.",
+        delete_after=8
+    )
+
+@bot.tree.command(name="help", description="Show the CVS Coupon Calculator help menu (only visible to you)")
+async def slash_help(interaction: discord.Interaction):
+    author_perms = interaction.channel.permissions_for(interaction.user) if interaction.guild else discord.Permissions.none()
+    is_owner = await bot.is_owner(interaction.user)
+    embed = build_help_embed(author_perms, is_owner)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def _add_item_logic(ctx, session, args, test=False):
     await safely_delete_message(ctx)
