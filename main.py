@@ -51,6 +51,15 @@ def save_session_channels(data):
 
 session_channels = load_session_channels()  # str(user_id) -> channel_id
 
+def is_staff_or_channel_manager():
+    async def predicate(ctx):
+        if ctx.guild is None:
+            return False
+        if ctx.author.guild_permissions.manage_channels:
+            return True
+        return discord.utils.get(ctx.author.roles, name=STAFF_ROLE_NAME) is not None
+    return commands.check(predicate)
+
 async def get_or_create_user_coupon_channel(ctx):
     """Returns the invoking user's private coupon-optimizer channel, creating it (visible only
     to them, staff, and the bot) if it doesn't already exist. Returns None outside a guild."""
@@ -955,6 +964,35 @@ async def unblock_role(ctx, role: discord.Role, channel: discord.TextChannel = N
     await channel.set_permissions(role, overwrite=None, reason=f"Unblocked by {ctx.author}")
     await ctx.send(f"✅ Reset `{role.name}`'s view access for #{channel.name} back to default.", delete_after=6)
 
+@bot.hybrid_group(name="ticket", description="Manage coupon optimizer ticket channels", invoke_without_command=True)
+async def ticket(ctx):
+    await ctx.send("Usage: `/ticket close` — closes the current coupon optimizer ticket channel.", delete_after=8)
+
+@ticket.command(name="close", description="Close this coupon optimizer ticket channel")
+@is_staff_or_channel_manager()
+async def ticket_close(ctx):
+    await safely_delete_message(ctx)
+
+    owner_id = None
+    for uid, cid in list(session_channels.items()):
+        if cid == ctx.channel.id:
+            owner_id = uid
+            break
+
+    if owner_id is None:
+        await ctx.send("⚠️ This isn't an active coupon optimizer ticket channel.", delete_after=8)
+        return
+
+    session_channels.pop(owner_id, None)
+    save_session_channels(session_channels)
+
+    await ctx.send(f"🔒 Ticket closed by {ctx.author.mention}. This channel will delete in 5 seconds...")
+    await asyncio.sleep(5)
+    try:
+        await ctx.channel.delete(reason=f"Ticket closed by {ctx.author}")
+    except discord.HTTPException as e:
+        print(f"❌ Failed to close ticket channel: {e}", file=sys.stderr)
+
 @bot.hybrid_command(name="whocansee", description="List members who can view a channel (defaults to current)")
 @commands.has_permissions(manage_channels=True)
 async def who_can_see(ctx, channel: discord.TextChannel = None):
@@ -1020,6 +1058,8 @@ async def on_command_error(ctx, error):
         await ctx.send(f"⛔ Permission Error: You need the **{missing}** permission to run that.", delete_after=8)
     elif isinstance(error, (commands.RoleNotFound, commands.ChannelNotFound, commands.MemberNotFound)):
         await ctx.send(f"❌ {error}", delete_after=8)
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send(f"⛔ Permission Error: You need to be **{STAFF_ROLE_NAME}** or have **Manage Channels** to run that.", delete_after=8)
     else:
         print(f"❌ Command Error in '{ctx.command}': {type(error).__name__} | Details: {error}", file=sys.stderr)
         await ctx.send(f"❌ Unexpected error running `{ctx.command}`: `{type(error).__name__}: {error}`", delete_after=15)
