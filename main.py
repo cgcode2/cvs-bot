@@ -1,29 +1,10 @@
 import discord
 from discord.ext import commands
 import itertools
-from flask import Flask
-from threading import Thread
 import os
 import sys
 
-# 1. BACKGROUND WEB SERVER (Satisfies Render's web check)
-app = Flask('')
-@app.route('/')
-def home(): 
-    return "CVS Coupon Bot is Online!"
-
-def run_server():
-    # Render specifically looks for port 10000 by default for web services
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive(): 
-    Thread(target=run_server).start()
-
-# Start the web listener right away
-keep_alive()
-
-# 2. DISCORD BOT ENGINE
+# DISCORD BOT ENGINE ONLY
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
@@ -34,7 +15,7 @@ async def safely_delete_message(ctx):
     try:
         await ctx.message.delete()
     except Exception as e:
-        print(f"❌ Deletion Failed! Error Type: {type(e).__name__} | Details: {e}", file=sys.stderr)
+        print(f"❌ Deletion Failed! Details: {e}", file=sys.stderr)
 
 def calculate_best_bundles(items, coupons):
     num_groups = len(coupons)
@@ -61,7 +42,7 @@ def calculate_best_bundles(items, coupons):
 
 @bot.event
 async def on_ready():
-    print(f'🤖 Coupon Calculator is officially online via Render!')
+    print(f'🤖 Coupon Calculator is officially online via Render Background Worker!')
 
 @bot.command(name="setup")
 @commands.is_owner()
@@ -160,57 +141,3 @@ async def set_coupons(ctx, *args):
 async def optimize_cart(ctx):
     await safely_delete_message(ctx)
     items = current_session["items"]
-    coupons = current_session["coupons"]
-    if not items:
-        await ctx.send("❌ Your cart is empty!")
-        return
-        
-    total_due, bundling = calculate_best_bundles(items, coupons)
-    embed = discord.Embed(title="🧾 Optimized CVS Checkout Strategy", color=0x00ff00)
-    
-    for idx, coupon_val in enumerate(coupons):
-        group_items = bundling.get(idx, [])
-        if group_items:
-            item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
-            subtotal = sum(item['price'] for item in group_items)
-            due = max(0.0, subtotal - coupon_val)
-            embed.add_field(
-                name=f"Transaction {idx+1}: Use ${coupon_val:.2f} Coupon",
-                value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
-                inline=False
-            )
-            
-    embed.add_field(name="📊 Final Register Total Due", value=f"## **${total_due:.2f}**", inline=False)
-
-    if total_due > 0.0:
-        standard_coupons = [2.00, 3.00, 4.00, 5.00, 6.00, 7.00, 8.00, 10.00]
-        recommended_coupon = None
-        for cp in standard_coupons:
-            if cp >= total_due:
-                recommended_coupon = cp
-                break
-        if not recommended_coupon:
-            recommended_coupon = standard_coupons[-1]
-            
-        savings = min(total_due, recommended_coupon)
-        new_total = max(0.0, total_due - recommended_coupon)
-        
-        upgrade_text = (
-            f"💡 *You have a remaining balance of **${total_due:.2f}**.*\n"
-            f"➔ **Recommendation:** Pick up or buy an extra **${recommended_coupon:.0f}.00 Off** coupon.\n"
-            f"• This saves you an extra **${savings:.2f}** right now.\n"
-            f"• Your new register balance drops to **${new_total:.2f}**!"
-        )
-        embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=upgrade_text, inline=False)
-
-    await ctx.send(embed=embed)
-
-@bot.command(name="clear")
-async def clear_cart(ctx):
-    await safely_delete_message(ctx)
-    current_session["items"] = []
-    current_session["coupons"] = []
-    await ctx.send("🧹 Cart and coupons cleared!")
-
-token = os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
-bot.run(token)
