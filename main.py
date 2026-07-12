@@ -65,6 +65,8 @@ def is_staff_or_channel_manager():
     return commands.check(predicate)
 
 async def get_or_create_user_coupon_channel(ctx):
+    """Returns the invoking user's private coupon-optimizer channel, creating it (visible only
+    to them, staff, and the bot) if it doesn't already exist. Returns None outside a guild."""
     guild = ctx.guild
     if guild is None:
         return None
@@ -437,6 +439,14 @@ HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
 
 async def _set_coupons_logic(ctx, session, args, test=False):
     await safely_delete_message(ctx)
+    
+    # PRIVATE ROOM GATEWAY ROUTING INTERCEPT:
+    # If run in a public room, create or open their private room and redirect everything automatically
+    if ctx.guild is not None and session_channels.get(str(ctx.author.id)) != ctx.channel.id:
+        target_channel = await get_or_create_user_coupon_channel(ctx)
+        if target_channel:
+            ctx.channel = target_channel # Redirect the active execution target seamlessly
+
     clear_cmd = "!testclear" if test else "!clear"
     try:
         new_coupons = []
@@ -827,7 +837,13 @@ async def ping(ctx):
 @bot.hybrid_command(name="about", description="About the CVS Coupon Calculator bot")
 async def about(ctx):
     await safely_delete_message(ctx)
-    embed = discord.Embed(title="ℹ️ About CVS Coupon Calculator", description="A combinatorics allocation engine optimizing basket splits under overlapping transaction stackers.", color=0xcc0000)
+    embed = discord.Embed(
+        title="ℹ️ About the CVS Coupon Calculator", 
+        description="A combinatorics-powered assistant that splits your cart across coupons to minimize what you pay at register.", 
+        color=0xcc0000
+    )
+    embed.add_field(name="Commands", value="Run `!help` for the full walkthrough.", inline=False)
+    embed.add_field(name="Hosting", value="Running 24/7 on Railway.", inline=False)
     await ctx.send(embed=embed)
 
 @bot.event
