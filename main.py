@@ -107,7 +107,7 @@ async def get_channel_session(channel_id, is_test=False):
             "cart_message": None, 
             "is_test": is_test,
             "last_optimization": None,
-            "audit_log": []  # NEW TRACKER LAYER: Logs absolute sequence events dynamically
+            "audit_log": []  # Tracks dynamic execution histories
         }
         await save_json_file(CARTS_FILE, carts_db)
     return carts_db[ch_key]
@@ -267,17 +267,12 @@ def calculate_best_bundles(items, coupons):
 async def on_ready():
     print(f'🤖 Coupon Calculator is logged into Railway!')
     try:
-        # Force a deep wipe of any cached ghost command trees
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync(guild=None)
-        
-        # Inject the updated command tree layouts directly into servers
+        # Standard copy overwrites server menus cleanly without deep wipes to completely bypass rate limit limits
         for guild in bot.guilds:
-            bot.tree.clear_commands(guild=guild)
             bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
             
-        print(f'⚡ Direct command tree force-sync successful!')
+        print(f'⚡ Direct command tree injection successful!')
     except Exception as e:
         print(f'⚠️ Direct sync failed: {e}', file=sys.stderr)
 
@@ -394,19 +389,59 @@ async def permit_user(interaction: discord.Interaction, member: discord.Member):
 
 # --- CORE USER SLASH COMMANDS Engine ---
 
-@bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
-async def begin_slash(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used inside a server text channel.", ephemeral=True)
-        return
+def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> discord.Embed:
+    embed = discord.Embed(
+        title="📖 CVS Coupon Calculator — Help Menu", 
+        description="Follow this quick blueprint to maximize your coupon values and slash your out-of-pocket register total.", 
+        color=0xcc0000
+    )
+    embed.add_field(name="🚀 0. Launch Workspace", value="`/begin`\n*Creates your personal private operations room right here on the server.*", inline=False)
+    embed.add_field(name="🎟️ 1. Load Your Coupons", value="`/coupons [values separated by spaces]`\n*Example:* `/coupons values:8 8 5`", inline=False)
+    embed.add_field(name="🛒 2. Add Cart Items", value="`/add [item_name_and_prices]`\n*Example:* `/add items:Fairlife 4.49 shampoo 6.59`", inline=False)
+    embed.add_field(name="↩️ 3. Undo Last Add", value="`/undo`", inline=False)
+    embed.add_field(name="❌ 4. Remove Cart Items", value="`/remove [item_name]`\n*Example:* `/remove item_name:Fairlife`", inline=False)
+    embed.add_field(name="👀 5. View Cart", value="`/cart`", inline=False)
+    embed.add_field(name="📊 6. Calculate Strategy", value="`/optimize`", inline=False)
+    embed.add_field(name="✅ 7. Check Out & Track Savings", value="`/checkout`\n*Locks in the trip, logs your net savings, and clears the cart.*", inline=False)
+    embed.add_field(name="💰 8. View Lifetime Savings", value="`/savings`", inline=False)
+    embed.add_field(name="📜 8b. Pull Trip History", value="`/history` (last 10 trips)\n`/history start:2026-07-01` (one day)\n`/history start:2026-07-01 end:2026-07-12` (range)", inline=False)
+    embed.add_field(name="🧹 9. Clear Session (no tracking)", value="`/clear`", inline=False)
+    embed.add_field(name="🏓 10. Bot Status", value="`/ping`", inline=False)
+    embed.add_field(name="ℹ️ 11. About This Bot", value="`/about`", inline=False)
+    embed.add_field(name="🧪 12. Test Mode", value="Same flow, prefixed with `test`: `/testcoupons`, `/testadd`, `/testundo`, `/testremove`, `/testcart`, `/testoptimize`, `/testcheckout`, `/testclear`.", inline=False)
 
-    await interaction.response.defer(ephemeral=True)
-    target_channel, created = await get_or_create_user_coupon_channel(interaction.guild, interaction.user)
-    
-    if created:
-        await interaction.followup.send(f"✅ Your private space has been initialized! Head over to {target_channel.mention} to start shopping.", ephemeral=True)
-    else:
-        await interaction.followup.send(f"👋 You already have an active session! Jump back into {target_channel.mention} to finish up.", ephemeral=True)
+    if author_perms.manage_messages or author_perms.manage_roles or is_owner:
+        mod_lines = []
+        if author_perms.manage_messages or is_owner: mod_lines.append("`/nuke [amount]` — bulk delete messages")
+        if author_perms.manage_channels or is_owner: mod_lines.append("`/ticket-close` — close active optimizer ticket channels")
+        if author_perms.manage_roles or is_owner: 
+            mod_lines.append("`/createrole [name] [color]` — create a new role")
+            mod_lines.append("`/deleterole [name]` — remove a role")
+            mod_lines.append("`/roleadd [@member] [name]` — give a role")
+            mod_lines.append("`/roleremove [@member] [name]` — take a role")
+        if author_perms.manage_channels or is_owner:
+            mod_lines.append("`/createchannel [name] [visibility]` — spawn new channel")
+            mod_lines.append("`/blockrole [role]` — hide a channel from a role")
+            mod_lines.append("`/unblockrole [role]` — restore access configuration templates")
+            mod_lines.append("`/whocansee` — view channel visibility audits")
+        if is_owner:
+            mod_lines.append("`/setup` — initialize private gateway core channel")
+            mod_lines.append("`/permit [@member]` — whitelist member access paths")
+            mod_lines.append("`/export-history` — secure trip tracker manual ledger output")
+            mod_lines.append("`/import-history [payload]` — emergency state recovery restoration string engine")
+            mod_lines.append("`/export-session-logs [mode]` — dump transaction track audit metrics logs")
+        embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
+
+    embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
+    return embed
+
+@app_commands.default_permissions(send_messages=True)
+@bot.tree.command(name="help", description="Show the CVS Coupon Calculator help menu (only visible to you)")
+async def slash_help(interaction: discord.Interaction):
+    author_perms = interaction.channel.permissions_for(interaction.user) if interaction.guild else discord.Permissions.none()
+    is_owner = await bot.is_owner(interaction.user)
+    embed = build_help_embed(author_perms, is_owner)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def _add_item_logic(interaction: discord.Interaction, items_str, test=False):
     prefix = "🧪 [TEST] " if test else ""
@@ -782,6 +817,20 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
         await asyncio.sleep(10)
         try: await interaction.channel.delete()
         except discord.HTTPException: pass
+
+@bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
+async def begin_slash(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used inside a server text channel.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    target_channel, created = await get_or_create_user_coupon_channel(interaction.guild, interaction.user)
+    
+    if created:
+        await interaction.followup.send(f"✅ Your private space has been initialized! Head over to {target_channel.mention} to start shopping.", ephemeral=True)
+    else:
+        await interaction.followup.send(f"👋 You already have an active session! Jump back into {target_channel.mention} to finish up.", ephemeral=True)
 
 @bot.tree.command(name="checkout", description="Finalize your trip balance splits, lock in metrics, and clear tracking arrays")
 async def checkout(interaction: discord.Interaction):
