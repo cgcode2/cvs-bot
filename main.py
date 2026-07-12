@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from typing import Literal
+import asyncio
 import itertools
 from flask import Flask
 from threading import Thread
@@ -701,12 +702,47 @@ async def _checkout_logic(ctx, session, test=False):
         value=f"**${savings_tracker['total_net_saved']:.2f}** across {savings_tracker['trip_count']} trip(s)",
         inline=False
     )
-    embed.set_footer(text="Run !savings for lifetime stats or !history to pull past trips. Cart has been cleared for your next trip.")
+    is_ticket = ctx.guild is not None and session_channels.get(str(ctx.author.id)) == ctx.channel.id
+    footer_note = "Run !savings for lifetime stats or !history to pull past trips."
+    footer_note += " Check your DMs for a copy of this receipt!"
+    if is_ticket:
+        footer_note += " This channel will auto-close in 10 seconds."
+    embed.set_footer(text=footer_note)
     await ctx.send(embed=embed)
 
     session["items"] = []
     session["coupons"] = []
     session["cart_message"] = None
+
+    # DM the user a copy of their final receipt
+    try:
+        item_str = "\n".join([f"• **{i['name']}**: ${i['price']:.2f}" for i in items]) or "No items."
+        coupon_str = ", ".join(coupon_label(c) for c in coupons) or "None"
+        dm_embed = discord.Embed(title="🧾 Your CVS Trip Receipt", color=0x2ecc71)
+        dm_embed.add_field(name="🗓️ Date", value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
+        dm_embed.add_field(name="🛒 Items Purchased", value=item_str, inline=False)
+        dm_embed.add_field(name="🎟️ Coupons Used", value=coupon_str, inline=False)
+        dm_embed.add_field(name="Full Price", value=f"${subtotal:.2f}", inline=True)
+        dm_embed.add_field(name="Paid at Register", value=f"${total_due:.2f}", inline=True)
+        dm_embed.add_field(name="Coupon Cost", value=f"${coupon_spend:.2f}", inline=True)
+        dm_embed.add_field(name="💰 Net Money Saved", value=f"## **${net_saved:.2f}**", inline=False)
+        dm_embed.set_footer(text="Thanks for shopping smart! Run !coupons anytime to start a new trip.")
+        await ctx.author.send(embed=dm_embed)
+    except discord.Forbidden:
+        await ctx.send(
+            f"⚠️ {ctx.author.mention} I couldn't DM you a receipt — please enable DMs from server members.",
+            delete_after=8
+        )
+
+    # Auto-close their private ticket channel, if checkout happened in it
+    if is_ticket:
+        session_channels.pop(str(ctx.author.id), None)
+        save_session_channels(session_channels)
+        await asyncio.sleep(10)
+        try:
+            await ctx.channel.delete(reason=f"Checkout complete for {ctx.author}")
+        except discord.HTTPException as e:
+            print(f"❌ Failed to auto-close ticket channel: {e}", file=sys.stderr)
 
 @bot.hybrid_command(name="checkout", description="Finalize your trip, log savings, and clear your cart")
 async def checkout(ctx):
