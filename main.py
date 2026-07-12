@@ -28,8 +28,7 @@ class CouponBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         
     async def setup_hook(self):
-        # Synchronizes tree commands across connected clusters natively
-        await self.tree.sync()
+        pass  # Syncing moved to on_ready for global server enforcement
 
 bot = CouponBot()
 
@@ -65,8 +64,6 @@ def is_staff_or_channel_manager():
     return commands.check(predicate)
 
 async def get_or_create_user_coupon_channel(guild, user):
-    """Returns the invoking user's private coupon-optimizer channel, creating it (visible only
-    to them, staff, and the bot) if it doesn't already exist."""
     existing_id = session_channels.get(str(user.id))
     if existing_id:
         channel = guild.get_channel(existing_id)
@@ -224,7 +221,15 @@ def calculate_best_bundles(items, coupons):
 
 @bot.event
 async def on_ready():
-    print(f'🤖 Coupon Calculator is officially online via Railway Backend!')
+    print(f'🤖 Coupon Calculator is logged into Railway!')
+    try:
+        # Force a hard sync directly to every server the bot is hiding inside
+        for guild in bot.guilds:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+        print(f'✅ Successfully loaded and synced slash commands into your servers!')
+    except Exception as e:
+        print(f'⚠️ Tree sync failed: {e}', file=sys.stderr)
 
 # --- THE PRIVATE GATEWAY COMMAND ---
 @bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
@@ -233,9 +238,7 @@ async def begin_slash(interaction: discord.Interaction):
         await interaction.response.send_message("❌ This command can only be used inside a server text channel.", ephemeral=True)
         return
 
-    # Acknowledge immediately to prevent a 3-second timeout window crash
     await interaction.response.defer(ephemeral=True)
-    
     target_channel, created = await get_or_create_user_coupon_channel(interaction.guild, interaction.user)
     
     if created:
