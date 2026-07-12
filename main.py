@@ -256,6 +256,7 @@ async def help_menu(ctx):
             mod_lines.append("`!roleadd [@member] [role name]` — give a member a role")
             mod_lines.append("`!roleremove [@member] [role name]` — take a role away")
         if author_perms.manage_channels:
+            mod_lines.append("`!createchannel [name] [public|private] [@role]` — create a channel\n*Example:* `!createchannel staff-chat private @Staff`")
             mod_lines.append("`!blockrole [role] [#channel]` — hide a channel from a role (defaults to current channel)")
             mod_lines.append("`!unblockrole [role] [#channel]` — undo a block, resetting to default access")
             mod_lines.append("`!whocansee [#channel]` — list members who can view a channel (defaults to current)")
@@ -767,6 +768,40 @@ async def role_remove(ctx, member: discord.Member, *, role_name: str):
         return
     await member.remove_roles(role, reason=f"Removed by {ctx.author}")
     await ctx.send(f"✅ Removed the `{role_name}` role from {member.mention}.", delete_after=6)
+
+@bot.command(name="createchannel")
+@commands.has_permissions(manage_channels=True)
+async def create_channel(ctx, name: str, visibility: str = "public", role: discord.Role = None):
+    await safely_delete_message(ctx)
+    visibility = visibility.lower()
+    if visibility not in ("public", "private"):
+        await ctx.send(
+            "❌ Visibility must be `public` or `private`.\n*Example:* `!createchannel my-channel private @Staff`",
+            delete_after=8
+        )
+        return
+
+    overwrites = {}
+    if visibility == "private":
+        overwrites[ctx.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+        overwrites[ctx.author] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+    try:
+        channel = await ctx.guild.create_text_channel(
+            name=name,
+            category=ctx.channel.category,
+            overwrites=overwrites or None,
+            reason=f"Created by {ctx.author}"
+        )
+    except discord.HTTPException as e:
+        await ctx.send(f"❌ Failed to create channel: {e}", delete_after=8)
+        return
+
+    vis_label = "🔒 Private" if visibility == "private" else "🌐 Public"
+    extra = f" (also visible to `{role.name}`)" if (visibility == "private" and role) else ""
+    await ctx.send(f"✅ Created {vis_label} channel {channel.mention}{extra}", delete_after=8)
 
 @bot.command(name="blockrole")
 @commands.has_permissions(manage_channels=True)
