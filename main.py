@@ -64,25 +64,21 @@ def is_staff_or_channel_manager():
         return discord.utils.get(ctx.author.roles, name=STAFF_ROLE_NAME) is not None
     return commands.check(predicate)
 
-async def get_or_create_user_coupon_channel(ctx):
+async def get_or_create_user_coupon_channel(guild, user):
     """Returns the invoking user's private coupon-optimizer channel, creating it (visible only
-    to them, staff, and the bot) if it doesn't already exist. Returns None outside a guild."""
-    guild = ctx.guild
-    if guild is None:
-        return None
-
-    existing_id = session_channels.get(str(ctx.author.id))
+    to them, staff, and the bot) if it doesn't already exist."""
+    existing_id = session_channels.get(str(user.id))
     if existing_id:
         channel = guild.get_channel(existing_id)
         if channel is not None:
-            return channel
+            return channel, False
 
-    safe_name = "".join(c for c in ctx.author.name.lower() if c.isalnum() or c in ("-", "_")) or str(ctx.author.id)
+    safe_name = "".join(c for c in user.name.lower() if c.isalnum() or c in ("-", "_")) or str(user.id)
     channel_name = f"coupons-{safe_name}"[:100]
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        ctx.author: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
+        user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True, manage_messages=True),
     }
     staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
@@ -90,22 +86,22 @@ async def get_or_create_user_coupon_channel(ctx):
         overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
 
     reference_channel = discord.utils.get(guild.text_channels, name="cvs-coupon-optimizer")
-    parent_category = reference_channel.category if reference_channel else ctx.channel.category
+    parent_category = reference_channel.category if reference_channel else guild.text_channels[0].category
 
     channel = await guild.create_text_channel(
         name=channel_name,
         category=parent_category,
         overwrites=overwrites,
-        reason=f"Private coupon optimizer channel for {ctx.author}"
+        reason=f"Private coupon optimizer channel for {user}"
     )
 
-    session_channels[str(ctx.author.id)] = channel.id
+    session_channels[str(user.id)] = channel.id
     save_session_channels(session_channels)
 
     welcome_embed = discord.Embed(
         title="🎯 Your Private Coupon Optimizer Channel",
         description=(
-            f"Hey {ctx.author.mention}! This is your own space to run the full coupon flow "
+            f"Hey {user.mention}! This is your own space to run the full coupon flow "
             "without cluttering the main chat. Only you"
             + (f" and the `{STAFF_ROLE_NAME}` role" if staff_role else "")
             + " can see this channel.\n\nRun `!help` (or `/help`) here anytime for the full command list."
@@ -113,7 +109,7 @@ async def get_or_create_user_coupon_channel(ctx):
         color=0xcc0000
     )
     await channel.send(embed=welcome_embed)
-    return channel
+    return channel, True
 
 COLOR_NAMES = {
     "red": 0xe74c3c, "dark red": 0x992d22, "orange": 0xe67e22, "yellow": 0xf1c40f,
@@ -230,6 +226,23 @@ def calculate_best_bundles(items, coupons):
 async def on_ready():
     print(f'🤖 Coupon Calculator is officially online via Railway Backend!')
 
+# --- THE PRIVATE GATEWAY COMMAND ---
+@bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
+async def begin_slash(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used inside a server text channel.", ephemeral=True)
+        return
+
+    # Acknowledge immediately to prevent a 3-second timeout window crash
+    await interaction.response.defer(ephemeral=True)
+    
+    target_channel, created = await get_or_create_user_coupon_channel(interaction.guild, interaction.user)
+    
+    if created:
+        await interaction.followup.send(f"✅ Your private space has been initialized! Head over to {target_channel.mention} to start shopping.", ephemeral=True)
+    else:
+        await interaction.followup.send(f"👋 You already have an active session! Jump back into {target_channel.mention} to finish up.", ephemeral=True)
+
 @bot.hybrid_command(name="setup", description="Create the private CVS coupon optimizer channel")
 @commands.is_owner()
 async def setup_channel(ctx):
@@ -252,7 +265,7 @@ async def setup_channel(ctx):
     new_channel = await guild.create_text_channel(channel_name, overwrites=overwrites)
     welcome_embed = discord.Embed(
         title="🎯 CVS Coupon Optimizer Room",
-        description="This is your secure, private command base for calculated shopping bundles! Type `!help` to see directions.",
+        description="This is your secure, private command base for calculated shopping bundles! Run `/begin` to get your personal workspace.",
         color=0xcc0000
     )
     await new_channel.send(welcome_embed)
@@ -278,6 +291,7 @@ def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> disco
         description="Follow this quick blueprint to maximize your coupon values and slash your out-of-pocket register total.", 
         color=0xcc0000
     )
+    embed.add_field(name="🚀 0. Launch Private Channel", value="`/begin`\n*Creates your personal private operations room right here on the server.*", inline=False)
     embed.add_field(name="🎟️ 1. Load Your Coupons", value="`!coupons [value1] [value2] ...`\n*Example:* `!coupons 8 8 5`", inline=False)
     embed.add_field(name="🛒 2. Add Cart Items", value="`!add [item_name] [price] ...`\n*Example:* `!add Fairlife 4.49 shampoo 6.59`", inline=False)
     embed.add_field(name="↩️ 3. Undo Last Add", value="`!undo`", inline=False)
@@ -439,14 +453,6 @@ HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
 
 async def _set_coupons_logic(ctx, session, args, test=False):
     await safely_delete_message(ctx)
-    
-    # PRIVATE ROOM GATEWAY ROUTING INTERCEPT:
-    # If run in a public room, create or open their private room and redirect everything automatically
-    if ctx.guild is not None and session_channels.get(str(ctx.author.id)) != ctx.channel.id:
-        target_channel = await get_or_create_user_coupon_channel(ctx)
-        if target_channel:
-            ctx.channel = target_channel # Redirect the active execution target seamlessly
-
     clear_cmd = "!testclear" if test else "!clear"
     try:
         new_coupons = []
