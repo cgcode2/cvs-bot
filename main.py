@@ -437,25 +437,55 @@ async def _optimize_logic(ctx, session, test=False):
     embed.add_field(name="📊 Final Register Total Due", value=f"## **${total_due:.2f}**", inline=False)
 
     if total_due > 0.0:
-        standard_coupons = [2.00, 3.00, 4.00, 5.00, 6.00, 7.00, 8.00, 10.00]
-        recommended_coupon = None
-        for cp in standard_coupons:
-            if cp >= total_due:
-                recommended_coupon = cp
+        # Each coupon is its own separate checkout, so a new coupon only helps the specific
+        # item(s) it gets applied to — not the aggregate remaining balance. Simulate actually
+        # buying each candidate coupon and re-optimizing the whole cart to see what really helps.
+        candidate_values = sorted(COUPON_COSTS.keys()) + ["half"]
+        working_coupons = list(coupons)
+        working_due = total_due
+        suggestions = []
+
+        for _ in range(3):  # suggest up to 3 additional coupons, greedily
+            best_candidate = None
+            best_net_benefit = 1e-9
+            best_trial = None
+            for cp in candidate_values:
+                trial_coupons = working_coupons + [cp]
+                trial_due, trial_bundling = calculate_best_bundles(items, trial_coupons)
+                register_savings = working_due - trial_due
+                net_benefit = register_savings - coupon_cost(cp)
+                if net_benefit > best_net_benefit:
+                    best_net_benefit = net_benefit
+                    best_candidate = cp
+                    best_trial = (trial_due, trial_bundling, register_savings)
+
+            if best_candidate is None:
                 break
-        if not recommended_coupon:
-            recommended_coupon = standard_coupons[-1]
-            
-        savings = min(total_due, recommended_coupon)
-        new_total = max(0.0, total_due - recommended_coupon)
-        
-        upgrade_text = (
-            f"💡 *You have a remaining balance of **${total_due:.2f}**.*\n"
-            f"➔ **Recommendation:** Pick up or buy an extra **${recommended_coupon:.0f}.00 Off** coupon.\n"
-            f"• This saves you an extra **${savings:.2f}** right now.\n"
-            f"• Your new register balance drops to **${new_total:.2f}**!"
-        )
-        embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=upgrade_text, inline=False)
+
+            trial_due, trial_bundling, register_savings = best_trial
+            new_group_idx = len(working_coupons)
+            covered_items = trial_bundling.get(new_group_idx, [])
+            covered_str = ", ".join(f"**{i['name']}** (${i['price']:.2f})" for i in covered_items) or "a rebalanced set of items"
+            suggestions.append(
+                f"➔ Buy a **{coupon_label(best_candidate)}** coupon (cost: ${coupon_cost(best_candidate):.2f}).\n"
+                f"• Use it on: {covered_str}\n"
+                f"• Register total drops to **${trial_due:.2f}** (saves ${register_savings:.2f}), "
+                f"net gain after coupon cost: **${best_net_benefit:.2f}**."
+            )
+            working_coupons.append(best_candidate)
+            working_due = trial_due
+
+        if suggestions:
+            upgrade_text = f"💡 *You have a remaining balance of **${total_due:.2f}**.*\n\n" + "\n\n".join(
+                f"**Step {i+1}:**\n{s}" for i, s in enumerate(suggestions)
+            )
+            embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=upgrade_text, inline=False)
+        else:
+            embed.add_field(
+                name="✨ Smart Coupon Upgrade Advice",
+                value=f"💡 No coupon purchase would pay for itself right now — buying one would cost more than it saves on your **${total_due:.2f}** balance.",
+                inline=False
+            )
 
     await ctx.send(embed=embed)
     return total_due, bundling
