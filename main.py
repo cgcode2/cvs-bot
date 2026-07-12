@@ -16,6 +16,7 @@ import asyncio
 import itertools
 import os
 import json
+import traceback  # NEW: Native traceback formatting diagnostic engine
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -29,7 +30,8 @@ class CouponBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         
     async def setup_hook(self):
-        pass  # Server tree syncing handled within on_ready
+        # Attach the global self-diagnostic handler directly to the tree on instantiation
+        self.tree.on_error = on_app_command_error
 
 bot = CouponBot()
 
@@ -70,7 +72,6 @@ def save_json_file_sync(filepath, data):
 async def update_channel_session(channel_id, update_func, is_test=False):
     """Executes a thread-safe atomic read-modify-write database transaction."""
     async with db_lock:
-        # 1. Read fresh data directly from disk while blocking all other processes
         if os.path.exists(CARTS_FILE):
             try:
                 with open(CARTS_FILE, "r") as f:
@@ -94,12 +95,10 @@ async def update_channel_session(channel_id, update_func, is_test=False):
                 "audit_log": []
             }
 
-        # 2. Pass data block directly to mutating handler logic loops safely
         session_data = carts_db[ch_key]
         updated_session = await update_func(session_data)
         carts_db[ch_key] = updated_session
 
-        # 3. Write atomic records straight back to persistent drive blocks before releasing lock
         try:
             os.makedirs(os.path.dirname(CARTS_FILE) or ".", exist_ok=True)
             with open(CARTS_FILE, "w") as f:
@@ -150,6 +149,53 @@ async def log_action(channel_id, command_name, input_details, output_summary, is
         return session
     await update_channel_session(channel_id, _logger, is_test=is_test)
 
+# GLOBAL SELF-DIAGNOSTIC TELEMETRY LOGGER PIPELINE
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Listens globally across the tree to capture, print, and DM line trace details of failures."""
+    # Unpack core exception trigger structures
+    if hasattr(error, "original"):
+        error = error.original
+
+    # Format the explicit python stack trace back to trace line outputs
+    trace_str = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    print(f"🚨 Telemetry Bug Caught:\n{trace_str}", file=sys.stderr)
+
+    # Respond to the user inside the channel gracefully
+    error_embed = discord.Embed(
+        title="⚠️ System Telemetry Notice",
+        description="An unexpected exception occurred while executing this command. The telemetry log has been compiled and routed to the administrator.",
+        color=0xe74c3c
+    )
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+    except Exception:
+        pass
+
+    # Route a private raw traceback string block straight to your owner account DMs
+    try:
+        app_info = await bot.application_info()
+        owner = app_info.owner
+        
+        # Breakdown arguments input structures safely
+        options = interaction.data.get("options", []) if interaction.data else []
+        arg_summary = ", ".join([f"{opt.get('name')}: {opt.get('value')}" for opt in options]) or "None"
+        
+        dm_embed = discord.Embed(title="⚙️ Bug Telemetry Report", color=0xe74c3c, timestamp=datetime.now(NY_TZ))
+        dm_embed.add_field(name="Failed Command", value=f"`/{interaction.command.name if interaction.command else 'Unknown'}`", inline=True)
+        dm_embed.add_field(name="User Inputs", value=f"`{arg_summary}`", inline=True)
+        dm_embed.add_field(name="Execution Location", value=f"Channel ID: `{interaction.channel_id}`", inline=False)
+        
+        # Slice string arrays to stay inside Discord text container limits (2000 chars)
+        sliced_trace = trace_str[:1500]
+        
+        await owner.send(embed=dm_embed)
+        await owner.send(f"📋 **Python Traceback Log Output:**\n```py\n{sliced_trace}\n```")
+    except Exception as e:
+        print(f"❌ Failed forwarding diagnostics DM: {e}", file=sys.stderr)
+
 async def get_or_create_user_coupon_channel(guild, user):
     existing_id = session_channels.get(str(user.id))
     if existing_id:
@@ -180,7 +226,6 @@ async def get_or_create_user_coupon_channel(guild, user):
     )
 
     session_channels[str(user.id)] = channel.id
-    # session_channels updates remain straightforward sync configs
     try:
         with open(SESSION_CHANNELS_FILE, "w") as f:
             json.dump(session_channels, f, indent=2)
@@ -950,11 +995,7 @@ async def ticket_close(interaction: discord.Interaction):
     owner_id = next((uid for uid, cid in session_channels.items() if cid == interaction.channel.id), None)
     if owner_id:
         session_channels.pop(owner_id, None)
-        try:
-            with open(SESSION_CHANNELS_FILE, "w") as f:
-                json.dump(session_channels, f, indent=2)
-        except Exception:
-            pass
+        await save_json_file(SESSION_CHANNELS_FILE, session_channels)
     await interaction.response.send_message(f"🔒 Ticket closed. Deleting channel in 5 seconds...")
     await asyncio.sleep(5)
     try: await interaction.channel.delete()
