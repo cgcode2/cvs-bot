@@ -388,17 +388,23 @@ HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
 async def _set_coupons_logic(ctx, session, args, test=False):
     await safely_delete_message(ctx)
     cmd = "!testcoupons" if test else "!coupons"
+    clear_cmd = "!testclear" if test else "!clear"
     try:
-        coupons = []
+        new_coupons = []
         for x in args:
             if x.strip().lower() in HALF_OFF_ALIASES:
-                coupons.append("half")
+                new_coupons.append("half")
             else:
-                coupons.append(float(x))
-        coupons.sort(key=lambda c: -1 if c == "half" else c, reverse=True)
-        session["coupons"] = coupons
+                new_coupons.append(float(x))
+        session["coupons"].extend(new_coupons)
+        session["coupons"].sort(key=lambda c: -1 if c == "half" else c, reverse=True)
         prefix = "🧪 [TEST] " if test else ""
-        await ctx.send(f"{prefix}✅ Loaded Coupons: " + ", ".join([coupon_label(c) for c in coupons]))
+        added_str = ", ".join([coupon_label(c) for c in new_coupons])
+        all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
+        await ctx.send(
+            f"{prefix}✅ Added: {added_str}\n🎟️ All Loaded Coupons: {all_str}\n"
+            f"*(Run `{clear_cmd}` to wipe coupons/cart and start fresh.)*"
+        )
     except ValueError:
         await ctx.send(f"❌ Format error. Example: `{cmd} 8 8 5 half`")
 
