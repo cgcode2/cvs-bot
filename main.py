@@ -5,6 +5,7 @@ from flask import Flask
 from threading import Thread
 import os
 import sys
+import json
 
 # 1. BACKGROUND WEB SERVER
 app = Flask('')
@@ -36,6 +37,62 @@ COLOR_NAMES = {
     "blurple": 0x5865f2, "fuchsia": 0xff00ff, "indigo": 0x4b0082, "maroon": 0x800000,
 }
 
+# 3. COUPON COST TABLE & SAVINGS TRACKER
+# Real-money cost (in coins, 1 coin = 1 USD) to acquire each coupon.
+COUPON_COSTS = {
+    2.00: 0.10,
+    3.00: 0.20,
+    4.00: 0.35,
+    5.00: 0.50,
+    6.00: 0.65,
+    7.00: 0.80,
+    8.00: 1.00,
+    9.00: 1.15,
+    10.00: 1.30,
+    11.00: 1.50,
+    12.00: 1.75,
+}
+HALF_OFF_COST = 0.01  # "50% off one item" coupon
+
+SAVINGS_FILE = "savings_data.json"
+DEFAULT_SAVINGS = {
+    "trip_count": 0,
+    "total_full_price": 0.0,
+    "total_paid": 0.0,
+    "total_coupon_cost": 0.0,
+    "total_net_saved": 0.0,
+}
+
+def load_savings():
+    if os.path.exists(SAVINGS_FILE):
+        try:
+            with open(SAVINGS_FILE, "r") as f:
+                data = json.load(f)
+            merged = DEFAULT_SAVINGS.copy()
+            merged.update(data)
+            return merged
+        except Exception as e:
+            print(f"⚠️ Failed to load savings data, starting fresh. Details: {e}", file=sys.stderr)
+    return DEFAULT_SAVINGS.copy()
+
+def save_savings(data):
+    try:
+        with open(SAVINGS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"❌ Failed to save savings data! Details: {e}", file=sys.stderr)
+
+savings_tracker = load_savings()
+
+def coupon_cost(coupon_val):
+    """Looks up the real-money cost of a coupon. Handles both dollar-off-entire and the 'half' type."""
+    if coupon_val == "half":
+        return HALF_OFF_COST
+    return COUPON_COSTS.get(round(coupon_val, 2), 0.0)
+
+def coupon_label(coupon_val):
+    return "50% Off One Item" if coupon_val == "half" else f"${coupon_val:.2f} Off"
+
 def resolve_color(color_input):
     """Resolves a color from a plain color name (e.g. 'red') or a hex code (e.g. '#ff0000')."""
     if not color_input:
@@ -64,6 +121,15 @@ async def safely_delete_message(ctx):
     except Exception as e:
         print(f"❌ Deletion Failed! Error Type: {type(e).__name__} | Details: {e}", file=sys.stderr)
 
+def group_due(group_items, coupon_val):
+    """Computes what's owed for a group of items under a given coupon (dollar-off-entire or 'half')."""
+    if not group_items:
+        return 0.0
+    group_sum = sum(item['price'] for item in group_items)
+    if coupon_val == "half":
+        return group_sum - 0.5 * max(item['price'] for item in group_items)
+    return max(0.0, group_sum - coupon_val)
+
 def calculate_best_bundles(items, coupons):
     num_groups = len(coupons)
     if num_groups == 0: 
@@ -78,9 +144,8 @@ def calculate_best_bundles(items, coupons):
         
         current_total_due = 0
         for group_idx, group_items in groups.items():
-            group_sum = sum(item['price'] for item in group_items)
             coupon_val = coupons[group_idx]
-            current_total_due += max(0.0, group_sum - coupon_val)
+            current_total_due += group_due(group_items, coupon_val)
 
         if current_total_due < best_total_due:
             best_total_due = current_total_due
@@ -154,9 +219,11 @@ async def help_menu(ctx):
     embed.add_field(name="❌ 4. Remove Cart Items", value="`!remove [item_name]`\n*Example:* `!remove Fairlife`", inline=False)
     embed.add_field(name="👀 5. View Cart", value="`!cart`", inline=False)
     embed.add_field(name="📊 6. Calculate Strategy", value="`!optimize`", inline=False)
-    embed.add_field(name="🧹 7. Clear Session", value="`!clear`", inline=False)
-    embed.add_field(name="🏓 8. Bot Status", value="`!ping`", inline=False)
-    embed.add_field(name="ℹ️ 9. About This Bot", value="`!about`", inline=False)
+    embed.add_field(name="✅ 7. Check Out & Track Savings", value="`!checkout`\n*Locks in the trip, logs your net savings, and clears the cart.*", inline=False)
+    embed.add_field(name="💰 8. View Lifetime Savings", value="`!savings`", inline=False)
+    embed.add_field(name="🧹 9. Clear Session (no tracking)", value="`!clear`", inline=False)
+    embed.add_field(name="🏓 10. Bot Status", value="`!ping`", inline=False)
+    embed.add_field(name="ℹ️ 11. About This Bot", value="`!about`", inline=False)
 
     # Moderator-only commands: only visible to members with Manage Messages
     author_perms = ctx.channel.permissions_for(ctx.author)
@@ -245,7 +312,7 @@ async def view_cart(ctx):
     embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
     item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
     subtotal = sum(item['price'] for item in current_session["items"])
-    coupon_str = ", ".join([f"${c:.2f}" for c in current_session["coupons"]]) or "None loaded yet."
+    coupon_str = ", ".join([coupon_label(c) for c in current_session["coupons"]]) or "None loaded yet."
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=False)
     embed.add_field(name="🎟️ Loaded Coupons", value=coupon_str, inline=False)
@@ -271,15 +338,23 @@ async def remove_item(ctx, item_name: str):
     else:
         await ctx.send(f"⚠️ Could not find an item named '**{item_name}**' inside your current cart.", delete_after=5)
 
+HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
+
 @bot.command(name="coupons")
 async def set_coupons(ctx, *args):
     await safely_delete_message(ctx)
     try:
-        coupons = sorted([float(x) for x in args], reverse=True)
+        coupons = []
+        for x in args:
+            if x.strip().lower() in HALF_OFF_ALIASES:
+                coupons.append("half")
+            else:
+                coupons.append(float(x))
+        coupons.sort(key=lambda c: -1 if c == "half" else c, reverse=True)
         current_session["coupons"] = coupons
-        await ctx.send(f"✅ Loaded Coupons: " + ", ".join([f"${c:.2f}" for c in coupons]))
+        await ctx.send(f"✅ Loaded Coupons: " + ", ".join([coupon_label(c) for c in coupons]))
     except ValueError:
-        await ctx.send("❌ Format error. Example: `!coupons 8 8 5`")
+        await ctx.send("❌ Format error. Example: `!coupons 8 8 5 half`")
 
 @bot.command(name="optimize")
 async def optimize_cart(ctx):
@@ -298,9 +373,9 @@ async def optimize_cart(ctx):
         if group_items:
             item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
             subtotal = sum(item['price'] for item in group_items)
-            due = max(0.0, subtotal - coupon_val)
+            due = group_due(group_items, coupon_val)
             embed.add_field(
-                name=f"Transaction {idx+1}: Use ${coupon_val:.2f} Coupon",
+                name=f"Transaction {idx+1}: Use {coupon_label(coupon_val)} Coupon",
                 value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
                 inline=False
             )
@@ -337,6 +412,66 @@ async def clear_cart(ctx):
     current_session["coupons"] = []
     current_session["cart_message"] = None
     await ctx.send("🧹 Cart and coupons cleared!")
+
+@bot.command(name="checkout")
+async def checkout(ctx):
+    await safely_delete_message(ctx)
+    items = current_session["items"]
+    coupons = current_session["coupons"]
+    if not items:
+        await ctx.send("❌ Your cart is empty — nothing to check out!", delete_after=5)
+        return
+
+    subtotal = sum(item['price'] for item in items)
+    total_due, _ = calculate_best_bundles(items, coupons)
+    coupon_spend = sum(coupon_cost(c) for c in coupons)
+    gross_saved = subtotal - total_due
+    net_saved = gross_saved - coupon_spend
+
+    savings_tracker["trip_count"] += 1
+    savings_tracker["total_full_price"] += subtotal
+    savings_tracker["total_paid"] += total_due
+    savings_tracker["total_coupon_cost"] += coupon_spend
+    savings_tracker["total_net_saved"] += net_saved
+    save_savings(savings_tracker)
+
+    embed = discord.Embed(title="✅ Trip Checked Out!", color=0x2ecc71)
+    embed.add_field(name="Full Price (No Coupons)", value=f"${subtotal:.2f}", inline=True)
+    embed.add_field(name="Register Total Paid", value=f"${total_due:.2f}", inline=True)
+    embed.add_field(name="Spent on Coupons", value=f"${coupon_spend:.2f}", inline=True)
+    embed.add_field(
+        name="💰 Net Money Saved This Trip",
+        value=f"## **${net_saved:.2f}**",
+        inline=False
+    )
+    embed.add_field(
+        name="📈 Lifetime Total Saved",
+        value=f"**${savings_tracker['total_net_saved']:.2f}** across {savings_tracker['trip_count']} trip(s)",
+        inline=False
+    )
+    embed.set_footer(text="Run !savings anytime to check your lifetime stats. Cart has been cleared for your next trip.")
+    await ctx.send(embed=embed)
+
+    current_session["items"] = []
+    current_session["coupons"] = []
+    current_session["cart_message"] = None
+
+@bot.command(name="savings")
+async def view_savings(ctx):
+    await safely_delete_message(ctx)
+    s = savings_tracker
+    embed = discord.Embed(title="💰 Lifetime Savings Tracker", color=0x2ecc71)
+    if s["trip_count"] == 0:
+        embed.description = "No trips checked out yet. Run `!checkout` after `!optimize` to start tracking your savings!"
+    else:
+        avg_saved = s["total_net_saved"] / s["trip_count"]
+        embed.add_field(name="🧾 Trips Checked Out", value=str(s["trip_count"]), inline=True)
+        embed.add_field(name="🏷️ Total Full Price", value=f"${s['total_full_price']:.2f}", inline=True)
+        embed.add_field(name="💵 Total Actually Paid", value=f"${s['total_paid']:.2f}", inline=True)
+        embed.add_field(name="🎟️ Total Spent on Coupons", value=f"${s['total_coupon_cost']:.2f}", inline=True)
+        embed.add_field(name="📊 Avg Net Saved / Trip", value=f"${avg_saved:.2f}", inline=True)
+        embed.add_field(name="💰 Lifetime Net Money Saved", value=f"## **${s['total_net_saved']:.2f}**", inline=False)
+    await ctx.send(embed=embed)
 
 @bot.command(name="nuke")
 @commands.has_permissions(manage_messages=True)
