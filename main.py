@@ -155,7 +155,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     if hasattr(error, "original"):
         error = error.original
 
-    # Gracefully ignore normal Discord client timeouts from creating log files
     if isinstance(error, discord.errors.NotFound) and "Unknown interaction" in str(error):
         print("⚠️ Suppressed an interaction lifespans race delay.", file=sys.stderr)
         return
@@ -163,7 +162,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     trace_str = "".join(traceback.format_exception(type(error), error, error.__traceback__))
     print(f"🚨 Bug Suppressed and Cached to Vault:\n{trace_str}", file=sys.stderr)
 
-    # Let the user know an error occurred without posting massive code blocks in the room
     error_embed = discord.Embed(
         title="⚠️ System Telemetry Notice",
         description="An unexpected exception occurred while executing this command. The telemetry log has been compiled and cached silently to the database storage vaults.",
@@ -177,7 +175,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     except Exception:
         pass
 
-    # Save the exception data block silently into our isolated vault file under strict locks
     async with vault_lock:
         try:
             if os.path.exists(BUG_VAULT_FILE):
@@ -355,6 +352,42 @@ async def on_ready():
 
 # --- OWNER ONLY DIAGNOSTIC OPERATIONS COMMANDS ---
 
+@bot.tree.command(name="run-stress-test", description="Emergency Suite: Automatically injects mock items and coupons under full database transaction loads")
+async def run_stress_test(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    
+    # 1. Atomic clear transaction
+    async def _test_clear(s):
+        s["items"] = []
+        s["coupons"] = []
+        s["cart_message"] = None
+        s["last_optimization"] = None
+        return s
+    await update_channel_session(interaction.channel.id, _test_clear, is_test=True)
+
+    # 2. Atomic mock add transaction (shampoo 6.59 soap 2.99 milk 4.49 cookies 5.00)
+    async def _test_add(s):
+        mock_items = [("shampoo", 6.59), ("soap", 2.99), ("milk", 4.49), ("cookies", 5.00)]
+        for name, price in mock_items:
+            s["items"].append({"name": name, "price": price})
+        return s
+    await update_channel_session(interaction.channel.id, _test_add, is_test=True)
+
+    # 3. Atomic mock coupons transaction (8.00 5.00 half)
+    async def _test_coupons(s):
+        s["coupons"].extend([8.00, 5.00, "half"])
+        s["coupons"].sort(key=lambda c: -1 if c == "half" else c, reverse=True)
+        return s
+    await update_channel_session(interaction.channel.id, _test_coupons, is_test=True)
+
+    # 4. Fire optimization sequence pipeline immediately to trigger layout displays
+    await interaction.followup.send("🧪 **Stress Test Orchestrated!** Mock cart injected. Computing allocation models...", ephemeral=True)
+    await _optimize_logic(interaction, test=True)
+
 @bot.tree.command(name="export-bug-logs", description="Admin Tool: Packages all silent exceptions since your last check and flushes the vault disk cache")
 async def export_bug_logs(interaction: discord.Interaction):
     if not await bot.is_owner(interaction.user):
@@ -378,19 +411,17 @@ async def export_bug_logs(interaction: discord.Interaction):
             await interaction.followup.send("📭 The vault is empty! No system bugs have been logged since your last flush.", ephemeral=True)
             return
 
-        # Write clean data out to a downloadable format block
         filename = "compiled_bug_telemetry.json"
         with open(filename, "w") as f:
             json.dump(vault_data, f, indent=2)
 
-        # CRITICAL FLUSH STEP: Completely clear the disk cache file out for clean slate metrics
         try:
             os.remove(BUG_VAULT_FILE)
         except Exception:
             pass
 
     await interaction.followup.send(
-        "📦 **Vault Compilation Successful!** Download this diagnostic trace file and give it directly to me to patch the errors:",
+        "📦 **Vault Compilation Successful!**",
         file=discord.File(filename),
         ephemeral=True
     )
@@ -555,53 +586,19 @@ async def permit_user(interaction: discord.Interaction, member: discord.Member):
 
 # --- CORE USER SLASH COMMANDS ENGINE ---
 
-def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> discord.Embed:
-    embed = discord.Embed(
-        title="📖 CVS Coupon Calculator — Help Menu", 
-        description="Follow this quick blueprint to maximize your coupon values and slash your out-of-pocket register total.", 
-        color=0xcc0000
-    )
-    embed.add_field(name="🚀 0. Launch Workspace", value="`/begin`\n*Creates your personal private operations room right here on the server.*", inline=False)
-    embed.add_field(name="🎟️ 1. Load Your Coupons", value="`/coupons [values separated by spaces]`\n*Example:* `/coupons values:8 8 5`", inline=False)
-    embed.add_field(name="🛒 2. Add Cart Items", value="`/add [item_name_and_prices]`\n*Example:* `/add items:Fairlife 4.49 shampoo 6.59`", inline=False)
-    embed.add_field(name="↩️ 3. Undo Last Add", value="`/undo`", inline=False)
-    embed.add_field(name="❌ 4. Remove Cart Items", value="`/remove [item_name]`\n*Example:* `/remove item_name:Fairlife`", inline=False)
-    embed.add_field(name="👀 5. View Cart", value="`/cart`", inline=False)
-    embed.add_field(name="📊 6. Calculate Strategy", value="`/optimize`", inline=False)
-    embed.add_field(name="✅ 7. Check Out & Track Savings", value="`/checkout`\n*Locks in the trip, logs your net savings, and clears the cart.*", inline=False)
-    embed.add_field(name="💰 8. View Lifetime Savings", value="`/savings`", inline=False)
-    embed.add_field(name="📜 8b. Pull Trip History", value="`/history` (last 10 trips)\n`/history start:2026-07-01` (one day)\n`/history start:2026-07-01 end:2026-07-12` (range)", inline=False)
-    embed.add_field(name="🧹 9. Clear Session (no tracking)", value="`/clear`", inline=False)
-    embed.add_field(name="🏓 10. Bot Status", value="`/ping`", inline=False)
-    embed.add_field(name="ℹ️ 11. About This Bot", value="`/about`", inline=False)
-    embed.add_field(name="🧪 12. Test Mode", value="Same flow, prefixed with `test`: `/testcoupons`, `/testadd`, `/testundo`, `/testremove`, `/testcart`, `/testoptimize`, `/testcheckout`, `/testclear`.", inline=False)
+@bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
+async def begin_slash(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used inside a server text channel.", ephemeral=True)
+        return
 
-    if author_perms.manage_messages or author_perms.manage_roles or is_owner:
-        mod_lines = []
-        if author_perms.manage_messages or is_owner: mod_lines.append("`/nuke [amount]` — bulk delete messages")
-        if author_perms.manage_channels or is_owner: mod_lines.append("`/ticket-close` — close active optimizer ticket channels")
-        if author_perms.manage_roles or is_owner: 
-            mod_lines.append("`/createrole [name] [color]` — create a new role")
-            mod_lines.append("`/deleterole [name]` — remove a role")
-            mod_lines.append("`/roleadd [@member] [name]` — give a role")
-            mod_lines.append("`/roleremove [@member] [name]` — take a role")
-        if author_perms.manage_channels or is_owner:
-            mod_lines.append("`/createchannel [name] [visibility]` — spawn new channel")
-            mod_lines.append("`/blockrole [role]` — hide a channel from a role")
-            mod_lines.append("`/unblockrole [role]` — restore access configuration templates")
-            mod_lines.append("`/whocansee` — view channel visibility audits")
-        if is_owner:
-            mod_lines.append("`/setup` — initialize private gateway core channel")
-            mod_lines.append("`/permit [@member]` — whitelist member access paths")
-            mod_lines.append("`/export-history` — secure trip tracker manual ledger output")
-            mod_lines.append("`/import-history [payload]` — emergency state recovery restoration string engine")
-            mod_lines.append("`/export-session-logs [mode]` — dump transaction track audit metrics logs")
-            mod_lines.append("`/delete-last-trip` — erase mistake checkouts and rebalance statistics")
-            mod_lines.append("`/export-bug-logs` — download and flush silent exception vault cache files")
-        embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
-
-    embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
-    return embed
+    await interaction.response.defer(ephemeral=True)
+    target_channel, created = await get_or_create_user_coupon_channel(interaction.guild, interaction.user)
+    
+    if created:
+        await interaction.followup.send(f"✅ Your private space has been initialized! Head over to {target_channel.mention} to start shopping.", ephemeral=True)
+    else:
+        await interaction.followup.send(f"👋 You already have an active session! Jump back into {target_channel.mention} to finish up.", ephemeral=True)
 
 async def _add_item_logic(interaction: discord.Interaction, items_str, test=False):
     prefix = "🧪 [TEST] " if test else ""
@@ -787,7 +784,10 @@ async def _optimize_logic(interaction: discord.Interaction, test=False):
         await interaction.response.send_message("❌ Your cart is empty!", ephemeral=True)
         return
 
-    await interaction.response.defer()
+    # Check to maintain followup continuity maps across automated stress loops
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+        
     total_due, bundling = await asyncio.to_thread(calculate_best_bundles, items, coupons)
     
     async def _optimize_saver(s):
@@ -1111,11 +1111,7 @@ async def ticket_close(interaction: discord.Interaction):
     owner_id = next((uid for uid, cid in session_channels.items() if cid == interaction.channel.id), None)
     if owner_id:
         session_channels.pop(owner_id, None)
-        try:
-            with open(SESSION_CHANNELS_FILE, "w") as f:
-                json.dump(session_channels, f, indent=2)
-        except Exception:
-            pass
+        await save_json_file(SESSION_CHANNELS_FILE, session_channels)
     await interaction.response.send_message(f"🔒 Ticket closed. Deleting channel in 5 seconds...")
     await asyncio.sleep(5)
     try: await interaction.channel.delete()
