@@ -28,7 +28,7 @@ class CouponBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         
     async def setup_hook(self):
-        pass  # Global sync handled cleanly within on_ready
+        pass  # Regulated server syncing offloaded straight to on_ready
 
 bot = CouponBot()
 
@@ -223,25 +223,14 @@ def calculate_best_bundles(items, coupons):
 async def on_ready():
     print(f'🤖 Coupon Calculator is logged into Railway!')
     try:
-        # 1. Clear out ALL stuck global commands completely
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync(guild=None)
-        
-        # 2. Clear out ALL stuck server-specific commands on every connected server
+        # Direct server injection to completely bypass the 1-hour global rollout queue
         for guild in bot.guilds:
-            bot.tree.clear_commands(guild=guild)
+            bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
-        
-        print(f'🧼 All duplicate registries successfully wiped clean!')
-
-        # 3. NOW, register the clean commands globally only
-        # This keeps exactly ONE copy in the system
-        await bot.tree.sync()
-        
-        print(f'✅ Pristine single-copy commands successfully deployed!')
+        print(f'⚡ Direct server command injection successful!')
     except Exception as e:
-        print(f'⚠️ Tree sync failed: {e}', file=sys.stderr)
-        
+        print(f'⚠️ Direct sync failed: {e}', file=sys.stderr)
+
 # --- THE PRIVATE GATEWAY COMMAND ---
 @bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
 async def begin_slash(interaction: discord.Interaction):
