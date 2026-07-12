@@ -26,6 +26,7 @@ intents.members = True  # Required for !whocansee to list guild members
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 current_session = {"items": [], "coupons": [], "cart_message": None}
+test_session = {"items": [], "coupons": [], "cart_message": None}
 
 COLOR_NAMES = {
     "red": 0xe74c3c, "dark red": 0x992d22, "orange": 0xe67e22, "yellow": 0xf1c40f,
@@ -105,15 +106,17 @@ def resolve_color(color_input):
     except ValueError:
         return None
 
-async def send_cart_embed(ctx, embed):
+async def send_cart_embed(ctx, embed, session=None):
     """Sends the cart embed, deleting the previous one so only one is ever visible."""
-    old_message = current_session.get("cart_message")
+    if session is None:
+        session = current_session
+    old_message = session.get("cart_message")
     if old_message is not None:
         try:
             await old_message.delete()
         except Exception as e:
             print(f"❌ Old cart embed deletion failed! Error Type: {type(e).__name__} | Details: {e}", file=sys.stderr)
-    current_session["cart_message"] = await ctx.send(embed=embed)
+    session["cart_message"] = await ctx.send(embed=embed)
 
 async def safely_delete_message(ctx):
     try:
@@ -224,6 +227,15 @@ async def help_menu(ctx):
     embed.add_field(name="🧹 9. Clear Session (no tracking)", value="`!clear`", inline=False)
     embed.add_field(name="🏓 10. Bot Status", value="`!ping`", inline=False)
     embed.add_field(name="ℹ️ 11. About This Bot", value="`!about`", inline=False)
+    embed.add_field(
+        name="🧪 12. Test Mode (no savings tracking)",
+        value=(
+            "Same flow, prefixed with `test`: `!testcoupons`, `!testadd`, `!testundo`, `!testremove`, "
+            "`!testcart`, `!testoptimize`, `!testcheckout`, `!testclear`.\n"
+            "*Uses a completely separate cart — your real cart and lifetime savings are untouched.*"
+        ),
+        inline=False
+    )
 
     # Moderator-only commands: only visible to members with Manage Messages
     author_perms = ctx.channel.permissions_for(ctx.author)
@@ -257,13 +269,14 @@ async def help_menu(ctx):
     embed.set_footer(text="Tip: Keep item names to a single word for best formatting.")
     await ctx.send(embed=embed)
 
-@bot.command(name="add")
-async def add_item(ctx, *args):
+async def _add_item_logic(ctx, session, args, test=False):
     await safely_delete_message(ctx)
+    prefix = "🧪 [TEST] " if test else ""
+    cmd = "!testadd" if test else "!add"
 
     if len(args) == 0 or len(args) % 2 != 0:
         await ctx.send(
-            "❌ Format error. Provide item/price pairs.\n*Example:* `!add shampoo 6.59 soap 2.99 gum 1.29`",
+            f"❌ Format error. Provide item/price pairs.\n*Example:* `{cmd} shampoo 6.59 soap 2.99 gum 1.29`",
             delete_after=8
         )
         return
@@ -273,76 +286,108 @@ async def add_item(ctx, *args):
         for i in range(0, len(args), 2):
             item_name = args[i]
             price = float(args[i + 1])
-            current_session["items"].append({"name": item_name, "price": price})
+            session["items"].append({"name": item_name, "price": price})
             added.append(item_name)
     except ValueError:
         await ctx.send(
-            "❌ Format error. Each item must be followed by a numeric price.\n*Example:* `!add shampoo 6.59 soap 2.99`",
+            f"❌ Format error. Each item must be followed by a numeric price.\n*Example:* `{cmd} shampoo 6.59 soap 2.99`",
             delete_after=8
         )
         return
 
-    embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
-    subtotal = sum(item['price'] for item in current_session["items"])
+    embed = discord.Embed(title=f"{prefix}🛒 CVS Shopping Cart", color=0x9b59b6 if test else 0xcc0000)
+    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
+    subtotal = sum(item['price'] for item in session["items"])
     embed.add_field(name=f"Added: {', '.join(added)}", value="\u200b", inline=False)
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
-    await send_cart_embed(ctx, embed)
+    await send_cart_embed(ctx, embed, session)
 
-@bot.command(name="undo")
-async def undo_item(ctx):
+@bot.command(name="add")
+async def add_item(ctx, *args):
+    await _add_item_logic(ctx, current_session, args, test=False)
+
+@bot.command(name="testadd")
+async def test_add_item(ctx, *args):
+    await _add_item_logic(ctx, test_session, args, test=True)
+
+async def _undo_item_logic(ctx, session, test=False):
     await safely_delete_message(ctx)
-    if not current_session["items"]:
+    prefix = "🧪 [TEST] " if test else ""
+    if not session["items"]:
         await ctx.send("❌ Nothing to undo — your cart is empty!", delete_after=5)
         return
 
-    removed_item = current_session["items"].pop()
-    embed = discord.Embed(title="↩️ Last Item Undone", color=0xe67e22)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
-    subtotal = sum(item['price'] for item in current_session["items"])
+    removed_item = session["items"].pop()
+    embed = discord.Embed(title=f"{prefix}↩️ Last Item Undone", color=0xe67e22)
+    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
+    subtotal = sum(item['price'] for item in session["items"])
     embed.add_field(name=f"Removed: {removed_item['name']} (${removed_item['price']:.2f})", value="\u200b", inline=False)
     embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
     embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
-    await send_cart_embed(ctx, embed)
+    await send_cart_embed(ctx, embed, session)
 
-@bot.command(name="cart")
-async def view_cart(ctx):
+@bot.command(name="undo")
+async def undo_item(ctx):
+    await _undo_item_logic(ctx, current_session, test=False)
+
+@bot.command(name="testundo")
+async def test_undo_item(ctx):
+    await _undo_item_logic(ctx, test_session, test=True)
+
+async def _view_cart_logic(ctx, session, test=False):
     await safely_delete_message(ctx)
-    embed = discord.Embed(title="🛒 CVS Shopping Cart", color=0xcc0000)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
-    subtotal = sum(item['price'] for item in current_session["items"])
-    coupon_str = ", ".join([coupon_label(c) for c in current_session["coupons"]]) or "None loaded yet."
+    prefix = "🧪 [TEST] " if test else ""
+    embed = discord.Embed(title=f"{prefix}🛒 CVS Shopping Cart", color=0x9b59b6 if test else 0xcc0000)
+    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
+    subtotal = sum(item['price'] for item in session["items"])
+    coupon_str = ", ".join([coupon_label(c) for c in session["coupons"]]) or "None loaded yet."
     embed.add_field(name="Scanned Items", value=item_str or "No items added yet.", inline=False)
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=False)
     embed.add_field(name="🎟️ Loaded Coupons", value=coupon_str, inline=False)
-    await send_cart_embed(ctx, embed)
+    await send_cart_embed(ctx, embed, session)
 
-@bot.command(name="remove")
-async def remove_item(ctx, item_name: str):
+@bot.command(name="cart")
+async def view_cart(ctx):
+    await _view_cart_logic(ctx, current_session, test=False)
+
+@bot.command(name="testcart")
+async def test_view_cart(ctx):
+    await _view_cart_logic(ctx, test_session, test=True)
+
+async def _remove_item_logic(ctx, session, item_name, test=False):
     await safely_delete_message(ctx)
+    prefix = "🧪 [TEST] " if test else ""
     found = False
-    for item in reversed(current_session["items"]):
+    for item in reversed(session["items"]):
         if item["name"].lower() == item_name.lower():
-            current_session["items"].remove(item)
+            session["items"].remove(item)
             found = True
             break
     if found:
-        embed = discord.Embed(title="❌ Item Removed from Cart", color=0xe67e22)
-        item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in current_session["items"]])
-        subtotal = sum(item['price'] for item in current_session["items"])
+        embed = discord.Embed(title=f"{prefix}❌ Item Removed from Cart", color=0xe67e22)
+        item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
+        subtotal = sum(item['price'] for item in session["items"])
         embed.add_field(name=f"Removed item: {item_name}", value=f"Here is your updated cart list:", inline=False)
         embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
         embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
-        await send_cart_embed(ctx, embed)
+        await send_cart_embed(ctx, embed, session)
     else:
         await ctx.send(f"⚠️ Could not find an item named '**{item_name}**' inside your current cart.", delete_after=5)
 
+@bot.command(name="remove")
+async def remove_item(ctx, item_name: str):
+    await _remove_item_logic(ctx, current_session, item_name, test=False)
+
+@bot.command(name="testremove")
+async def test_remove_item(ctx, item_name: str):
+    await _remove_item_logic(ctx, test_session, item_name, test=True)
+
 HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
 
-@bot.command(name="coupons")
-async def set_coupons(ctx, *args):
+async def _set_coupons_logic(ctx, session, args, test=False):
     await safely_delete_message(ctx)
+    cmd = "!testcoupons" if test else "!coupons"
     try:
         coupons = []
         for x in args:
@@ -351,23 +396,32 @@ async def set_coupons(ctx, *args):
             else:
                 coupons.append(float(x))
         coupons.sort(key=lambda c: -1 if c == "half" else c, reverse=True)
-        current_session["coupons"] = coupons
-        await ctx.send(f"✅ Loaded Coupons: " + ", ".join([coupon_label(c) for c in coupons]))
+        session["coupons"] = coupons
+        prefix = "🧪 [TEST] " if test else ""
+        await ctx.send(f"{prefix}✅ Loaded Coupons: " + ", ".join([coupon_label(c) for c in coupons]))
     except ValueError:
-        await ctx.send("❌ Format error. Example: `!coupons 8 8 5 half`")
+        await ctx.send(f"❌ Format error. Example: `{cmd} 8 8 5 half`")
 
-@bot.command(name="optimize")
-async def optimize_cart(ctx):
+@bot.command(name="coupons")
+async def set_coupons(ctx, *args):
+    await _set_coupons_logic(ctx, current_session, args, test=False)
+
+@bot.command(name="testcoupons")
+async def test_set_coupons(ctx, *args):
+    await _set_coupons_logic(ctx, test_session, args, test=True)
+
+async def _optimize_logic(ctx, session, test=False):
     await safely_delete_message(ctx)
-    items = current_session["items"]
-    coupons = current_session["coupons"]
+    prefix = "🧪 [TEST] " if test else ""
+    items = session["items"]
+    coupons = session["coupons"]
     if not items:
         await ctx.send("❌ Your cart is empty!")
-        return
-        
+        return None, None
+
     total_due, bundling = calculate_best_bundles(items, coupons)
-    embed = discord.Embed(title="🧾 Optimized CVS Checkout Strategy", color=0x00ff00)
-    
+    embed = discord.Embed(title=f"{prefix}🧾 Optimized CVS Checkout Strategy", color=0x9b59b6 if test else 0x00ff00)
+
     for idx, coupon_val in enumerate(coupons):
         group_items = bundling.get(idx, [])
         if group_items:
@@ -379,7 +433,7 @@ async def optimize_cart(ctx):
                 value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
                 inline=False
             )
-    
+
     embed.add_field(name="📊 Final Register Total Due", value=f"## **${total_due:.2f}**", inline=False)
 
     if total_due > 0.0:
@@ -404,6 +458,15 @@ async def optimize_cart(ctx):
         embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=upgrade_text, inline=False)
 
     await ctx.send(embed=embed)
+    return total_due, bundling
+
+@bot.command(name="optimize")
+async def optimize_cart(ctx):
+    await _optimize_logic(ctx, current_session, test=False)
+
+@bot.command(name="testoptimize")
+async def test_optimize_cart(ctx):
+    await _optimize_logic(ctx, test_session, test=True)
 
 @bot.command(name="clear")
 async def clear_cart(ctx):
@@ -413,11 +476,18 @@ async def clear_cart(ctx):
     current_session["cart_message"] = None
     await ctx.send("🧹 Cart and coupons cleared!")
 
-@bot.command(name="checkout")
-async def checkout(ctx):
+@bot.command(name="testclear")
+async def test_clear_cart(ctx):
     await safely_delete_message(ctx)
-    items = current_session["items"]
-    coupons = current_session["coupons"]
+    test_session["items"] = []
+    test_session["coupons"] = []
+    test_session["cart_message"] = None
+    await ctx.send("🧪 Test cart and coupons cleared!")
+
+async def _checkout_logic(ctx, session, test=False):
+    await safely_delete_message(ctx)
+    items = session["items"]
+    coupons = session["coupons"]
     if not items:
         await ctx.send("❌ Your cart is empty — nothing to check out!", delete_after=5)
         return
@@ -427,6 +497,23 @@ async def checkout(ctx):
     coupon_spend = sum(coupon_cost(c) for c in coupons)
     gross_saved = subtotal - total_due
     net_saved = gross_saved - coupon_spend
+
+    if test:
+        embed = discord.Embed(title="🧪 [TEST] Checkout Preview", color=0x9b59b6)
+        embed.add_field(name="Full Price (No Coupons)", value=f"${subtotal:.2f}", inline=True)
+        embed.add_field(name="Register Total Paid", value=f"${total_due:.2f}", inline=True)
+        embed.add_field(name="Spent on Coupons", value=f"${coupon_spend:.2f}", inline=True)
+        embed.add_field(
+            name="💰 Net Money Saved (Simulated)",
+            value=f"## **${net_saved:.2f}**",
+            inline=False
+        )
+        embed.set_footer(text="Test mode — nothing was added to your lifetime savings tracker. Cart has been cleared.")
+        await ctx.send(embed=embed)
+        session["items"] = []
+        session["coupons"] = []
+        session["cart_message"] = None
+        return
 
     savings_tracker["trip_count"] += 1
     savings_tracker["total_full_price"] += subtotal
@@ -452,9 +539,17 @@ async def checkout(ctx):
     embed.set_footer(text="Run !savings anytime to check your lifetime stats. Cart has been cleared for your next trip.")
     await ctx.send(embed=embed)
 
-    current_session["items"] = []
-    current_session["coupons"] = []
-    current_session["cart_message"] = None
+    session["items"] = []
+    session["coupons"] = []
+    session["cart_message"] = None
+
+@bot.command(name="checkout")
+async def checkout(ctx):
+    await _checkout_logic(ctx, current_session, test=False)
+
+@bot.command(name="testcheckout")
+async def test_checkout(ctx):
+    await _checkout_logic(ctx, test_session, test=True)
 
 @bot.command(name="savings")
 async def view_savings(ctx):
