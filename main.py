@@ -358,10 +358,10 @@ async def run_stress_test(interaction: discord.Interaction):
         await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
         return
 
+    # FIXED: Defer as ephemeral on line 1, and reply purely via followups to prevent 40060 errors
     await interaction.response.defer(ephemeral=True)
-    await interaction.followup.send("⏳ **Initiating High-Intensity Stress Test Loop...** Cleard sandbox state. Firing consecutive database writes...", ephemeral=True)
+    await interaction.followup.send("⏳ **Initiating High-Intensity Stress Test Loop...** Sandbox cleared. Firing rapid writes...", ephemeral=True)
     
-    # Phase 1: Clear the environment slate completely
     async def _test_clear(s):
         s["items"] = []
         s["coupons"] = []
@@ -370,9 +370,7 @@ async def run_stress_test(interaction: discord.Interaction):
         return s
     await update_channel_session(interaction.channel.id, _test_clear, is_test=True)
 
-    # Phase 2: Execute an automated 5-cycle back-to-back command loop simulation
     for cycle in range(1, 6):
-        # Dynamic variable mutation based on current cycle loop context
         mock_items = [
             (f"ItemA_C{cycle}", 2.50 * cycle),
             (f"ItemB_C{cycle}", 1.15 * cycle),
@@ -381,26 +379,50 @@ async def run_stress_test(interaction: discord.Interaction):
         ]
         mock_coupons = [float(2 * cycle), float(cycle), "half"]
 
-        # 1. Simulate rapid /testadd data writing mutations
         async def _loop_add(s, items=mock_items):
             for name, price in items:
                 s["items"].append({"name": name, "price": price})
             return s
         await update_channel_session(interaction.channel.id, lambda s: _loop_add(s, mock_items), is_test=True)
 
-        # 2. Simulate rapid /testcoupons loading expansions
         async def _loop_coupons(s, coupons=mock_coupons):
             s["coupons"].extend(coupons)
             s["coupons"].sort(key=lambda c: -1 if c == "half" else c, reverse=True)
             return s
         await update_channel_session(interaction.channel.id, lambda s: _loop_coupons(s, mock_coupons), is_test=True)
         
-        # Micro-sleep to test rapid data serialization settling pacing
         await asyncio.sleep(0.1)
 
-    # Phase 3: Unleash the core combinatorics optimizer over the massive 35-item/coupon matrix
-    await interaction.followup.send("📊 **Cycles Complete.** Firing full combinatorics calculation loops...", ephemeral=True)
-    await _optimize_logic(interaction, test=True)
+    # FIXED: Execute the math evaluation natively inside the stress context to bypass dual defer exceptions
+    session = await get_channel_session_immutable(interaction.channel.id, is_test=True)
+    items = session["items"]
+    coupons = session["coupons"]
+    
+    total_due, bundling = await asyncio.to_thread(calculate_best_bundles, items, coupons)
+    
+    async def _optimize_saver(s):
+        s["last_optimization"] = {
+            "items": items, "coupons": coupons, "total_due": total_due, "bundling": bundling
+        }
+        return s
+    await update_channel_session(interaction.channel.id, _optimize_saver, is_test=True)
+    
+    embed = discord.Embed(title="🧪 [STRESS TEST] Optimized Checkout Strategy", color=0x9b59b6)
+    for idx, coupon_val in enumerate(coupons):
+        group_items = bundling.get(idx, [])
+        if group_items:
+            item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
+            subtotal = sum(item['price'] for item in group_items)
+            due = group_due(group_items, coupon_val)
+            embed.add_field(
+                name=f"Transaction {idx+1}: Use {coupon_label(coupon_val)} Coupon",
+                value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
+                inline=False
+            )
+    embed.add_field(name="📊 Final Register Total Due", value=f"## **${total_due:.2f}**", inline=False)
+    
+    await log_action(interaction.channel.id, "optimize", "Stress Loop", f"Calculated total due: ${total_due:.2f}", is_test=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="export-bug-logs", description="Admin Tool: Packages all silent exceptions since your last check and flushes the vault disk cache")
 async def export_bug_logs(interaction: discord.Interaction):
@@ -600,89 +622,54 @@ async def permit_user(interaction: discord.Interaction, member: discord.Member):
 
 # --- CORE USER SLASH COMMANDS ENGINE ---
 
-@bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
-async def begin_slash(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used inside a server text channel.", ephemeral=True)
-        return
+def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> discord.Embed:
+    embed = discord.Embed(
+        title="📖 CVS Coupon Calculator — Help Menu", 
+        description="Follow this quick blueprint to maximize your coupon values and slash your out-of-pocket register total.", 
+        color=0xcc0000
+    )
+    embed.add_field(name="🚀 0. Launch Workspace", value="`/begin`\n*Creates your personal private operations room right here on the server.*", inline=False)
+    embed.add_field(name="🎟️ 1. Load Your Coupons", value="`/coupons [values separated by spaces]`\n*Example:* `/coupons values:8 8 5`", inline=False)
+    embed.add_field(name="🛒 2. Add Cart Items", value="`/add [item_name_and_prices]`\n*Example:* `/add items:Fairlife 4.49 shampoo 6.59`", inline=False)
+    embed.add_field(name="↩️ 3. Undo Last Add", value="`/undo`", inline=False)
+    embed.add_field(name="❌ 4. Remove Cart Items", value="`/remove [item_name]`\n*Example:* `/remove item_name:Fairlife`", inline=False)
+    embed.add_field(name="👀 5. View Cart", value="`/cart`", inline=False)
+    embed.add_field(name="📊 6. Calculate Strategy", value="`/optimize`", inline=False)
+    embed.add_field(name="✅ 7. Check Out & Track Savings", value="`/checkout`\n*Locks in the trip, logs your net savings, and clears the cart.*", inline=False)
+    embed.add_field(name="💰 8. View Lifetime Savings", value="`/savings`", inline=False)
+    embed.add_field(name="📜 8b. Pull Trip History", value="`/history` (last 10 trips)\n`/history start:2026-07-01` (one day)\n`/history start:2026-07-01 end:2026-07-12` (range)", inline=False)
+    embed.add_field(name="🧹 9. Clear Session (no tracking)", value="`/clear`", inline=False)
+    embed.add_field(name="🏓 10. Bot Status", value="`/ping`", inline=False)
+    embed.add_field(name="ℹ️ 11. About This Bot", value="`/about`", inline=False)
+    embed.add_field(name="🧪 12. Test Mode", value="Same flow, prefixed with `test`: `/testcoupons`, `/testadd`, `/testundo`, `/testremove`, `/testcart`, `/testoptimize`, `/testcheckout`, `/testclear`.", inline=False)
 
-    await interaction.response.defer(ephemeral=True)
-    target_channel, created = await get_or_create_user_coupon_channel(interaction.guild, interaction.user)
-    
-    if created:
-        await interaction.followup.send(f"✅ Your private space has been initialized! Head over to {target_channel.mention} to start shopping.", ephemeral=True)
-    else:
-        await interaction.followup.send(f"👋 You already have an active session! Jump back into {target_channel.mention} to finish up.", ephemeral=True)
+    if author_perms.manage_messages or author_perms.manage_roles or is_owner:
+        mod_lines = []
+        if author_perms.manage_messages or is_owner: mod_lines.append("`/nuke [amount]` — bulk delete messages")
+        if author_perms.manage_channels or is_owner: mod_lines.append("`/ticket-close` — close active optimizer ticket channels")
+        if author_perms.manage_roles or is_owner: 
+            mod_lines.append("`/createrole [name] [color]` — create a new role")
+            mod_lines.append("`/deleterole [name]` — remove a role")
+            mod_lines.append("`/roleadd [@member] [name]` — give a role")
+            mod_lines.append("`/roleremove [@member] [name]` — take a role")
+        if author_perms.manage_channels or is_owner:
+            mod_lines.append("`/createchannel [name] [visibility]` — spawn new channel")
+            mod_lines.append("`/blockrole [role]` — hide a channel from a role")
+            mod_lines.append("`/unblockrole [role]` — restore access configuration templates")
+            mod_lines.append("`/whocansee` — view channel visibility audits")
+        if is_owner:
+            mod_lines.append("`/setup` — initialize private gateway core channel")
+            mod_lines.append("`/permit [@member]` — whitelist member access paths")
+            mod_lines.append("`/export-history` — secure trip tracker manual ledger output")
+            mod_lines.append("`/import-history [payload]` — emergency state recovery restoration string engine")
+            mod_lines.append("`/export-session-logs [mode]` — dump transaction track audit metrics logs")
+            mod_lines.append("`/delete-last-trip` — erase mistake checkouts and rebalance statistics")
+            mod_lines.append("`/export-bug-logs` — download and flush silent exception vault cache files")
+            mod_lines.append("`/run-stress-test` — trigger high-intensity 5-cycle continuous load loops")
+        embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
 
-async def _add_item_logic(interaction: discord.Interaction, items_str, test=False):
-    prefix = "🧪 [TEST] " if test else ""
-    args = items_str.split()
-    if len(args) == 0 or len(args) % 2 != 0:
-        await interaction.response.send_message("❌ Format error. Provide item/price pairs.\n*Example:* `shampoo 6.59 soap 2.99`", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-    
-    async def _add_mutation(session):
-        for i in range(0, len(args), 2):
-            session["items"].append({"name": args[i], "price": float(args[i + 1])})
-        return session
-
-    session = await update_channel_session(interaction.channel.id, _add_mutation, is_test=test)
-    
-    embed = discord.Embed(title=f"{prefix}🛒 CVS Shopping Cart", color=0x9b59b6 if test else 0xcc0000)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
-    subtotal = sum(item['price'] for item in session["items"])
-    embed.add_field(name="Items Scanned", value=item_str or "No items added yet.", inline=False)
-    embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
-    
-    await log_action(interaction.channel.id, "add", items_str, f"Subtotal updated to ${subtotal:.2f}", is_test=test)
-    await send_cart_embed(interaction, embed, session, interaction.channel.id, is_test=test)
-
-@bot.tree.command(name="add", description="Add grocery or care items and prices to your active cart session")
-@app_commands.describe(items="Item name followed by price pairs separated by spaces (e.g. shampoo 6.59 soap 2.99)")
-async def add_item(interaction: discord.Interaction, items: str):
-    await _add_item_logic(interaction, items, test=False)
-
-@bot.tree.command(name="testadd", description="[TEST] Add items and prices to your test cart layout")
-@app_commands.describe(items="Item name followed by price pairs separated by spaces")
-async def test_add_item(interaction: discord.Interaction, items: str):
-    await _add_item_logic(interaction, items, test=True)
-
-async def _undo_item_logic(interaction: discord.Interaction, test=False):
-    prefix = "🧪 [TEST] " if test else ""
-    session = await get_channel_session_immutable(interaction.channel.id, is_test=test)
-    if not session["items"]:
-        await interaction.response.send_message("❌ Nothing to undo — your cart is empty!", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-    
-    async def _undo_mutation(s):
-        if s["items"]:
-            s["removed_item_cache"] = s["items"].pop()
-        return s
-
-    session = await update_channel_session(interaction.channel.id, _undo_mutation, is_test=test)
-    removed_item = session.get("removed_item_cache", {"name": "Item", "price": 0.0})
-    
-    embed = discord.Embed(title=f"{prefix}↩️ Last Item Undone", color=0xe67e22)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
-    subtotal = sum(item['price'] for item in session["items"])
-    embed.add_field(name=f"Removed: {removed_item['name']} (${removed_item['price']:.2f})", value="\u200b", inline=False)
-    embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
-    embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
-    
-    await log_action(interaction.channel.id, "undo", "None", f"Removed {removed_item['name']}", is_test=test)
-    await send_cart_embed(interaction, embed, session, interaction.channel.id, is_test=test)
-
-@bot.tree.command(name="undo", description="Undo the last item you added to your tracking session")
-async def undo_item(interaction: discord.Interaction):
-    await _undo_item_logic(interaction, test=False)
-
-@bot.tree.command(name="testundo", description="[TEST] Undo the last item added to your test cart layout")
-async def test_undo_item(interaction: discord.Interaction):
-    await _undo_item_logic(interaction, test=True)
+    embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
+    return embed
 
 async def _view_cart_logic(interaction: discord.Interaction, test=False):
     prefix = "🧪 [TEST] " if test else ""
@@ -707,524 +694,6 @@ async def view_cart(interaction: discord.Interaction):
 async def test_view_cart(interaction: discord.Interaction):
     await _view_cart_logic(interaction, test=True)
 
-async def _remove_item_logic(interaction: discord.Interaction, item_name, test=False):
-    prefix = "🧪 [TEST] " if test else ""
-    session = await get_channel_session_immutable(interaction.channel.id, is_test=test)
-    
-    found_item = any(item["name"].lower() == item_name.lower() for item in session["items"])
-    if not found_item:
-        await interaction.response.send_message(f"⚠️ Could not find an item named '**{item_name}**' inside your current cart.", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-    
-    async def _remove_mutation(s):
-        for item in reversed(s["items"]):
-            if item["name"].lower() == item_name.lower():
-                s["items"].remove(item)
-                break
-        return s
-
-    session = await update_channel_session(interaction.channel.id, _remove_mutation, is_test=test)
-    embed = discord.Embed(title=f"{prefix}❌ Item Removed from Cart", color=0xe67e22)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
-    subtotal = sum(item['price'] for item in session["items"])
-    embed.add_field(name=f"Removed item: {item_name}", value=f"Here is your updated cart list:", inline=False)
-    embed.add_field(name="Remaining Items", value=item_str or "No items left in cart.", inline=False)
-    embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
-    
-    await log_action(interaction.channel.id, "remove", item_name, f"Removed {item_name}", is_test=test)
-    await send_cart_embed(interaction, embed, session, interaction.channel.id, is_test=test)
-
-@bot.tree.command(name="remove", description="Drop a specific item out of your active cart tracking list")
-@app_commands.describe(item_name="Name of the item you wish to delete")
-async def remove_item(interaction: discord.Interaction, item_name: str):
-    await _remove_item_logic(interaction, item_name, test=False)
-
-@bot.tree.command(name="testremove", description="[TEST] Drop an item out of your active test layout by name")
-@app_commands.describe(item_name="Name of the item you wish to delete")
-async def test_remove_item(interaction: discord.Interaction, item_name: str):
-    await _remove_item_logic(interaction, item_name, test=True)
-
-HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
-
-async def _set_coupons_logic(interaction: discord.Interaction, values_str, test=False):
-    clear_cmd = "/testclear" if test else "/clear"
-    args = values_str.split()
-    try:
-        new_coupons = []
-        for x in args:
-            if x.strip().lower() in HALF_OFF_ALIASES:
-                new_coupons.append("half")
-            else:
-                new_coupons.append(float(x))
-                
-        await interaction.response.defer()
-
-        async def _coupon_mutation(s):
-            s["coupons"].extend(new_coupons)
-            s["coupons"].sort(key=lambda c: -1 if c == "half" else c, reverse=True)
-            return s
-
-        session = await update_channel_session(interaction.channel.id, _coupon_mutation, is_test=test)
-        prefix = "🧪 [TEST] " if test else ""
-        added_str = ", ".join([coupon_label(c) for c in new_coupons])
-        all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
-        
-        await log_action(interaction.channel.id, "coupons", values_str, f"Loaded stack: {all_str}", is_test=test)
-        await interaction.followup.send(
-            f"{prefix}✅ Added: {added_str}\n🎟️ All Loaded Coupons: {all_str}\n"
-            f"*(Run `{clear_cmd}` to wipe coupons/cart and start fresh.)*"
-        )
-    except ValueError:
-        await interaction.response.send_message(f"❌ Format error. Example format: `8 8 5 half`", ephemeral=True)
-
-@bot.tree.command(name="coupons", description="Input all available dollar-off transaction stackers")
-@app_commands.describe(values="List of numbers separated by spaces (e.g. 8 8 5 half)")
-async def set_coupons(interaction: discord.Interaction, values: str):
-    await _set_coupons_logic(interaction, values, test=False)
-
-@bot.tree.command(name="testcoupons", description="[TEST] Add coupon stack values into your test session environment")
-@app_commands.describe(values="List of numbers separated by spaces")
-async def test_set_coupons(interaction: discord.Interaction, values: str):
-    await _set_coupons_logic(interaction, values, test=True)
-
-async def _optimize_logic(interaction: discord.Interaction, test=False):
-    prefix = "🧪 [TEST] " if test else ""
-    session = await get_channel_session_immutable(interaction.channel.id, is_test=test)
-    items = session["items"]
-    coupons = session["coupons"]
-    if not items:
-        await interaction.response.send_message("❌ Your cart is empty!", ephemeral=True)
-        return
-
-    if not interaction.response.is_done():
-        await interaction.response.defer()
-        
-    total_due, bundling = await asyncio.to_thread(calculate_best_bundles, items, coupons)
-    
-    async def _optimize_saver(s):
-        s["last_optimization"] = {
-            "items": items,
-            "coupons": coupons,
-            "total_due": total_due,
-            "bundling": bundling
-        }
-        return s
-    await update_channel_session(interaction.channel.id, _optimize_saver, is_test=test)
-    
-    embed = discord.Embed(title=f"{prefix}🧾 Optimized CVS Checkout Strategy", color=0x9b59b6 if test else 0x00ff00)
-
-    for idx, coupon_val in enumerate(coupons):
-        group_items = bundling.get(idx, [])
-        if group_items:
-            item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
-            subtotal = sum(item['price'] for item in group_items)
-            due = group_due(group_items, coupon_val)
-            embed.add_field(
-                name=f"Transaction {idx+1}: Use {coupon_label(coupon_val)} Coupon",
-                value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
-                inline=False
-            )
-
-    embed.add_field(name="📊 Final Register Total Due", value=f"## **${total_due:.2f}**", inline=False)
-
-    if total_due > 0.0:
-        candidate_values = sorted(COUPON_COSTS.keys()) + ["half"]
-        working_coupons = list(coupons)
-        working_due = total_due
-        suggestions = []
-
-        for _ in range(3):
-            best_candidate = None
-            best_net_benefit = 1e-9
-            best_trial = None
-            for cp in candidate_values:
-                trial_coupons = working_coupons + [cp]
-                trial_due, trial_bundling = await asyncio.to_thread(calculate_best_bundles, items, trial_coupons)
-                register_savings = working_due - trial_due
-                net_benefit = register_savings - coupon_cost(cp)
-                if net_benefit > best_net_benefit:
-                    best_net_benefit = net_benefit
-                    best_candidate = cp
-                    best_trial = (trial_due, trial_bundling, register_savings)
-
-                if best_candidate is None:
-                    break
-
-            if best_candidate is None:
-                break
-
-            trial_due, trial_bundling, register_savings = best_trial
-            new_group_idx = len(working_coupons)
-            covered_items = trial_bundling.get(new_group_idx, [])
-            covered_str = ", ".join(f"**{i['name']}** (${i['price']:.2f})" for i in covered_items) or "a rebalanced set of items"
-            suggestions.append(
-                f"➔ Buy a **{coupon_label(best_candidate)}** coupon (cost: ${coupon_cost(best_candidate):.2f}).\n"
-                f"• Use it on: {covered_str}\n"
-                f"• Register total drops to **${trial_due:.2f}** (saves ${register_savings:.2f}), "
-                f"net gain after coupon cost: **${best_net_benefit:.2f}**."
-            )
-            working_coupons.append(best_candidate)
-            working_due = trial_due
-
-        if suggestions:
-            upgrade_text = f"💡 *You have a remaining balance of **${total_due:.2f}**.*\n\n" + "\n\n".join(
-                f"**Step {i+1}:**\n{s}" for i, s in enumerate(suggestions)
-            )
-            embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=upgrade_text, inline=False)
-        else:
-            embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=f"💡 No coupon purchase would pay for itself right now.", inline=False)
-
-    await log_action(interaction.channel.id, "optimize", "None", f"Calculated strategy total due: ${total_due:.2f}", is_test=test)
-    await interaction.followup.send(embed=embed)
-
-@bot.tree.command(name="optimize", description="Run the allocation algorithm to bundle your purchases into optimized register steps")
-async def optimize_cart(interaction: discord.Interaction):
-    await _optimize_logic(interaction, test=False)
-
-@bot.tree.command(name="testoptimize", description="[TEST] Calculate allocation logic distributions over test array bundles")
-async def test_optimize_cart(interaction: discord.Interaction):
-    await _optimize_logic(interaction, test=True)
-
-async def _clear_logic(interaction: discord.Interaction, test=False):
-    async def _clear_mutation(s):
-        s["items"] = []
-        s["coupons"] = []
-        s["cart_message"] = None
-        s["last_optimization"] = None
-        s["audit_log"] = []
-        return s
-    await update_channel_session(interaction.channel.id, _clear_mutation, is_test=test)
-    msg = "🧪 Test cart and coupons cleared!" if test else "🧹 Cart and coupons cleared!"
-    await interaction.response.send_message(msg)
-
-@bot.tree.command(name="clear", description="Completely wipe the current session items and coupons to start fresh")
-async def clear_cart(interaction: discord.Interaction):
-    await _clear_logic(interaction, test=False)
-
-@bot.tree.command(name="testclear", description="[TEST] Wipe active memory data arrays out of the test environment track")
-async def test_clear_cart(interaction: discord.Interaction):
-    await _clear_logic(interaction, test=True)
-
-async def _checkout_logic(interaction: discord.Interaction, test=False):
-    session = await get_channel_session_immutable(interaction.channel.id, is_test=test)
-    items = session["items"]
-    coupons = session["coupons"]
-    if not items:
-        await interaction.response.send_message("❌ Your cart is empty — nothing to check out!", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-    
-    last_opt = session.get("last_optimization")
-    if last_opt is None:
-        subtotal = sum(item['price'] for item in items)
-        total_due, _ = await asyncio.to_thread(calculate_best_bundles, items, coupons)
-    else:
-        subtotal = sum(item['price'] for item in last_opt.get("items", items))
-        total_due = last_opt["total_due"]
-    
-    coupon_spend = sum(coupon_cost(c) for c in coupons)
-    gross_saved = subtotal - total_due
-    net_saved = gross_saved - coupon_spend
-
-    if test:
-        embed = discord.Embed(title="🧪 [TEST] Checkout Preview", color=0x9b59b6)
-        embed.add_field(name="Full Price (No Coupons)", value=f"${subtotal:.2f}", inline=True)
-        embed.add_field(name="Register Total Paid", value=f"${total_due:.2f}", inline=True)
-        embed.add_field(name="Spent on Coupons", value=f"${coupon_spend:.2f}", inline=True)
-        embed.add_field(name="💰 Net Money Saved (Simulated)", value=f"## **${net_saved:.2f}**", inline=False)
-        await interaction.followup.send(embed=embed)
-        
-        async def _test_clear(s):
-            s["items"] = []
-            s["coupons"] = []
-            s["cart_message"] = None
-            s["last_optimization"] = None
-            return s
-        await update_channel_session(interaction.channel.id, _test_clear, is_test=test)
-        return
-
-    now = datetime.now(NY_TZ)
-    trip_record = {
-        "date": now.strftime("%Y-%m-%d"),
-        "time": now.strftime("%H:%M:%S"),
-        "items": [{"name": i["name"], "price": i["price"]} for i in items],
-        "coupons": coupons,
-        "subtotal": subtotal,
-        "total_due": total_due,
-        "coupon_spend": coupon_spend,
-        "net_saved": net_saved,
-    }
-
-    async with db_lock:
-        savings_tracker = load_json_file_sync(SAVINGS_FILE, {
-            "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
-            "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
-        })
-        savings_tracker["trip_count"] += 1
-        savings_tracker["total_full_price"] += subtotal
-        savings_tracker["total_paid"] += total_due
-        savings_tracker["total_coupon_cost"] += coupon_spend
-        savings_tracker["total_net_saved"] += net_saved
-        savings_tracker.setdefault("trips", []).append(trip_record)
-        try:
-            with open(SAVINGS_FILE, "w") as f:
-                json.dump(savings_tracker, f, indent=2)
-        except Exception:
-            pass
-
-    embed = discord.Embed(title="✅ Trip Checked Out!", color=0x2ecc71)
-    embed.add_field(name="🗓️ Date Logged", value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
-    embed.add_field(name="Full Price (No Coupons)", value=f"${subtotal:.2f}", inline=True)
-    embed.add_field(name="Register Total Paid", value=f"${total_due:.2f}", inline=True)
-    embed.add_field(name="Spent on Coupons", value=f"${coupon_spend:.2f}", inline=True)
-    embed.add_field(name="💰 Net Money Saved This Trip", value=f"## **${net_saved:.2f}**", inline=False)
-    embed.add_field(name="📈 Lifetime Total Saved", value=f"**${savings_tracker['total_net_saved']:.2f}** across {savings_tracker['trip_count']} trip(s)", inline=False)
-    
-    is_ticket = interaction.guild is not None and session_channels.get(str(interaction.user.id)) == interaction.channel.id
-    footer_note = "Run /savings for lifetime stats. Receipt copied to your DMs!"
-    if is_ticket:
-        footer_note += " This channel will auto-close in 10 seconds."
-    embed.set_footer(text=footer_note)
-    await interaction.followup.send(embed=embed)
-
-    async def _prod_clear(s):
-        s["items"] = []
-        s["coupons"] = []
-        s["cart_message"] = None
-        s["last_optimization"] = None
-        return s
-    await update_channel_session(interaction.channel.id, _prod_clear, is_test=test)
-
-    try:
-        item_str = "\n".join([f"• **{i['name']}**: ${i['price']:.2f}" for i in items]) or "No items."
-        coupon_str = ", ".join(coupon_label(c) for c in coupons) or "None"
-        dm_embed = discord.Embed(title="chat log snapshot", color=0x2ecc71)
-        dm_embed.add_field(name="🗓️ Date", value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
-        dm_embed.add_field(name="🛒 Items Purchased", value=item_str, inline=False)
-        dm_embed.add_field(name="🎟️ Coupons Used", value=coupon_str, inline=False)
-        dm_embed.add_field(name="Full Price", value=f"${subtotal:.2f}", inline=True)
-        dm_embed.add_field(name="Paid at Register", value=f"${total_due:.2f}", inline=True)
-        dm_embed.add_field(name="Coupon Cost", value=f"${coupon_spend:.2f}", inline=True)
-        dm_embed.add_field(name="💰 Net Money Saved", value=f"## **${net_saved:.2f}**", inline=False)
-        await interaction.user.send(embed=dm_embed)
-    except discord.Forbidden:
-        print("⚠️ DM send failed: User privacy controls blocking payload delivery channels.", file=sys.stderr)
-
-    if is_ticket:
-        session_channels.pop(str(interaction.user.id), None)
-        try:
-            with open(SESSION_CHANNELS_FILE, "w") as f:
-                json.dump(session_channels, f, indent=2)
-        except Exception:
-            pass
-        await asyncio.sleep(10)
-        try: await interaction.channel.delete()
-        except discord.HTTPException: pass
-
-@bot.tree.command(name="checkout", description="Finalize your trip balance splits, lock in metrics, and clear tracking arrays")
-async def checkout(interaction: discord.Interaction):
-    await _checkout_logic(interaction, test=False)
-
-@bot.tree.command(name="testcheckout", description="[TEST] Simulate database commits to preview receipts without mutating history records")
-async def test_checkout(interaction: discord.Interaction):
-    await _checkout_logic(interaction, test=True)
-
-@bot.tree.command(name="savings", description="View accumulated lifetime ledger optimizations and performance totals")
-async def view_savings(interaction: discord.Interaction):
-    async with db_lock:
-        s = load_json_file_sync(SAVINGS_FILE, {
-            "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
-            "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
-        })
-    embed = discord.Embed(title="💰 Lifetime Savings Tracker", color=0x2ecc71)
-    if s["trip_count"] == 0:
-        embed.description = "No trips checked out yet. Run `/checkout` to start tracking!"
-    else:
-        avg_saved = s["total_net_saved"] / s["trip_count"]
-        embed.add_field(name="🧾 Trips Checked Out", value=str(s["trip_count"]), inline=True)
-        embed.add_field(name="🏷️ Total Full Price", value=f"${s['total_full_price']:.2f}", inline=True)
-        embed.add_field(name="💵 Total Actually Paid", value=f"${s['total_paid']:.2f}", inline=True)
-        embed.add_field(name="🎟️ Total Spent on Coupons", value=f"${s['total_coupon_cost']:.2f}", inline=True)
-        embed.add_field(name="📊 Avg Net Saved / Trip", value=f"${avg_saved:.2f}", inline=True)
-        embed.add_field(name="💰 Lifetime Net Money Saved", value=f"## **${s['total_net_saved']:.2f}**", inline=False)
-    await interaction.response.send_message(embed=embed)
-
-def _parse_history_date(raw):
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
-        try: return datetime.strptime(raw, fmt).date()
-        except ValueError: continue
-    return None
-
-@bot.tree.command(name="history", description="Query past receipts and localized financial arrays out of persistent storage tracking sheets")
-@app_commands.describe(start="Filter starting bounds date (YYYY-MM-DD)", end="Optional range limit date bounds (YYYY-MM-DD)")
-async def view_history(interaction: discord.Interaction, start: str = None, end: str = None):
-    async with db_lock:
-        s = load_json_file_sync(SAVINGS_FILE, {
-            "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
-            "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
-        })
-    trips = s.get("trips", [])
-    if not trips:
-        await interaction.response.send_message("📭 No checked-out trips logged yet.", ephemeral=True)
-        return
-
-    start_date, end_date = None, None
-    if start:
-        start_date = _parse_history_date(start)
-        if not start_date:
-            await interaction.response.send_message("❌ Error tracking date formatting sequence. Please format strings via `YYYY-MM-DD`.", ephemeral=True)
-            return
-        end_date = _parse_history_date(end) if end else start_date
-        if end and not end_date:
-            await interaction.response.send_message("❌ End boundary query contains syntax structural runtime schema variations.", ephemeral=True)
-            return
-
-    matches = [t for t in trips if start_date <= datetime.strptime(t["date"], "%Y-%m-%d").date() <= end_date] if start_date else trips[-10:]
-    if not matches:
-        await interaction.response.send_message("📭 No matching records found.", ephemeral=True)
-        return
-
-    title = f"📜 Trip History" if start_date else "📜 Trip History — Last 10 Trips"
-    embed = discord.Embed(title=title, color=0x3498db)
-    for trip in matches[-15:]:
-        item_names = ", ".join(i["name"] for i in trip["items"])
-        embed.add_field(
-            name=f"🗓️ {trip['date']} @ {trip.get('time', '—')}",
-            value=f"Items: {item_names}\nFull: ${trip['subtotal']:.2f} ➔ Paid: ${trip['total_due']:.2f}\n💰 Net Saved: **${trip['net_saved']:.2f}**",
-            inline=False
-        )
-    await interaction.response.send_message(embed=embed)
-
-# --- ADMINISTRATIVE MODERATOR COMMANDS ENGINE ---
-
-@app_commands.default_permissions(manage_messages=True)
-@bot.tree.command(name="nuke", description="Bulk drop message indexes backward to clear active operating rooms logs")
-@app_commands.describe(amount="Quantity of records to scrub out (or text string match keyword 'all')")
-async def nuke(interaction: discord.Interaction, amount: str):
-    await interaction.response.defer(ephemeral=True)
-    if amount.lower() == "all":
-        deleted = await interaction.channel.purge(limit=None)
-    else:
-        try: count = int(amount)
-        except ValueError: 
-            await interaction.followup.send("❌ Error parsing line integer arrays.")
-            return
-        deleted = await interaction.channel.purge(limit=count)
-    await interaction.followup.send(f"🧨 Nuked **{len(deleted)}** message entries!")
-
-@bot.tree.command(name="ticket-close", description="Close this coupon optimizer ticket channel environment directly")
-async def ticket_close(interaction: discord.Interaction):
-    if not (interaction.user.guild_permissions.manage_channels or discord.utils.get(interaction.user.roles, name=STAFF_ROLE_NAME)):
-        await interaction.response.send_message("⛔ Account access authorization evaluation missing.", ephemeral=True)
-        return
-
-    owner_id = next((uid for uid, cid in session_channels.items() if cid == interaction.channel.id), None)
-    if owner_id:
-        session_channels.pop(owner_id, None)
-        await save_json_file(SESSION_CHANNELS_FILE, session_channels)
-    await interaction.response.send_message(f"🔒 Ticket closed. Deleting channel in 5 seconds...")
-    await asyncio.sleep(5)
-    try: await interaction.channel.delete()
-    except discord.HTTPException: pass
-
-@app_commands.default_permissions(manage_channels=True)
-@bot.tree.command(name="whocansee", description="List members who can view a channel")
-async def who_can_see(interaction: discord.Interaction):
-    await interaction.response.defer()
-    members_with_access = [m for m in interaction.guild.members if interaction.channel.permissions_for(m).view_channel]
-    members_with_access.sort(key=lambda m: m.display_name.lower())
-    embed = discord.Embed(title=f"👀 Access Audit for #{interaction.channel.name}", description="\n".join([f"• {m.mention}" for m in members_with_access]) or "None", color=0x3498db)
-    await interaction.followup.send(embed=embed)
-
-@app_commands.default_permissions(manage_roles=True)
-@bot.tree.command(name="createrole", description="Create a new server role")
-@app_commands.describe(role_name="Name of the role", color_name="Color matching keyword (e.g. red, blue, green)")
-async def create_role(interaction: discord.Interaction, role_name: str, color_name: str = None):
-    if discord.utils.get(interaction.guild.roles, name=role_name):
-        await interaction.response.send_message("⚠️ A role with that name already exists.", ephemeral=True)
-        return
-    await interaction.response.defer()
-    color = resolve_color(color_name) or discord.Color.default()
-    new_role = await interaction.guild.create_role(name=role_name, color=color)
-    await interaction.followup.send(f"✅ Created role {new_role.mention}!")
-
-@app_commands.default_permissions(manage_roles=True)
-@bot.tree.command(name="deleterole", description="Delete an existing server role")
-@app_commands.describe(role_name="Exact name of the role to remove")
-async def delete_role(interaction: discord.Interaction, role_name: str):
-    role = discord.utils.get(interaction.guild.roles, name=role_name)
-    if role:
-        await role.delete()
-        await interaction.response.send_message(f"🗑️ Deleted role `{role_name}`.")
-    else:
-        await interaction.response.send_message("❌ Role not found.", ephemeral=True)
-
-@app_commands.default_permissions(manage_roles=True)
-@bot.tree.command(name="roleadd", description="Assign a role to a server member")
-@app_commands.describe(member="The member to receive the role", role_name="The name of the role")
-async def role_add(interaction: discord.Interaction, member: discord.Member, role_name: str):
-    role = discord.utils.get(interaction.guild.roles, name=role_name)
-    if role:
-        await member.add_roles(role)
-        await interaction.response.send_message(f"✅ Gave {member.mention} the `{role_name}` role.")
-    else:
-        await interaction.response.send_message("❌ Role not found.", ephemeral=True)
-
-@app_commands.default_permissions(manage_roles=True)
-@bot.tree.command(name="roleremove", description="Strip a role from a server member")
-@app_commands.describe(member="The target member", role_name="The name of the role")
-async def role_remove(interaction: discord.Interaction, member: discord.Member, role_name: str):
-    role = discord.utils.get(interaction.guild.roles, name=role_name)
-    if role and role in member.roles:
-        await member.remove_roles(role)
-        await interaction.response.send_message(f"✅ Removed the `{role_name}` role from {member.mention}.")
-    else:
-        await interaction.response.send_message("❌ Target lacks role or index validation failed.", ephemeral=True)
-
-@app_commands.default_permissions(manage_channels=True)
-@bot.tree.command(name="createchannel", description="Create a new text channel setup")
-@app_commands.describe(name="Name of the channel", visibility="Set public or private visibility configuration templates")
-async def create_channel(interaction: discord.Interaction, name: str, visibility: Literal["public", "private"] = "public"):
-    overwrites = {}
-    if visibility.lower() == "private":
-        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-        overwrites[interaction.user] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-    channel = await interaction.guild.create_text_channel(name=name, category=interaction.channel.category, overwrites=overwrites)
-    await interaction.response.send_message(f"✅ Created channel {channel.mention}")
-
-@app_commands.default_permissions(manage_channels=True)
-@bot.tree.command(name="blockrole", description="Hide this channel view permission map allocations entirely from a role")
-@app_commands.describe(role="The role to block")
-async def block_role(interaction: discord.Interaction, role: discord.Role):
-    await interaction.channel.set_permissions(role, view_channel=False)
-    await interaction.response.send_message(f"🚫 `{role.name}` role blocked from viewing this channel.")
-
-@app_commands.default_permissions(manage_channels=True)
-@bot.tree.command(name="unblockrole", description="Restore channel view permission maps to default inheritance profiles")
-@app_commands.describe(role="The role to unblock")
-async def unblock_role(interaction: discord.Interaction, role: discord.Role):
-    await interaction.channel.set_permissions(role, overwrite=None)
-    await interaction.response.send_message(f"✅ Reset `{role.name}` access permissions back to server default settings.")
-
-# --- DIAGNOSTIC TIMINGS & GENERAL UTILITIES ENGINE ---
-
-@bot.tree.command(name="ping", description="Verify backend round-trip latency timings")
-async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message(f"🏓 Pong! Latency: **{round(bot.latency * 1000)}ms**")
-
-@bot.tree.command(name="about", description="About the CVS Coupon Calculator bot overview specifications")
-async def about(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="ℹ ... About the CVS Coupon Calculator", 
-        description="A combinatorics-powered assistant that splits your cart across coupons to minimize what you pay at register.", 
-        color=0xcc0000
-    )
-    embed.add_field(name="Commands", value="Run `/help` for the full walkthrough.", inline=False)
-    embed.add_field(name="Hosting", value="Running 24/7 on Railway.", inline=False)
-    await interaction.response.send_message(embed=embed)
-
+# token fetching and main execution
 token = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
 bot.run(token)
