@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from typing import Literal
 import itertools
 from flask import Flask
 from threading import Thread
@@ -122,6 +123,8 @@ async def send_cart_embed(ctx, embed, session=None):
     session["cart_message"] = await ctx.send(embed=embed)
 
 async def safely_delete_message(ctx):
+    if ctx.interaction is not None:
+        return  # Slash invocations have no real message to delete
     try:
         await ctx.message.delete()
     except Exception as e:
@@ -169,7 +172,7 @@ async def on_ready():
     except Exception as e:
         print(f'⚠️ Slash command sync failed: {e}', file=sys.stderr)
 
-@bot.command(name="setup")
+@bot.hybrid_command(name="setup", description="Create the private CVS coupon optimizer channel")
 @commands.is_owner()
 async def setup_channel(ctx):
     await safely_delete_message(ctx)
@@ -203,7 +206,7 @@ async def setup_channel(ctx):
     await new_channel.send(embed=welcome_embed)
     await ctx.send(f"✅ Secure channel {new_channel.mention} successfully built!", delete_after=5)
 
-@bot.command(name="permit")
+@bot.hybrid_command(name="permit", description="Grant a member access to the coupon optimizer channel")
 @commands.is_owner()
 async def permit_user(ctx, member: discord.Member):
     await safely_delete_message(ctx)
@@ -331,13 +334,13 @@ async def _add_item_logic(ctx, session, args, test=False):
     embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**")
     await send_cart_embed(ctx, embed, session)
 
-@bot.command(name="add")
-async def add_item(ctx, *args):
-    await _add_item_logic(ctx, current_session, args, test=False)
+@bot.hybrid_command(name="add", description="Add items and prices to your cart (e.g. shampoo 6.59 soap 2.99)")
+async def add_item(ctx, *, items: str):
+    await _add_item_logic(ctx, current_session, items.split(), test=False)
 
-@bot.command(name="testadd")
-async def test_add_item(ctx, *args):
-    await _add_item_logic(ctx, test_session, args, test=True)
+@bot.hybrid_command(name="testadd", description="[TEST] Add items and prices to your test cart")
+async def test_add_item(ctx, *, items: str):
+    await _add_item_logic(ctx, test_session, items.split(), test=True)
 
 async def _undo_item_logic(ctx, session, test=False):
     await safely_delete_message(ctx)
@@ -355,11 +358,11 @@ async def _undo_item_logic(ctx, session, test=False):
     embed.add_field(name="Updated Subtotal", value=f"**${subtotal:.2f}**")
     await send_cart_embed(ctx, embed, session)
 
-@bot.command(name="undo")
+@bot.hybrid_command(name="undo", description="Undo the last item you added to your cart")
 async def undo_item(ctx):
     await _undo_item_logic(ctx, current_session, test=False)
 
-@bot.command(name="testundo")
+@bot.hybrid_command(name="testundo", description="[TEST] Undo the last item added to your test cart")
 async def test_undo_item(ctx):
     await _undo_item_logic(ctx, test_session, test=True)
 
@@ -375,11 +378,11 @@ async def _view_cart_logic(ctx, session, test=False):
     embed.add_field(name="🎟️ Loaded Coupons", value=coupon_str, inline=False)
     await send_cart_embed(ctx, embed, session)
 
-@bot.command(name="cart")
+@bot.hybrid_command(name="cart", description="View your current cart")
 async def view_cart(ctx):
     await _view_cart_logic(ctx, current_session, test=False)
 
-@bot.command(name="testcart")
+@bot.hybrid_command(name="testcart", description="[TEST] View your test cart")
 async def test_view_cart(ctx):
     await _view_cart_logic(ctx, test_session, test=True)
 
@@ -403,11 +406,11 @@ async def _remove_item_logic(ctx, session, item_name, test=False):
     else:
         await ctx.send(f"⚠️ Could not find an item named '**{item_name}**' inside your current cart.", delete_after=5)
 
-@bot.command(name="remove")
+@bot.hybrid_command(name="remove", description="Remove an item from your cart by name")
 async def remove_item(ctx, item_name: str):
     await _remove_item_logic(ctx, current_session, item_name, test=False)
 
-@bot.command(name="testremove")
+@bot.hybrid_command(name="testremove", description="[TEST] Remove an item from your test cart by name")
 async def test_remove_item(ctx, item_name: str):
     await _remove_item_logic(ctx, test_session, item_name, test=True)
 
@@ -436,13 +439,13 @@ async def _set_coupons_logic(ctx, session, args, test=False):
     except ValueError:
         await ctx.send(f"❌ Format error. Example: `{cmd} 8 8 5 half`")
 
-@bot.command(name="coupons")
-async def set_coupons(ctx, *args):
-    await _set_coupons_logic(ctx, current_session, args, test=False)
+@bot.hybrid_command(name="coupons", description="Add coupon values to your session (e.g. 8 8 5 half)")
+async def set_coupons(ctx, *, values: str):
+    await _set_coupons_logic(ctx, current_session, values.split(), test=False)
 
-@bot.command(name="testcoupons")
-async def test_set_coupons(ctx, *args):
-    await _set_coupons_logic(ctx, test_session, args, test=True)
+@bot.hybrid_command(name="testcoupons", description="[TEST] Add coupon values to your test session")
+async def test_set_coupons(ctx, *, values: str):
+    await _set_coupons_logic(ctx, test_session, values.split(), test=True)
 
 async def _optimize_logic(ctx, session, test=False):
     await safely_delete_message(ctx)
@@ -524,15 +527,15 @@ async def _optimize_logic(ctx, session, test=False):
     await ctx.send(embed=embed)
     return total_due, bundling
 
-@bot.command(name="optimize")
+@bot.hybrid_command(name="optimize", description="Calculate the best coupon bundling strategy for your cart")
 async def optimize_cart(ctx):
     await _optimize_logic(ctx, current_session, test=False)
 
-@bot.command(name="testoptimize")
+@bot.hybrid_command(name="testoptimize", description="[TEST] Calculate the best strategy for your test cart")
 async def test_optimize_cart(ctx):
     await _optimize_logic(ctx, test_session, test=True)
 
-@bot.command(name="clear")
+@bot.hybrid_command(name="clear", description="Clear your cart and coupons (no savings tracking)")
 async def clear_cart(ctx):
     await safely_delete_message(ctx)
     current_session["items"] = []
@@ -540,7 +543,7 @@ async def clear_cart(ctx):
     current_session["cart_message"] = None
     await ctx.send("🧹 Cart and coupons cleared!")
 
-@bot.command(name="testclear")
+@bot.hybrid_command(name="testclear", description="[TEST] Clear your test cart and coupons")
 async def test_clear_cart(ctx):
     await safely_delete_message(ctx)
     test_session["items"] = []
@@ -621,15 +624,15 @@ async def _checkout_logic(ctx, session, test=False):
     session["coupons"] = []
     session["cart_message"] = None
 
-@bot.command(name="checkout")
+@bot.hybrid_command(name="checkout", description="Finalize your trip, log savings, and clear your cart")
 async def checkout(ctx):
     await _checkout_logic(ctx, current_session, test=False)
 
-@bot.command(name="testcheckout")
+@bot.hybrid_command(name="testcheckout", description="[TEST] Preview checkout without tracking savings")
 async def test_checkout(ctx):
     await _checkout_logic(ctx, test_session, test=True)
 
-@bot.command(name="savings")
+@bot.hybrid_command(name="savings", description="View your lifetime savings stats")
 async def view_savings(ctx):
     await safely_delete_message(ctx)
     s = savings_tracker
@@ -654,7 +657,7 @@ def _parse_history_date(raw):
             continue
     return None
 
-@bot.command(name="history")
+@bot.hybrid_command(name="history", description="View past trips (all, one date, or a date range)")
 async def view_history(ctx, start: str = None, end: str = None):
     await safely_delete_message(ctx)
     trips = savings_tracker.get("trips", [])
@@ -711,7 +714,7 @@ async def view_history(ctx, start: str = None, end: str = None):
         embed.set_footer(text=f"Showing the most recent 15 of {len(matches)} matching trips.")
     await ctx.send(embed=embed)
 
-@bot.command(name="nuke")
+@bot.hybrid_command(name="nuke", description="Bulk delete messages in this channel (number or 'all')")
 @commands.has_permissions(manage_messages=True)
 async def nuke(ctx, amount: str):
     await safely_delete_message(ctx)
@@ -729,10 +732,9 @@ async def nuke(ctx, amount: str):
             return
         deleted = await ctx.channel.purge(limit=count)
 
-    confirmation = await ctx.send(f"🧨 Nuked **{len(deleted)}** message(s)!")
-    await confirmation.delete(delay=5)
+    await ctx.send(f"🧨 Nuked **{len(deleted)}** message(s)!", delete_after=5)
 
-@bot.command(name="createrole")
+@bot.hybrid_command(name="createrole", description="Create a new server role")
 @commands.has_permissions(manage_roles=True)
 async def create_role(ctx, role_name: str, *, color_name: str = None):
     await safely_delete_message(ctx)
@@ -750,7 +752,7 @@ async def create_role(ctx, role_name: str, *, color_name: str = None):
     new_role = await ctx.guild.create_role(name=role_name, color=color, reason=f"Created by {ctx.author}")
     await ctx.send(f"✅ Created role {new_role.mention}!", delete_after=6)
 
-@bot.command(name="deleterole")
+@bot.hybrid_command(name="deleterole", description="Delete a server role")
 @commands.has_permissions(manage_roles=True)
 async def delete_role(ctx, *, role_name: str):
     await safely_delete_message(ctx)
@@ -761,7 +763,7 @@ async def delete_role(ctx, *, role_name: str):
     await role.delete(reason=f"Deleted by {ctx.author}")
     await ctx.send(f"🗑️ Deleted role `{role_name}`.", delete_after=6)
 
-@bot.command(name="roleadd")
+@bot.hybrid_command(name="roleadd", description="Give a member a role")
 @commands.has_permissions(manage_roles=True)
 async def role_add(ctx, member: discord.Member, *, role_name: str):
     await safely_delete_message(ctx)
@@ -775,7 +777,7 @@ async def role_add(ctx, member: discord.Member, *, role_name: str):
     await member.add_roles(role, reason=f"Added by {ctx.author}")
     await ctx.send(f"✅ Gave {member.mention} the `{role_name}` role.", delete_after=6)
 
-@bot.command(name="roleremove")
+@bot.hybrid_command(name="roleremove", description="Take a role away from a member")
 @commands.has_permissions(manage_roles=True)
 async def role_remove(ctx, member: discord.Member, *, role_name: str):
     await safely_delete_message(ctx)
@@ -789,17 +791,11 @@ async def role_remove(ctx, member: discord.Member, *, role_name: str):
     await member.remove_roles(role, reason=f"Removed by {ctx.author}")
     await ctx.send(f"✅ Removed the `{role_name}` role from {member.mention}.", delete_after=6)
 
-@bot.command(name="createchannel")
+@bot.hybrid_command(name="createchannel", description="Create a new text channel")
 @commands.has_permissions(manage_channels=True)
-async def create_channel(ctx, name: str, visibility: str = "public", role: discord.Role = None):
+async def create_channel(ctx, name: str, visibility: Literal["public", "private"] = "public", role: discord.Role = None):
     await safely_delete_message(ctx)
     visibility = visibility.lower()
-    if visibility not in ("public", "private"):
-        await ctx.send(
-            "❌ Visibility must be `public` or `private`.\n*Example:* `!createchannel my-channel private @Staff`",
-            delete_after=8
-        )
-        return
 
     overwrites = {}
     if visibility == "private":
@@ -823,7 +819,7 @@ async def create_channel(ctx, name: str, visibility: str = "public", role: disco
     extra = f" (also visible to `{role.name}`)" if (visibility == "private" and role) else ""
     await ctx.send(f"✅ Created {vis_label} channel {channel.mention}{extra}", delete_after=8)
 
-@bot.command(name="blockrole")
+@bot.hybrid_command(name="blockrole", description="Hide a channel from a role (defaults to current channel)")
 @commands.has_permissions(manage_channels=True)
 async def block_role(ctx, role: discord.Role, channel: discord.TextChannel = None):
     await safely_delete_message(ctx)
@@ -831,7 +827,7 @@ async def block_role(ctx, role: discord.Role, channel: discord.TextChannel = Non
     await channel.set_permissions(role, view_channel=False, reason=f"Blocked by {ctx.author}")
     await ctx.send(f"🚫 The `{role.name}` role can no longer see #{channel.name}.", delete_after=6)
 
-@bot.command(name="unblockrole")
+@bot.hybrid_command(name="unblockrole", description="Undo a block, resetting a role's channel access to default")
 @commands.has_permissions(manage_channels=True)
 async def unblock_role(ctx, role: discord.Role, channel: discord.TextChannel = None):
     await safely_delete_message(ctx)
@@ -839,9 +835,9 @@ async def unblock_role(ctx, role: discord.Role, channel: discord.TextChannel = N
     await channel.set_permissions(role, overwrite=None, reason=f"Unblocked by {ctx.author}")
     await ctx.send(f"✅ Reset `{role.name}`'s view access for #{channel.name} back to default.", delete_after=6)
 
-@bot.command(name="whocansee")
+@bot.hybrid_command(name="whocansee", description="List members who can view a channel (defaults to current)")
 @commands.has_permissions(manage_channels=True)
-async def who_can_see(ctx, channel: discord.abc.GuildChannel = None):
+async def who_can_see(ctx, channel: discord.TextChannel = None):
     await safely_delete_message(ctx)
     channel = channel or ctx.channel
 
@@ -873,12 +869,12 @@ async def who_can_see(ctx, channel: discord.abc.GuildChannel = None):
 
     await ctx.send(embed=embed)
 
-@bot.command(name="ping")
+@bot.hybrid_command(name="ping", description="Check the bot's latency")
 async def ping(ctx):
     await safely_delete_message(ctx)
     await ctx.send(f"🏓 Pong! Latency: **{round(bot.latency * 1000)}ms**", delete_after=8)
 
-@bot.command(name="about")
+@bot.hybrid_command(name="about", description="About the CVS Coupon Calculator bot")
 async def about(ctx):
     await safely_delete_message(ctx)
     embed = discord.Embed(
