@@ -213,7 +213,58 @@ async def on_ready():
     except Exception as e:
         print(f'⚠️ Direct sync failed: {e}', file=sys.stderr)
 
-# --- DIRECT SLASH COMMANDS ENGINE ---
+# --- OWNER ONLY SLASH COMMANDS ---
+
+@bot.tree.command(name="setup", description="Create the private CVS coupon optimizer channel")
+async def setup_channel(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("⛔ Security Error: Only the bot's application owner can run this command.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    guild = interaction.guild
+    owner = guild.owner or await guild.fetch_member(guild.owner_id)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        owner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True, manage_messages=True)
+    }
+    
+    channel_name = "cvs-coupon-optimizer"
+    existing_channel = discord.utils.get(guild.text_channels, name=channel_name)
+    if existing_channel:
+        await interaction.followup.send(f"⚠️ A channel named `#{channel_name}` already exists!")
+        return
+        
+    new_channel = await guild.create_text_channel(channel_name, overwrites=overwrites)
+    welcome_embed = discord.Embed(
+        title="🎯 CVS Coupon Optimizer Room",
+        description="This is your secure, private command base for calculated shopping bundles! Run `/begin` to get your personal workspace.",
+        color=0xcc0000
+    )
+    await new_channel.send(embed=welcome_embed)
+    await interaction.followup.send(f"✅ Secure channel {new_channel.mention} successfully built!")
+
+@bot.tree.command(name="permit", description="Grant a member access to the main coupon optimizer channel")
+@app_commands.describe(member="The user you want to grant access to")
+async def permit_user(interaction: discord.Interaction, member: discord.Member):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("⛔ Security Error: Only the bot's application owner can run this command.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    channel_name = "cvs-coupon-optimizer"
+    channel = discord.utils.get(interaction.guild.text_channels, name=channel_name)
+    
+    if not channel:
+        await interaction.followup.send("❌ Error: The `#cvs-coupon-optimizer` channel does not exist yet. Run `/setup` first!")
+        return
+        
+    await channel.set_permissions(member, view_channel=True, send_messages=True, read_messages=True)
+    await interaction.followup.send(f"✅ Granted access to {member.mention} to use the optimizer room!")
+
+# --- CORE USER SLASH COMMANDS Engine ---
 
 @bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
 async def begin_slash(interaction: discord.Interaction):
@@ -250,11 +301,24 @@ def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> disco
     embed.add_field(name="ℹ️ 11. About This Bot", value="`/about`", inline=False)
     embed.add_field(name="🧪 12. Test Mode", value="Same flow, prefixed with `test`: `/testcoupons`, `/testadd`, `/testundo`, `/testremove`, `/testcart`, `/testoptimize`, `/testcheckout`, `/testclear`.", inline=False)
 
-    if author_perms.manage_messages or author_perms.manage_roles:
+    if author_perms.manage_messages or author_perms.manage_roles or is_owner:
         mod_lines = []
-        if author_perms.manage_messages: mod_lines.append("`/nuke [amount]` — bulk delete messages")
-        if author_perms.manage_channels: mod_lines.append("`/ticket-close` — close active optimizer ticket channels")
-        if mod_lines: embed.add_field(name="🛡️ Moderator Commands", value="\n".join(mod_lines), inline=False)
+        if author_perms.manage_messages or is_owner: mod_lines.append("`/nuke [amount]` — bulk delete messages")
+        if author_perms.manage_channels or is_owner: mod_lines.append("`/ticket-close` — close active optimizer ticket channels")
+        if author_perms.manage_roles or is_owner: 
+            mod_lines.append("`/createrole [name] [color]` — create a new role")
+            mod_lines.append("`/deleterole [name]` — remove a role")
+            mod_lines.append("`/roleadd [@member] [name]` — give a role")
+            mod_lines.append("`/roleremove [@member] [name]` — take a role")
+        if author_perms.manage_channels or is_owner:
+            mod_lines.append("`/createchannel [name] [visibility]` — spawn new channel")
+            mod_lines.append("`/blockrole [role]` — hide a channel from a role")
+            mod_lines.append("`/unblockrole [role]` — restore access configuration templates")
+            mod_lines.append("`/whocansee` — view channel visibility audits")
+        if is_owner:
+            mod_lines.append("`/setup` — initialize private gateway core channel")
+            mod_lines.append("`/permit [@member]` — whitelist member access paths")
+        embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
 
     embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
     return embed
@@ -660,6 +724,8 @@ async def view_history(interaction: discord.Interaction, start: str = None, end:
         )
     await interaction.response.send_message(embed=embed)
 
+# --- ADMINISTRATIVE MODERATOR COMMANDS ENGINE ---
+
 @app_commands.default_permissions(manage_messages=True)
 @bot.tree.command(name="nuke", description="Bulk drop message indexes backward to clear active operating rooms logs")
 @app_commands.describe(amount="Quantity of records to scrub out (or text string match keyword 'all')")
@@ -698,6 +764,78 @@ async def who_can_see(interaction: discord.Interaction):
     members_with_access.sort(key=lambda m: m.display_name.lower())
     embed = discord.Embed(title=f"👀 Access Audit for #{interaction.channel.name}", description="\n".join([f"• {m.mention}" for m in members_with_access]) or "None", color=0x3498db)
     await interaction.followup.send(embed=embed)
+
+@app_commands.default_permissions(manage_roles=True)
+@bot.tree.command(name="createrole", description="Create a new server role")
+@app_commands.describe(role_name="Name of the role", color_name="Color matching keyword (e.g. red, blue, green)")
+async def create_role(interaction: discord.Interaction, role_name: str, color_name: str = None):
+    if discord.utils.get(interaction.guild.roles, name=role_name):
+        await interaction.response.send_message("⚠️ A role with that name already exists.", ephemeral=True)
+        return
+    await interaction.response.defer()
+    color = resolve_color(color_name) or discord.Color.default()
+    new_role = await interaction.guild.create_role(name=role_name, color=color)
+    await interaction.followup.send(f"✅ Created role {new_role.mention}!")
+
+@app_commands.default_permissions(manage_roles=True)
+@bot.tree.command(name="deleterole", description="Delete an existing server role")
+@app_commands.describe(role_name="Exact name of the role to remove")
+async def delete_role(interaction: discord.Interaction, role_name: str):
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+    if role:
+        await role.delete()
+        await interaction.response.send_message(f"🗑️ Deleted role `{role_name}`.")
+    else:
+        await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+
+@app_commands.default_permissions(manage_roles=True)
+@bot.tree.command(name="roleadd", description="Assign a role to a server member")
+@app_commands.describe(member="The member to receive the role", role_name="The name of the role")
+async def role_add(interaction: discord.Interaction, member: discord.Member, role_name: str):
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+    if role:
+        await member.add_roles(role)
+        await interaction.response.send_message(f"✅ Gave {member.mention} the `{role_name}` role.")
+    else:
+        await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+
+@app_commands.default_permissions(manage_roles=True)
+@bot.tree.command(name="roleremove", description="Strip a role from a server member")
+@app_commands.describe(member="The target member", role_name="The name of the role")
+async def role_remove(interaction: discord.Interaction, member: discord.Member, role_name: str):
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+    if role and role in member.roles:
+        await member.remove_roles(role)
+        await interaction.response.send_message(f"✅ Removed the `{role_name}` role from {member.mention}.")
+    else:
+        await interaction.response.send_message("❌ Target lacks role or index validation failed.", ephemeral=True)
+
+@app_commands.default_permissions(manage_channels=True)
+@bot.tree.command(name="createchannel", description="Create a new text channel setup")
+@app_commands.describe(name="Name of the channel", visibility="Set public or private visibility configuration templates")
+async def create_channel(interaction: discord.Interaction, name: str, visibility: Literal["public", "private"] = "public"):
+    overwrites = {}
+    if visibility.lower() == "private":
+        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+        overwrites[interaction.user] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    channel = await interaction.guild.create_text_channel(name=name, category=interaction.channel.category, overwrites=overwrites)
+    await interaction.response.send_message(f"✅ Created channel {channel.mention}")
+
+@app_commands.default_permissions(manage_channels=True)
+@bot.tree.command(name="blockrole", description="Hide this channel view permission map allocations entirely from a role")
+@app_commands.describe(role="The role to block")
+async def block_role(interaction: discord.Interaction, role: discord.Role):
+    await interaction.channel.set_permissions(role, view_channel=False)
+    await interaction.response.send_message(f"🚫 `{role.name}` role blocked from viewing this channel.")
+
+@app_commands.default_permissions(manage_channels=True)
+@bot.tree.command(name="unblockrole", description="Restore channel view permission maps to default inheritance profiles")
+@app_commands.describe(role="The role to unblock")
+async def unblock_role(interaction: discord.Interaction, role: discord.Role):
+    await interaction.channel.set_permissions(role, overwrite=None)
+    await interaction.response.send_message(f"✅ Reset `{role.name}` access permissions back to server default settings.")
+
+# --- DIAGNOSTIC TIMINGS & GENERAL UTILITIES ENGINE ---
 
 @bot.tree.command(name="ping", description="Verify backend round-trip latency timings")
 async def ping(interaction: discord.Interaction):
