@@ -28,7 +28,7 @@ class CouponBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         
     async def setup_hook(self):
-        pass  # Syncing moved to on_ready for global server enforcement
+        pass  # Global sync handled cleanly within on_ready
 
 bot = CouponBot()
 
@@ -223,17 +223,15 @@ def calculate_best_bundles(items, coupons):
 async def on_ready():
     print(f'🤖 Coupon Calculator is logged into Railway!')
     try:
-        # 1. Clear out stuck global commands to remove the menu duplicates
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync(guild=None)
-        
-        # 2. Sync clean, fast commands straight to your specific servers
+        # Sync globally, then push directly to target text clusters for instant UI loads
+        await bot.tree.sync()
         for guild in bot.guilds:
             bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
-        print(f'✅ Successfully cleared global duplicates and synced clean server commands!')
+        print(f'✅ Successfully deployed commands! They will appear in your server momentarily.')
     except Exception as e:
         print(f'⚠️ Tree sync failed: {e}', file=sys.stderr)
+
 # --- THE PRIVATE GATEWAY COMMAND ---
 @bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
 async def begin_slash(interaction: discord.Interaction):
@@ -850,7 +848,7 @@ async def ping(ctx):
 async def about(ctx):
     await safely_delete_message(ctx)
     embed = discord.Embed(
-        title="ℹ️ About the CVS Coupon Calculator", 
+        title="ℹ ... About the CVS Coupon Calculator", 
         description="A combinatorics-powered assistant that splits your cart across coupons to minimize what you pay at register.", 
         color=0xcc0000
     )
