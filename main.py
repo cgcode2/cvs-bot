@@ -21,14 +21,14 @@ from datetime import datetime
 # 3. DISCORD BOT ENGINE SETUP
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # Required for !whocansee and ticket generation
+intents.members = True  # Required for whocansee member audits and private gateway routing
 
 class CouponBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         
     async def setup_hook(self):
-        # This forces hybrid commands to sync globally across all connected servers smoothly
+        # Synchronizes tree commands across connected clusters natively
         await self.tree.sync()
 
 bot = CouponBot()
@@ -253,7 +253,7 @@ async def setup_channel(ctx):
         description="This is your secure, private command base for calculated shopping bundles! Type `!help` to see directions.",
         color=0xcc0000
     )
-    await new_channel.send(embed=welcome_embed)
+    await new_channel.send(welcome_embed)
     await ctx.send(f"✅ Secure channel {new_channel.mention} successfully built!", delete_after=5)
 
 @bot.hybrid_command(name="permit", description="Grant a member access to the coupon optimizer channel")
@@ -476,66 +476,68 @@ async def _optimize_logic(ctx, session, test=False):
         await ctx.send("❌ Your cart is empty!")
         return
 
-    total_due, bundling = calculate_best_bundles(items, coupons)
-    embed = discord.Embed(title=f"{prefix}🧾 Optimized CVS Checkout Strategy", color=0x9b59b6 if test else 0x00ff00)
+    # Keeps Discord lines open while processing combinatorial logic loops
+    async with ctx.typing():
+        total_due, bundling = await asyncio.to_thread(calculate_best_bundles, items, coupons)
+        embed = discord.Embed(title=f"{prefix}🧾 Optimized CVS Checkout Strategy", color=0x9b59b6 if test else 0x00ff00)
 
-    for idx, coupon_val in enumerate(coupons):
-        group_items = bundling.get(idx, [])
-        if group_items:
-            item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
-            subtotal = sum(item['price'] for item in group_items)
-            due = group_due(group_items, coupon_val)
-            embed.add_field(
-                name=f"Transaction {idx+1}: Use {coupon_label(coupon_val)} Coupon",
-                value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
-                inline=False
-            )
+        for idx, coupon_val in enumerate(coupons):
+            group_items = bundling.get(idx, [])
+            if group_items:
+                item_details = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in group_items])
+                subtotal = sum(item['price'] for item in group_items)
+                due = group_due(group_items, coupon_val)
+                embed.add_field(
+                    name=f"Transaction {idx+1}: Use {coupon_label(coupon_val)} Coupon",
+                    value=f"{item_details}\n*Subtotal: ${subtotal:.2f}* ➔ **Due: ${due:.2f}**",
+                    inline=False
+                )
 
-    embed.add_field(name="📊 Final Register Total Due", value=f"## **${total_due:.2f}**", inline=False)
+        embed.add_field(name="📊 Final Register Total Due", value=f"## **${total_due:.2f}**", inline=False)
 
-    if total_due > 0.0:
-        candidate_values = sorted(COUPON_COSTS.keys()) + ["half"]
-        working_coupons = list(coupons)
-        working_due = total_due
-        suggestions = []
+        if total_due > 0.0:
+            candidate_values = sorted(COUPON_COSTS.keys()) + ["half"]
+            working_coupons = list(coupons)
+            working_due = total_due
+            suggestions = []
 
-        for _ in range(3):
-            best_candidate = None
-            best_net_benefit = 1e-9
-            best_trial = None
-            for cp in candidate_values:
-                trial_coupons = working_coupons + [cp]
-                trial_due, trial_bundling = calculate_best_bundles(items, trial_coupons)
-                register_savings = working_due - trial_due
-                net_benefit = register_savings - coupon_cost(cp)
-                if net_benefit > best_net_benefit:
-                    best_net_benefit = net_benefit
-                    best_candidate = cp
-                    best_trial = (trial_due, trial_bundling, register_savings)
+            for _ in range(3):
+                best_candidate = None
+                best_net_benefit = 1e-9
+                best_trial = None
+                for cp in candidate_values:
+                    trial_coupons = working_coupons + [cp]
+                    trial_due, trial_bundling = await asyncio.to_thread(calculate_best_bundles, items, trial_coupons)
+                    register_savings = working_due - trial_due
+                    net_benefit = register_savings - coupon_cost(cp)
+                    if net_benefit > best_net_benefit:
+                        best_net_benefit = net_benefit
+                        best_candidate = cp
+                        best_trial = (trial_due, trial_bundling, register_savings)
 
-            if best_candidate is None:
-                break
+                if best_candidate is None:
+                    break
 
-            trial_due, trial_bundling, register_savings = best_trial
-            new_group_idx = len(working_coupons)
-            covered_items = trial_bundling.get(new_group_idx, [])
-            covered_str = ", ".join(f"**{i['name']}** (${i['price']:.2f})" for i in covered_items) or "a rebalanced set of items"
-            suggestions.append(
-                f"➔ Buy a **{coupon_label(best_candidate)}** coupon (cost: ${coupon_cost(best_candidate):.2f}).\n"
-                f"• Use it on: {covered_str}\n"
-                f"• Register total drops to **${trial_due:.2f}** (saves ${register_savings:.2f}), "
-                f"net gain after coupon cost: **${best_net_benefit:.2f}**."
-            )
-            working_coupons.append(best_candidate)
-            working_due = trial_due
+                trial_due, trial_bundling, register_savings = best_trial
+                new_group_idx = len(working_coupons)
+                covered_items = trial_bundling.get(new_group_idx, [])
+                covered_str = ", ".join(f"**{i['name']}** (${i['price']:.2f})" for i in covered_items) or "a rebalanced set of items"
+                suggestions.append(
+                    f"➔ Buy a **{coupon_label(best_candidate)}** coupon (cost: ${coupon_cost(best_candidate):.2f}).\n"
+                    f"• Use it on: {covered_str}\n"
+                    f"• Register total drops to **${trial_due:.2f}** (saves ${register_savings:.2f}), "
+                    f"net gain after coupon cost: **${best_net_benefit:.2f}**."
+                )
+                working_coupons.append(best_candidate)
+                working_due = trial_due
 
-        if suggestions:
-            upgrade_text = f"💡 *You have a remaining balance of **${total_due:.2f}**.*\n\n" + "\n\n".join(
-                f"**Step {i+1}:**\n{s}" for i, s in enumerate(suggestions)
-            )
-            embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=upgrade_text, inline=False)
-        else:
-            embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=f"💡 No coupon purchase would pay for itself right now.", inline=False)
+            if suggestions:
+                upgrade_text = f"💡 *You have a remaining balance of **${total_due:.2f}**.*\n\n" + "\n\n".join(
+                    f"**Step {i+1}:**\n{s}" for i, s in enumerate(suggestions)
+                )
+                embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=upgrade_text, inline=False)
+            else:
+                embed.add_field(name="✨ Smart Coupon Upgrade Advice", value=f"💡 No coupon purchase would pay for itself right now.", inline=False)
 
     await ctx.send(embed=embed)
 
@@ -572,7 +574,7 @@ async def _checkout_logic(ctx, session, test=False):
         return
 
     subtotal = sum(item['price'] for item in items)
-    total_due, _ = calculate_best_bundles(items, coupons)
+    total_due, _ = await asyncio.to_thread(calculate_best_bundles, items, coupons)
     coupon_spend = sum(coupon_cost(c) for c in coupons)
     gross_saved = subtotal - total_due
     net_saved = gross_saved - coupon_spend
@@ -647,10 +649,8 @@ async def _checkout_logic(ctx, session, test=False):
         session_channels.pop(str(ctx.author.id), None)
         save_session_channels(session_channels)
         await asyncio.sleep(10)
-        try:
-            await ctx.channel.delete(reason=f"Checkout complete for {ctx.author}")
-        except discord.HTTPException:
-            pass
+        try: await ctx.channel.delete()
+        except discord.HTTPException: pass
 
 @bot.hybrid_command(name="checkout", description="Finalize your trip, log savings, and clear your cart")
 async def checkout(ctx):
@@ -670,7 +670,7 @@ async def view_savings(ctx):
     else:
         avg_saved = s["total_net_saved"] / s["trip_count"]
         embed.add_field(name="🧾 Trips Checked Out", value=str(s["trip_count"]), inline=True)
-        embed.add_field(name="`🏷️` Total Full Price", value=f"${s['total_full_price']:.2f}", inline=True)
+        embed.add_field(name="🏷️ Total Full Price", value=f"${s['total_full_price']:.2f}", inline=True)
         embed.add_field(name="💵 Total Actually Paid", value=f"${s['total_paid']:.2f}", inline=True)
         embed.add_field(name="🎟️ Total Spent on Coupons", value=f"${s['total_coupon_cost']:.2f}", inline=True)
         embed.add_field(name="📊 Avg Net Saved / Trip", value=f"${avg_saved:.2f}", inline=True)
