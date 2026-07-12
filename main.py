@@ -16,7 +16,7 @@ import asyncio
 import itertools
 import os
 import json
-import traceback  # NEW: Native traceback formatting diagnostic engine
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -30,7 +30,6 @@ class CouponBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         
     async def setup_hook(self):
-        # Attach the global self-diagnostic handler directly to the tree on instantiation
         self.tree.on_error = on_app_command_error
 
 bot = CouponBot()
@@ -151,16 +150,17 @@ async def log_action(channel_id, command_name, input_details, output_summary, is
 
 # GLOBAL SELF-DIAGNOSTIC TELEMETRY LOGGER PIPELINE
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    """Listens globally across the tree to capture, print, and DM line trace details of failures."""
-    # Unpack core exception trigger structures
     if hasattr(error, "original"):
         error = error.original
 
-    # Format the explicit python stack trace back to trace line outputs
+    # Suppress normal interaction timeouts from flooding DMs if they are caught out of race loops
+    if isinstance(error, discord.errors.NotFound) and "Unknown interaction" in str(error):
+        print("⚠️ Suppressed an interaction lifespans race delay.", file=sys.stderr)
+        return
+
     trace_str = "".join(traceback.format_exception(type(error), error, error.__traceback__))
     print(f"🚨 Telemetry Bug Caught:\n{trace_str}", file=sys.stderr)
 
-    # Respond to the user inside the channel gracefully
     error_embed = discord.Embed(
         title="⚠️ System Telemetry Notice",
         description="An unexpected exception occurred while executing this command. The telemetry log has been compiled and routed to the administrator.",
@@ -174,12 +174,10 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     except Exception:
         pass
 
-    # Route a private raw traceback string block straight to your owner account DMs
     try:
         app_info = await bot.application_info()
         owner = app_info.owner
         
-        # Breakdown arguments input structures safely
         options = interaction.data.get("options", []) if interaction.data else []
         arg_summary = ", ".join([f"{opt.get('name')}: {opt.get('value')}" for opt in options]) or "None"
         
@@ -188,9 +186,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         dm_embed.add_field(name="User Inputs", value=f"`{arg_summary}`", inline=True)
         dm_embed.add_field(name="Execution Location", value=f"Channel ID: `{interaction.channel_id}`", inline=False)
         
-        # Slice string arrays to stay inside Discord text container limits (2000 chars)
         sliced_trace = trace_str[:1500]
-        
         await owner.send(embed=dm_embed)
         await owner.send(f"📋 **Python Traceback Log Output:**\n```py\n{sliced_trace}\n```")
     except Exception as e:
@@ -289,12 +285,20 @@ async def send_cart_embed(interaction: discord.Interaction, embed, session, chan
         except Exception:
             pass
     
-    msg = await interaction.followup.send(embed=embed)
-    
-    async def _msg_updater(s):
-        s["cart_message"] = msg.id
-        return s
-    await update_channel_session(channel_id, _msg_updater, is_test=is_test)
+    try:
+        # Strict route check to maintain followup consistency targets
+        if interaction.response.is_done():
+            msg = await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.defer()
+            msg = await interaction.followup.send(embed=embed)
+            
+        async def _msg_updater(s):
+            s["cart_message"] = msg.id
+            return s
+        await update_channel_session(channel_id, _msg_updater, is_test=is_test)
+    except Exception as e:
+        print(f"⚠️ Messaging wrapper pipeline bypass: {e}", file=sys.stderr)
 
 def group_due(group_items, coupon_val):
     if not group_items:
@@ -509,6 +513,7 @@ async def _add_item_logic(interaction: discord.Interaction, items_str, test=Fals
         await interaction.response.send_message("❌ Format error. Provide item/price pairs.\n*Example:* `shampoo 6.59 soap 2.99`", ephemeral=True)
         return
 
+    # Critical change: Defer immediately to clear the 3-second Discord window
     await interaction.response.defer()
     
     async def _add_mutation(session):
@@ -647,6 +652,8 @@ async def _set_coupons_logic(interaction: discord.Interaction, values_str, test=
             else:
                 new_coupons.append(float(x))
                 
+        await interaction.response.defer()  # Always defer first to prevent Error 10062
+
         async def _coupon_mutation(s):
             s["coupons"].extend(new_coupons)
             s["coupons"].sort(key=lambda c: -1 if c == "half" else c, reverse=True)
@@ -658,7 +665,7 @@ async def _set_coupons_logic(interaction: discord.Interaction, values_str, test=
         all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
         
         await log_action(interaction.channel.id, "coupons", values_str, f"Loaded stack: {all_str}", is_test=test)
-        await interaction.response.send_message(
+        await interaction.followup.send(  # Reply exclusively via followups to prevent Error 40060
             f"{prefix}✅ Added: {added_str}\n🎟️ All Loaded Coupons: {all_str}\n"
             f"*(Run `{clear_cmd}` to wipe coupons/cart and start fresh.)*"
         )
@@ -995,7 +1002,11 @@ async def ticket_close(interaction: discord.Interaction):
     owner_id = next((uid for uid, cid in session_channels.items() if cid == interaction.channel.id), None)
     if owner_id:
         session_channels.pop(owner_id, None)
-        await save_json_file(SESSION_CHANNELS_FILE, session_channels)
+        try:
+            with open(SESSION_CHANNELS_FILE, "w") as f:
+                json.dump(session_channels, f, indent=2)
+        except Exception:
+            pass
     await interaction.response.send_message(f"🔒 Ticket closed. Deleting channel in 5 seconds...")
     await asyncio.sleep(5)
     try: await interaction.channel.delete()
