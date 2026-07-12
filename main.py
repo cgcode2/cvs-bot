@@ -223,14 +223,17 @@ def calculate_best_bundles(items, coupons):
 async def on_ready():
     print(f'🤖 Coupon Calculator is logged into Railway!')
     try:
-        # Force a hard sync directly to every server the bot is hiding inside
+        # 1. Clear out stuck global commands to remove the menu duplicates
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync(guild=None)
+        
+        # 2. Sync clean, fast commands straight to your specific servers
         for guild in bot.guilds:
             bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
-        print(f'✅ Successfully loaded and synced slash commands into your servers!')
+        print(f'✅ Successfully cleared global duplicates and synced clean server commands!')
     except Exception as e:
         print(f'⚠️ Tree sync failed: {e}', file=sys.stderr)
-
 # --- THE PRIVATE GATEWAY COMMAND ---
 @bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
 async def begin_slash(interaction: discord.Interaction):
