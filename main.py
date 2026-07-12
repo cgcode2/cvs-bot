@@ -32,10 +32,9 @@ class CouponBot(commands.Bot):
 
 bot = CouponBot()
 
-current_session = {"items": [], "coupons": [], "cart_message": None}
-test_session = {"items": [], "coupons": [], "cart_message": None}
+# BUG FIX: Dynamic channel isolation registry prevents cross-wired sessions
+session_registry = {}  # channel_id -> {"items": [], "coupons": [], "cart_message": None, "is_test": False}
 
-# Per-user private coupon optimizer channels configuration
 SESSION_CHANNELS_FILE = "session_channels.json"
 STAFF_ROLE_NAME = "Staff"
 
@@ -53,6 +52,12 @@ def save_session_channels(data):
         json.dump(data, f, indent=2)
 
 session_channels = load_session_channels()  # str(user_id) -> channel_id
+
+def get_channel_session(channel_id, is_test=False):
+    """Retrieves or initializes a completely isolated session state for a specific channel."""
+    if channel_id not in session_registry:
+        session_registry[channel_id] = {"items": [], "coupons": [], "cart_message": None, "is_test": is_test}
+    return session_registry[channel_id]
 
 async def get_or_create_user_coupon_channel(guild, user):
     existing_id = session_channels.get(str(user.id))
@@ -215,6 +220,27 @@ async def on_ready():
 
 # --- OWNER ONLY SLASH COMMANDS ---
 
+@bot.tree.command(name="export-history", description="Wipe-proofing backup tool: Compresses and exports database ledger arrays directly to DMs")
+async def export_history(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("⛔ Security Error: Access optimization validation failure.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        raw_json = json.dumps(savings_tracker, indent=2)
+        # Avoid Discord's 2000 character limit by partitioning data if necessary
+        if len(raw_json) < 1900:
+            await interaction.user.send(f"📦 **Backup Data Ledger String:**\n```json\n{raw_json}\n```")
+        else:
+            with open("history_backup.json", "w") as f:
+                f.write(raw_json)
+            await interaction.user.send("📦 **Backup Ledger Data payload file generated successfully:**", file=discord.File("history_backup.json"))
+            os.remove("history_backup.json")
+        await interaction.followup.send("✅ Safe backup profile exported and channeled straight to your DMs!", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Operational backup pipeline break: `{e}`", ephemeral=True)
+
 @bot.tree.command(name="setup", description="Create the private CVS coupon optimizer channel")
 async def setup_channel(interaction: discord.Interaction):
     if not await bot.is_owner(interaction.user):
@@ -318,6 +344,7 @@ def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> disco
         if is_owner:
             mod_lines.append("`/setup` — initialize private gateway core channel")
             mod_lines.append("`/permit [@member]` — whitelist member access paths")
+            mod_lines.append("`/export-history` — secure trip tracker manual ledger output")
         embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
 
     embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
@@ -331,13 +358,14 @@ async def slash_help(interaction: discord.Interaction):
     embed = build_help_embed(author_perms, is_owner)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-async def _add_item_logic(interaction: discord.Interaction, session, args, test=False):
+async def _add_item_logic(interaction: discord.Interaction, args, test=False):
     prefix = "🧪 [TEST] " if test else ""
     if len(args) == 0 or len(args) % 2 != 0:
         await interaction.response.send_message("❌ Format error. Provide item/price pairs.\n*Example:* `shampoo 6.59 soap 2.99`", ephemeral=True)
         return
 
     await interaction.response.defer()
+    session = get_channel_session(interaction.channel.id, is_test=test)
     added = []
     try:
         for i in range(0, len(args), 2):
@@ -360,15 +388,16 @@ async def _add_item_logic(interaction: discord.Interaction, session, args, test=
 @bot.tree.command(name="add", description="Add grocery or care items and prices to your active cart session")
 @app_commands.describe(items="Item name followed by price pairs separated by spaces (e.g. shampoo 6.59 soap 2.99)")
 async def add_item(interaction: discord.Interaction, items: str):
-    await _add_item_logic(interaction, current_session, items.split(), test=False)
+    await _add_item_logic(interaction, items.split(), test=False)
 
 @bot.tree.command(name="testadd", description="[TEST] Add items and prices to your test cart layout")
 @app_commands.describe(items="Item name followed by price pairs separated by spaces")
 async def test_add_item(interaction: discord.Interaction, items: str):
-    await _add_item_logic(interaction, test_session, items.split(), test=True)
+    await _add_item_logic(interaction, items.split(), test=True)
 
-async def _undo_item_logic(interaction: discord.Interaction, session, test=False):
+async def _undo_item_logic(interaction: discord.Interaction, test=False):
     prefix = "🧪 [TEST] " if test else ""
+    session = get_channel_session(interaction.channel.id, is_test=test)
     if not session["items"]:
         await interaction.response.send_message("❌ Nothing to undo — your cart is empty!", ephemeral=True)
         return
@@ -385,15 +414,16 @@ async def _undo_item_logic(interaction: discord.Interaction, session, test=False
 
 @bot.tree.command(name="undo", description="Undo the last item you added to your tracking session")
 async def undo_item(interaction: discord.Interaction):
-    await _undo_item_logic(interaction, current_session, test=False)
+    await _undo_item_logic(interaction, test=False)
 
 @bot.tree.command(name="testundo", description="[TEST] Undo the last item added to your test cart layout")
 async def test_undo_item(interaction: discord.Interaction):
-    await _undo_item_logic(interaction, test_session, test=True)
+    await _undo_item_logic(interaction, test=True)
 
-async def _view_cart_logic(interaction: discord.Interaction, session, test=False):
+async def _view_cart_logic(interaction: discord.Interaction, test=False):
     prefix = "🧪 [TEST] " if test else ""
     await interaction.response.defer()
+    session = get_channel_session(interaction.channel.id, is_test=test)
     embed = discord.Embed(title=f"{prefix}🛒 CVS Shopping Cart", color=0x9b59b6 if test else 0xcc0000)
     item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
     subtotal = sum(item['price'] for item in session["items"])
@@ -405,14 +435,15 @@ async def _view_cart_logic(interaction: discord.Interaction, session, test=False
 
 @bot.tree.command(name="cart", description="View all currently scanned items and loaded coupons")
 async def view_cart(interaction: discord.Interaction):
-    await _view_cart_logic(interaction, current_session, test=False)
+    await _view_cart_logic(interaction, test=False)
 
 @bot.tree.command(name="testcart", description="[TEST] View your active test layout cart details")
 async def test_view_cart(interaction: discord.Interaction):
     await _view_cart_logic(interaction, test_session, test=True)
 
-async def _remove_item_logic(interaction: discord.Interaction, session, item_name, test=False):
+async def _remove_item_logic(interaction: discord.Interaction, item_name, test=False):
     prefix = "🧪 [TEST] " if test else ""
+    session = get_channel_session(interaction.channel.id, is_test=test)
     found = False
     for item in reversed(session["items"]):
         if item["name"].lower() == item_name.lower():
@@ -434,17 +465,18 @@ async def _remove_item_logic(interaction: discord.Interaction, session, item_nam
 @bot.tree.command(name="remove", description="Drop a specific item out of your active cart tracking list")
 @app_commands.describe(item_name="Name of the item you wish to delete")
 async def remove_item(interaction: discord.Interaction, item_name: str):
-    await _remove_item_logic(interaction, current_session, item_name, test=False)
+    await _remove_item_logic(interaction, item_name, test=False)
 
 @bot.tree.command(name="testremove", description="[TEST] Drop an item out of your active test layout by name")
 @app_commands.describe(item_name="Name of the item you wish to delete")
 async def test_remove_item(interaction: discord.Interaction, item_name: str):
-    await _remove_item_logic(interaction, test_session, item_name, test=True)
+    await _remove_item_logic(interaction, item_name, test=True)
 
 HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
 
-async def _set_coupons_logic(interaction: discord.Interaction, session, args, test=False):
+async def _set_coupons_logic(interaction: discord.Interaction, args, test=False):
     clear_cmd = "/testclear" if test else "/clear"
+    session = get_channel_session(interaction.channel.id, is_test=test)
     try:
         new_coupons = []
         for x in args:
@@ -467,15 +499,16 @@ async def _set_coupons_logic(interaction: discord.Interaction, session, args, te
 @bot.tree.command(name="coupons", description="Input all available dollar-off transaction stackers")
 @app_commands.describe(values="List of numbers separated by spaces (e.g. 8 8 5 half)")
 async def set_coupons(interaction: discord.Interaction, values: str):
-    await _set_coupons_logic(interaction, current_session, values.split(), test=False)
+    await _set_coupons_logic(interaction, values.split(), test=False)
 
 @bot.tree.command(name="testcoupons", description="[TEST] Add coupon stack values into your test session environment")
 @app_commands.describe(values="List of numbers separated by spaces")
 async def test_set_coupons(interaction: discord.Interaction, values: str):
-    await _set_coupons_logic(interaction, test_session, values.split(), test=True)
+    await _set_coupons_logic(interaction, values.split(), test=True)
 
-async def _optimize_logic(interaction: discord.Interaction, session, test=False):
+async def _optimize_logic(interaction: discord.Interaction, test=False):
     prefix = "🧪 [TEST] " if test else ""
+    session = get_channel_session(interaction.channel.id, is_test=test)
     items = session["items"]
     coupons = session["coupons"]
     if not items:
@@ -551,13 +584,14 @@ async def _optimize_logic(interaction: discord.Interaction, session, test=False)
 
 @bot.tree.command(name="optimize", description="Run the allocation algorithm to bundle your purchases into optimized register steps")
 async def optimize_cart(interaction: discord.Interaction):
-    await _optimize_logic(interaction, current_session, test=False)
+    await _optimize_logic(interaction, test=False)
 
 @bot.tree.command(name="testoptimize", description="[TEST] Calculate allocation logic distributions over test array bundles")
 async def test_optimize_cart(interaction: discord.Interaction):
-    await _optimize_logic(interaction, test_session, test=True)
+    await _optimize_logic(interaction, test=True)
 
-async def _clear_logic(interaction: discord.Interaction, session, test=False):
+async def _clear_logic(interaction: discord.Interaction, test=False):
+    session = get_channel_session(interaction.channel.id, is_test=test)
     session["items"] = []
     session["coupons"] = []
     session["cart_message"] = None
@@ -566,13 +600,14 @@ async def _clear_logic(interaction: discord.Interaction, session, test=False):
 
 @bot.tree.command(name="clear", description="Completely wipe the current session items and coupons to start fresh")
 async def clear_cart(interaction: discord.Interaction):
-    await _clear_logic(interaction, current_session, test=False)
+    await _clear_logic(interaction, test=False)
 
 @bot.tree.command(name="testclear", description="[TEST] Wipe active memory data arrays out of the test environment track")
 async def test_clear_cart(interaction: discord.Interaction):
-    await _clear_logic(interaction, test_session, test=True)
+    await _clear_logic(interaction, test=True)
 
-async def _checkout_logic(interaction: discord.Interaction, session, test=False):
+async def _checkout_logic(interaction: discord.Interaction, test=False):
+    session = get_channel_session(interaction.channel.id, is_test=test)
     items = session["items"]
     coupons = session["coupons"]
     if not items:
@@ -661,11 +696,11 @@ async def _checkout_logic(interaction: discord.Interaction, session, test=False)
 
 @bot.tree.command(name="checkout", description="Finalize your trip balance splits, lock in metrics, and clear tracking arrays")
 async def checkout(interaction: discord.Interaction):
-    await _checkout_logic(interaction, current_session, test=False)
+    await _checkout_logic(interaction, test=False)
 
 @bot.tree.command(name="testcheckout", description="[TEST] Simulate database commits to preview receipts without mutating history records")
 async def test_checkout(interaction: discord.Interaction):
-    await _checkout_logic(interaction, test_session, test=True)
+    await _checkout_logic(interaction, test=True)
 
 @bot.tree.command(name="savings", description="View accumulated lifetime ledger optimizations and performance totals")
 async def view_savings(interaction: discord.Interaction):
@@ -682,12 +717,6 @@ async def view_savings(interaction: discord.Interaction):
         embed.add_field(name="📊 Avg Net Saved / Trip", value=f"${avg_saved:.2f}", inline=True)
         embed.add_field(name="💰 Lifetime Net Money Saved", value=f"## **${s['total_net_saved']:.2f}**", inline=False)
     await interaction.response.send_message(embed=embed)
-
-def _parse_history_date(raw):
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
-        try: return datetime.strptime(raw, fmt).date()
-        except ValueError: continue
-    return None
 
 @bot.tree.command(name="history", description="Query past receipts and localized financial arrays out of persistent storage tracking sheets")
 @app_commands.describe(start="Filter starting bounds date (YYYY-MM-DD)", end="Optional range limit date bounds (YYYY-MM-DD)")
