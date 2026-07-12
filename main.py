@@ -17,6 +17,7 @@ import itertools
 import os
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # 3. DISCORD BOT ENGINE SETUP
 intents = discord.Intents.default()
@@ -39,6 +40,7 @@ SAVINGS_FILE = os.path.join(DATA_DIR, "savings_data.json")
 CARTS_FILE = os.path.join(DATA_DIR, "active_carts.json")
 
 STAFF_ROLE_NAME = "Staff"
+NY_TZ = ZoneInfo("America/New_York")  # Explicitly locks bot logs to Eastern Standard Time
 
 # CRITICAL SYNC LOCK: Protects all file I/O from race conditions
 file_operation_lock = asyncio.Lock()
@@ -107,13 +109,13 @@ async def get_channel_session(channel_id, is_test=False):
             "cart_message": None, 
             "is_test": is_test,
             "last_optimization": None,
-            "audit_log": []  # Tracks dynamic execution histories
+            "audit_log": []
         }
         await save_json_file(CARTS_FILE, carts_db)
     return carts_db[ch_key]
 
 async def save_channel_session(channel_id, session_data, is_test=False):
-    """Thread-safe save of cart session to disk."""
+    """Thread-safe save of cart session to disk with strict key scoping rules."""
     carts_db = await load_json_file(CARTS_FILE, {})
     ch_key = str(channel_id)
     if is_test:
@@ -124,7 +126,7 @@ async def save_channel_session(channel_id, session_data, is_test=False):
 async def log_action(channel_id, command_name, input_details, output_summary, is_test=False):
     """Automatically records execution states on disk for deep diagnostic pipelines."""
     session = await get_channel_session(channel_id, is_test=is_test)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S")
     log_entry = {
         "timestamp": timestamp,
         "command": command_name,
@@ -267,7 +269,7 @@ def calculate_best_bundles(items, coupons):
 async def on_ready():
     print(f'🤖 Coupon Calculator is logged into Railway!')
     try:
-        # Standard copy overwrites server menus cleanly without deep wipes to completely bypass rate limit limits
+        # Seamless global mapping to prevent ghost trees or blackout sync errors
         for guild in bot.guilds:
             bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
@@ -276,7 +278,39 @@ async def on_ready():
     except Exception as e:
         print(f'⚠️ Direct sync failed: {e}', file=sys.stderr)
 
-# --- OWNER ONLY SLASH COMMANDS ---
+# --- OWNER ONLY DIAGNOSTIC OPERATIONS COMMANDS ---
+
+@bot.tree.command(name="delete-last-trip", description="Emergency Undo: Wipes the last checked-out trip and reverses lifetime statistics completely")
+async def delete_last_trip(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    global savings_tracker
+    trips = savings_tracker.get("trips", [])
+
+    if not trips:
+        await interaction.followup.send("📭 History ledger contains no valid trips to erase.", ephemeral=True)
+        return
+
+    # Pop the last logged record and subtract its exact values from lifetime statistics balances
+    removed_trip = trips.pop()
+    savings_tracker["trip_count"] = max(0, savings_tracker["trip_count"] - 1)
+    savings_tracker["total_full_price"] = max(0.0, savings_tracker["total_full_price"] - removed_trip["subtotal"])
+    savings_tracker["total_paid"] = max(0.0, savings_tracker["total_paid"] - removed_trip["total_due"])
+    savings_tracker["total_coupon_cost"] = max(0.0, savings_tracker["total_coupon_cost"] - removed_trip["coupon_spend"])
+    savings_tracker["total_net_saved"] = max(0.0, savings_tracker["total_net_saved"] - removed_trip["net_saved"])
+
+    await save_json_file(SAVINGS_FILE, savings_tracker)
+
+    embed = discord.Embed(title="↩️ Checkout Trip Successfully Erased", color=0xe74c3c)
+    embed.add_field(name="Removed Trip Date", value=f"`{removed_trip['date']} @ {removed_trip.get('time', '—')}`", inline=False)
+    embed.add_field(name="Reversed Net Savings", value=f"-${removed_trip['net_saved']:.2f}", inline=True)
+    embed.add_field(name="Adjusted Lifetime Total", value=f"${savings_tracker['total_net_saved']:.2f}", inline=True)
+    embed.set_footer(text="Run /savings to verify your freshly re-balanced ledger metrics.")
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="export-session-logs", description="Compiles and spits out every command execution and state footprint from this session")
 @app_commands.describe(mode="Choose whether to fetch regular shopping logs or test tracks logs")
@@ -387,7 +421,7 @@ async def permit_user(interaction: discord.Interaction, member: discord.Member):
     await channel.set_permissions(member, view_channel=True, send_messages=True, read_messages=True)
     await interaction.followup.send(f"✅ Granted access to {member.mention} to use the optimizer room!")
 
-# --- CORE USER SLASH COMMANDS Engine ---
+# --- CORE USER SLASH COMMANDS ENGINE ---
 
 def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> discord.Embed:
     embed = discord.Embed(
@@ -430,6 +464,7 @@ def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> disco
             mod_lines.append("`/export-history` — secure trip tracker manual ledger output")
             mod_lines.append("`/import-history [payload]` — emergency state recovery restoration string engine")
             mod_lines.append("`/export-session-logs [mode]` — dump transaction track audit metrics logs")
+            mod_lines.append("`/delete-last-trip` — erase mistake checkouts and rebalance statistics")
         embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
 
     embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
@@ -755,7 +790,7 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
         await save_channel_session(interaction.channel.id, session, is_test=test)
         return
 
-    now = datetime.now()
+    now = datetime.now(NY_TZ)
     trip_record = {
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
