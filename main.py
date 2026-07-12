@@ -792,7 +792,7 @@ async def create_channel(ctx, name: str, visibility: str = "public", role: disco
         channel = await ctx.guild.create_text_channel(
             name=name,
             category=ctx.channel.category,
-            overwrites=overwrites or None,
+            overwrites=overwrites if overwrites else discord.utils.MISSING,
             reason=f"Created by {ctx.author}"
         )
     except discord.HTTPException as e:
