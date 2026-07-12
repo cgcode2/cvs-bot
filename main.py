@@ -39,12 +39,14 @@ DATA_DIR = "/app/data" if os.path.exists("/app/data") else "."
 SESSION_CHANNELS_FILE = os.path.join(DATA_DIR, "session_channels.json")
 SAVINGS_FILE = os.path.join(DATA_DIR, "savings_data.json")
 CARTS_FILE = os.path.join(DATA_DIR, "active_carts.json")
+BUG_VAULT_FILE = os.path.join(DATA_DIR, "bug_telemetry_vault.json")
 
 STAFF_ROLE_NAME = "Staff"
 NY_TZ = ZoneInfo("America/New_York")  # Explicitly locks bot logs to Eastern Standard Time
 
-# CRITICAL TRANSACTION SYNC LOCK: Protects the database state across operations
+# CRITICAL TRANSACTION SYNC LOCKS: Protects data states from overwrite race conditions
 db_lock = asyncio.Lock()
+vault_lock = asyncio.Lock()
 
 # Synchronous versions for boot-time initialization (before async loop)
 def load_json_file_sync(filepath, default_value):
@@ -67,7 +69,7 @@ def save_json_file_sync(filepath, data):
     except Exception as e:
         print(f"❌ Storage Write Failure on {filepath}: {e}", file=sys.stderr)
 
-# NEW RE-ENGINEERED UNIFIED TRANSACTION LAYER (Completely stops ghost overwrites)
+# UNIFIED TRANSACTION LAYER
 async def update_channel_session(channel_id, update_func, is_test=False):
     """Executes a thread-safe atomic read-modify-write database transaction."""
     async with db_lock:
@@ -148,22 +150,23 @@ async def log_action(channel_id, command_name, input_details, output_summary, is
         return session
     await update_channel_session(channel_id, _logger, is_test=is_test)
 
-# GLOBAL SELF-DIAGNOSTIC TELEMETRY LOGGER PIPELINE
+# SILENT COMPILATION CRASH VAULT TELEMETRY PIPELINE
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if hasattr(error, "original"):
         error = error.original
 
-    # Suppress normal interaction timeouts from flooding DMs if they are caught out of race loops
+    # Gracefully ignore normal Discord client timeouts from creating log files
     if isinstance(error, discord.errors.NotFound) and "Unknown interaction" in str(error):
         print("⚠️ Suppressed an interaction lifespans race delay.", file=sys.stderr)
         return
 
     trace_str = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-    print(f"🚨 Telemetry Bug Caught:\n{trace_str}", file=sys.stderr)
+    print(f"🚨 Bug Suppressed and Cached to Vault:\n{trace_str}", file=sys.stderr)
 
+    # Let the user know an error occurred without posting massive code blocks in the room
     error_embed = discord.Embed(
         title="⚠️ System Telemetry Notice",
-        description="An unexpected exception occurred while executing this command. The telemetry log has been compiled and routed to the administrator.",
+        description="An unexpected exception occurred while executing this command. The telemetry log has been compiled and cached silently to the database storage vaults.",
         color=0xe74c3c
     )
     try:
@@ -174,23 +177,33 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     except Exception:
         pass
 
-    try:
-        app_info = await bot.application_info()
-        owner = app_info.owner
-        
-        options = interaction.data.get("options", []) if interaction.data else []
-        arg_summary = ", ".join([f"{opt.get('name')}: {opt.get('value')}" for opt in options]) or "None"
-        
-        dm_embed = discord.Embed(title="⚙️ Bug Telemetry Report", color=0xe74c3c, timestamp=datetime.now(NY_TZ))
-        dm_embed.add_field(name="Failed Command", value=f"`/{interaction.command.name if interaction.command else 'Unknown'}`", inline=True)
-        dm_embed.add_field(name="User Inputs", value=f"`{arg_summary}`", inline=True)
-        dm_embed.add_field(name="Execution Location", value=f"Channel ID: `{interaction.channel_id}`", inline=False)
-        
-        sliced_trace = trace_str[:1500]
-        await owner.send(embed=dm_embed)
-        await owner.send(f"📋 **Python Traceback Log Output:**\n```py\n{sliced_trace}\n```")
-    except Exception as e:
-        print(f"❌ Failed forwarding diagnostics DM: {e}", file=sys.stderr)
+    # Save the exception data block silently into our isolated vault file under strict locks
+    async with vault_lock:
+        try:
+            if os.path.exists(BUG_VAULT_FILE):
+                with open(BUG_VAULT_FILE, "r") as f:
+                    vault = json.load(f)
+            else:
+                vault = []
+                
+            options = interaction.data.get("options", []) if interaction.data else []
+            arg_summary = ", ".join([f"{opt.get('name')}: {opt.get('value')}" for opt in options]) or "None"
+            
+            bug_entry = {
+                "timestamp": datetime.now(NY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                "command": f"/{interaction.command.name if interaction.command else 'Unknown'}",
+                "inputs": arg_summary,
+                "channel_id": str(interaction.channel_id),
+                "traceback": trace_str
+            }
+            vault.append(bug_entry)
+            
+            with open(BUG_VAULT_FILE, "w") as f:
+                json.dump(vault, f, indent=2)
+        except Exception as e:
+            print(f"❌ Failed caching exception to storage file: {e}", file=sys.stderr)
+
+session_channels = load_json_file_sync(SESSION_CHANNELS_FILE, {})
 
 async def get_or_create_user_coupon_channel(guild, user):
     existing_id = session_channels.get(str(user.id))
@@ -286,7 +299,6 @@ async def send_cart_embed(interaction: discord.Interaction, embed, session, chan
             pass
     
     try:
-        # Strict route check to maintain followup consistency targets
         if interaction.response.is_done():
             msg = await interaction.followup.send(embed=embed)
         else:
@@ -343,6 +355,47 @@ async def on_ready():
 
 # --- OWNER ONLY DIAGNOSTIC OPERATIONS COMMANDS ---
 
+@bot.tree.command(name="export-bug-logs", description="Admin Tool: Packages all silent exceptions since your last check and flushes the vault disk cache")
+async def export_bug_logs(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("⛔ Security Error.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    
+    async with vault_lock:
+        if not os.path.exists(BUG_VAULT_FILE):
+            await interaction.followup.send("📭 The vault is empty! No system bugs have been logged since your last flush.", ephemeral=True)
+            return
+            
+        try:
+            with open(BUG_VAULT_FILE, "r") as f:
+                vault_data = json.load(f)
+        except Exception:
+            vault_data = []
+
+        if not vault_data:
+            await interaction.followup.send("📭 The vault is empty! No system bugs have been logged since your last flush.", ephemeral=True)
+            return
+
+        # Write clean data out to a downloadable format block
+        filename = "compiled_bug_telemetry.json"
+        with open(filename, "w") as f:
+            json.dump(vault_data, f, indent=2)
+
+        # CRITICAL FLUSH STEP: Completely clear the disk cache file out for clean slate metrics
+        try:
+            os.remove(BUG_VAULT_FILE)
+        except Exception:
+            pass
+
+    await interaction.followup.send(
+        "📦 **Vault Compilation Successful!** Download this diagnostic trace file and give it directly to me to patch the errors:",
+        file=discord.File(filename),
+        ephemeral=True
+    )
+    os.remove(filename)
+
 @bot.tree.command(name="delete-last-trip", description="Emergency Undo: Wipes the last checked-out trip and reverses lifetime statistics completely")
 async def delete_last_trip(interaction: discord.Interaction):
     if not await bot.is_owner(interaction.user):
@@ -351,7 +404,10 @@ async def delete_last_trip(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
     async with db_lock:
-        global savings_tracker
+        savings_tracker = load_json_file_sync(SAVINGS_FILE, {
+            "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
+            "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
+        })
         trips = savings_tracker.get("trips", [])
 
         if not trips:
@@ -412,7 +468,10 @@ async def import_history(interaction: discord.Interaction, backup_payload: str):
     async with db_lock:
         try:
             parsed_data = json.loads(backup_payload)
-            global savings_tracker
+            savings_tracker = load_json_file_sync(SAVINGS_FILE, {
+                "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
+                "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
+            })
             savings_tracker.update(parsed_data)
             with open(SAVINGS_FILE, "w") as f:
                 json.dump(savings_tracker, f, indent=2)
@@ -429,6 +488,10 @@ async def export_history(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     async with db_lock:
         try:
+            savings_tracker = load_json_file_sync(SAVINGS_FILE, {
+                "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
+                "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
+            })
             raw_json = json.dumps(savings_tracker, indent=2)
             if len(raw_json) < 1900:
                 await interaction.user.send(f"📦 **Backup Data Ledger String:**\n```json\n{raw_json}\n```")
@@ -492,19 +555,53 @@ async def permit_user(interaction: discord.Interaction, member: discord.Member):
 
 # --- CORE USER SLASH COMMANDS ENGINE ---
 
-@bot.tree.command(name="begin", description="Open your private text channel for coupon optimizing calculations")
-async def begin_slash(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used inside a server text channel.", ephemeral=True)
-        return
+def build_help_embed(author_perms: discord.Permissions, is_owner: bool) -> discord.Embed:
+    embed = discord.Embed(
+        title="📖 CVS Coupon Calculator — Help Menu", 
+        description="Follow this quick blueprint to maximize your coupon values and slash your out-of-pocket register total.", 
+        color=0xcc0000
+    )
+    embed.add_field(name="🚀 0. Launch Workspace", value="`/begin`\n*Creates your personal private operations room right here on the server.*", inline=False)
+    embed.add_field(name="🎟️ 1. Load Your Coupons", value="`/coupons [values separated by spaces]`\n*Example:* `/coupons values:8 8 5`", inline=False)
+    embed.add_field(name="🛒 2. Add Cart Items", value="`/add [item_name_and_prices]`\n*Example:* `/add items:Fairlife 4.49 shampoo 6.59`", inline=False)
+    embed.add_field(name="↩️ 3. Undo Last Add", value="`/undo`", inline=False)
+    embed.add_field(name="❌ 4. Remove Cart Items", value="`/remove [item_name]`\n*Example:* `/remove item_name:Fairlife`", inline=False)
+    embed.add_field(name="👀 5. View Cart", value="`/cart`", inline=False)
+    embed.add_field(name="📊 6. Calculate Strategy", value="`/optimize`", inline=False)
+    embed.add_field(name="✅ 7. Check Out & Track Savings", value="`/checkout`\n*Locks in the trip, logs your net savings, and clears the cart.*", inline=False)
+    embed.add_field(name="💰 8. View Lifetime Savings", value="`/savings`", inline=False)
+    embed.add_field(name="📜 8b. Pull Trip History", value="`/history` (last 10 trips)\n`/history start:2026-07-01` (one day)\n`/history start:2026-07-01 end:2026-07-12` (range)", inline=False)
+    embed.add_field(name="🧹 9. Clear Session (no tracking)", value="`/clear`", inline=False)
+    embed.add_field(name="🏓 10. Bot Status", value="`/ping`", inline=False)
+    embed.add_field(name="ℹ️ 11. About This Bot", value="`/about`", inline=False)
+    embed.add_field(name="🧪 12. Test Mode", value="Same flow, prefixed with `test`: `/testcoupons`, `/testadd`, `/testundo`, `/testremove`, `/testcart`, `/testoptimize`, `/testcheckout`, `/testclear`.", inline=False)
 
-    await interaction.response.defer(ephemeral=True)
-    target_channel, created = await get_or_create_user_coupon_channel(interaction.guild, interaction.user)
-    
-    if created:
-        await interaction.followup.send(f"✅ Your private space has been initialized! Head over to {target_channel.mention} to start shopping.", ephemeral=True)
-    else:
-        await interaction.followup.send(f"👋 You already have an active session! Jump back into {target_channel.mention} to finish up.", ephemeral=True)
+    if author_perms.manage_messages or author_perms.manage_roles or is_owner:
+        mod_lines = []
+        if author_perms.manage_messages or is_owner: mod_lines.append("`/nuke [amount]` — bulk delete messages")
+        if author_perms.manage_channels or is_owner: mod_lines.append("`/ticket-close` — close active optimizer ticket channels")
+        if author_perms.manage_roles or is_owner: 
+            mod_lines.append("`/createrole [name] [color]` — create a new role")
+            mod_lines.append("`/deleterole [name]` — remove a role")
+            mod_lines.append("`/roleadd [@member] [name]` — give a role")
+            mod_lines.append("`/roleremove [@member] [name]` — take a role")
+        if author_perms.manage_channels or is_owner:
+            mod_lines.append("`/createchannel [name] [visibility]` — spawn new channel")
+            mod_lines.append("`/blockrole [role]` — hide a channel from a role")
+            mod_lines.append("`/unblockrole [role]` — restore access configuration templates")
+            mod_lines.append("`/whocansee` — view channel visibility audits")
+        if is_owner:
+            mod_lines.append("`/setup` — initialize private gateway core channel")
+            mod_lines.append("`/permit [@member]` — whitelist member access paths")
+            mod_lines.append("`/export-history` — secure trip tracker manual ledger output")
+            mod_lines.append("`/import-history [payload]` — emergency state recovery restoration string engine")
+            mod_lines.append("`/export-session-logs [mode]` — dump transaction track audit metrics logs")
+            mod_lines.append("`/delete-last-trip` — erase mistake checkouts and rebalance statistics")
+            mod_lines.append("`/export-bug-logs` — download and flush silent exception vault cache files")
+        embed.add_field(name="🛡️ Administrative & Owner Commands", value="\n".join(mod_lines), inline=False)
+
+    embed.set_footer(text="Tip: Keep item names to a single word. This menu is completely tailored to your permissions.")
+    return embed
 
 async def _add_item_logic(interaction: discord.Interaction, items_str, test=False):
     prefix = "🧪 [TEST] " if test else ""
@@ -513,7 +610,6 @@ async def _add_item_logic(interaction: discord.Interaction, items_str, test=Fals
         await interaction.response.send_message("❌ Format error. Provide item/price pairs.\n*Example:* `shampoo 6.59 soap 2.99`", ephemeral=True)
         return
 
-    # Critical change: Defer immediately to clear the 3-second Discord window
     await interaction.response.defer()
     
     async def _add_mutation(session):
@@ -652,7 +748,7 @@ async def _set_coupons_logic(interaction: discord.Interaction, values_str, test=
             else:
                 new_coupons.append(float(x))
                 
-        await interaction.response.defer()  # Always defer first to prevent Error 10062
+        await interaction.response.defer()
 
         async def _coupon_mutation(s):
             s["coupons"].extend(new_coupons)
@@ -665,7 +761,7 @@ async def _set_coupons_logic(interaction: discord.Interaction, values_str, test=
         all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
         
         await log_action(interaction.channel.id, "coupons", values_str, f"Loaded stack: {all_str}", is_test=test)
-        await interaction.followup.send(  # Reply exclusively via followups to prevent Error 40060
+        await interaction.followup.send(
             f"{prefix}✅ Added: {added_str}\n🎟️ All Loaded Coupons: {all_str}\n"
             f"*(Run `{clear_cmd}` to wipe coupons/cart and start fresh.)*"
         )
@@ -850,6 +946,10 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
     }
 
     async with db_lock:
+        savings_tracker = load_json_file_sync(SAVINGS_FILE, {
+            "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
+            "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
+        })
         savings_tracker["trip_count"] += 1
         savings_tracker["total_full_price"] += subtotal
         savings_tracker["total_paid"] += total_due
@@ -921,7 +1021,11 @@ async def test_checkout(interaction: discord.Interaction):
 
 @bot.tree.command(name="savings", description="View accumulated lifetime ledger optimizations and performance totals")
 async def view_savings(interaction: discord.Interaction):
-    s = savings_tracker
+    async with db_lock:
+        s = load_json_file_sync(SAVINGS_FILE, {
+            "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
+            "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
+        })
     embed = discord.Embed(title="💰 Lifetime Savings Tracker", color=0x2ecc71)
     if s["trip_count"] == 0:
         embed.description = "No trips checked out yet. Run `/checkout` to start tracking!"
@@ -944,7 +1048,12 @@ def _parse_history_date(raw):
 @bot.tree.command(name="history", description="Query past receipts and localized financial arrays out of persistent storage tracking sheets")
 @app_commands.describe(start="Filter starting bounds date (YYYY-MM-DD)", end="Optional range limit date bounds (YYYY-MM-DD)")
 async def view_history(interaction: discord.Interaction, start: str = None, end: str = None):
-    trips = savings_tracker.get("trips", [])
+    async with db_lock:
+        s = load_json_file_sync(SAVINGS_FILE, {
+            "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
+            "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
+        })
+    trips = s.get("trips", [])
     if not trips:
         await interaction.response.send_message("📭 No checked-out trips logged yet.", ephemeral=True)
         return
