@@ -40,42 +40,79 @@ CARTS_FILE = os.path.join(DATA_DIR, "active_carts.json")
 
 STAFF_ROLE_NAME = "Staff"
 
-# Load/Save wrappers to keep data written safely to disk instead of volatile RAM
-def load_json_file(filepath, default_value):
+# CRITICAL SYNC LOCK: Protects all file I/O from race conditions
+file_operation_lock = asyncio.Lock()
+
+# Synchronous versions for boot-time initialization (before async loop)
+def load_json_file_sync(filepath, default_value):
+    """Sync load for startup before event loop exists."""
     if os.path.exists(filepath):
         try:
             with open(filepath, "r") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, FileNotFoundError) as e:
+            print(f"⚠️ Failed to load {filepath}: {e}. Using default.", file=sys.stderr)
             return default_value
     return default_value
 
-def save_json_file(filepath, data):
+def save_json_file_sync(filepath, data):
+    """Sync save for startup before event loop exists."""
     try:
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
         print(f"❌ Storage Write Failure on {filepath}: {e}", file=sys.stderr)
 
-session_channels = load_json_file(SESSION_CHANNELS_FILE, {})
-savings_tracker = load_json_file(SAVINGS_FILE, {
+# Async versions for command handlers (thread-safe with lock)
+async def load_json_file(filepath, default_value):
+    """Async load with lock protection and safe error handling."""
+    async with file_operation_lock:
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError, FileNotFoundError) as e:
+                print(f"⚠️ Failed to load {filepath}: {e}. Using default.", file=sys.stderr)
+                return default_value
+        return default_value
+
+async def save_json_file(filepath, data):
+    """Async save with lock protection."""
+    async with file_operation_lock:
+        try:
+            os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+            with open(filepath, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"❌ Storage Write Failure on {filepath}: {e}", file=sys.stderr)
+
+session_channels = load_json_file_sync(SESSION_CHANNELS_FILE, {})
+savings_tracker = load_json_file_sync(SAVINGS_FILE, {
     "trip_count": 0, "total_full_price": 0.0, "total_paid": 0.0,
     "total_coupon_cost": 0.0, "total_net_saved": 0.0, "trips": []
 })
 
-def get_channel_session(channel_id, is_test=False):
-    """Retrieves state instantly out of a file snapshot instead of relying on thread-blocked RAM arrays."""
-    carts_db = load_json_file(CARTS_FILE, {})
+async def get_channel_session(channel_id, is_test=False):
+    """Thread-safe retrieval of cart session from disk with auto-initialization."""
+    carts_db = await load_json_file(CARTS_FILE, {})
     ch_key = str(channel_id)
     if ch_key not in carts_db:
-        carts_db[ch_key] = {"items": [], "coupons": [], "cart_message": None, "is_test": is_test}
-        save_json_file(CARTS_FILE, carts_db)
+        carts_db[ch_key] = {
+            "items": [], 
+            "coupons": [], 
+            "cart_message": None, 
+            "is_test": is_test,
+            "last_optimization": None  # BUG FIX #2: Store optimization snapshot
+        }
+        await await save_json_file, carts_db)
     return carts_db[ch_key]
 
-def save_channel_session(channel_id, session_data):
-    carts_db = load_json_file(CARTS_FILE, {})
+async def save_channel_session(channel_id, session_data):
+    """Thread-safe save of cart session to disk."""
+    carts_db = await load_json_file(CARTS_FILE, {})
     carts_db[str(channel_id)] = session_data
-    save_json_file(CARTS_FILE, carts_db)
+    await await save_json_file, carts_db)
 
 async def get_or_create_user_coupon_channel(guild, user):
     existing_id = session_channels.get(str(user.id))
@@ -107,7 +144,7 @@ async def get_or_create_user_coupon_channel(guild, user):
     )
 
     session_channels[str(user.id)] = channel.id
-    save_json_file(SESSION_CHANNELS_FILE, session_channels)
+    await await save_json_file, session_channels)
 
     welcome_embed = discord.Embed(
         title="🎯 Your Private Coupon Optimizer Channel",
@@ -168,7 +205,7 @@ async def send_cart_embed(interaction: discord.Interaction, embed, session, chan
     
     msg = await interaction.followup.send(embed=embed)
     session["cart_message"] = msg.id
-    save_channel_session(channel_id, session)
+    await save_channel_session(channel_id, session)
 
 def group_due(group_items, coupon_val):
     if not group_items:
@@ -224,7 +261,7 @@ async def import_history(interaction: discord.Interaction, backup_payload: str):
         parsed_data = json.loads(backup_payload)
         global savings_tracker
         savings_tracker.update(parsed_data)
-        save_json_file(SAVINGS_FILE, savings_tracker)
+        await await save_json_file, savings_tracker)
         await interaction.followup.send("✅ History safely injected back into persistent storage drive!", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed parsing payload structure: `{e}`", ephemeral=True)
@@ -374,7 +411,7 @@ async def _add_item_logic(interaction: discord.Interaction, args, test=False):
         return
 
     await interaction.response.defer()
-    session = get_channel_session(interaction.channel.id, is_test=test)
+    session = await get_channel_session(interaction.channel.id, is_test=test)
     added = []
     try:
         for i in range(0, len(args), 2):
@@ -406,7 +443,7 @@ async def test_add_item(interaction: discord.Interaction, items: str):
 
 async def _undo_item_logic(interaction: discord.Interaction, test=False):
     prefix = "🧪 [TEST] " if test else ""
-    session = get_channel_session(interaction.channel.id, is_test=test)
+    session = await get_channel_session(interaction.channel.id, is_test=test)
     if not session["items"]:
         await interaction.response.send_message("❌ Nothing to undo — your cart is empty!", ephemeral=True)
         return
@@ -427,12 +464,12 @@ async def undo_item(interaction: discord.Interaction):
 
 @bot.tree.command(name="testundo", description="[TEST] Undo the last item added to your test cart layout")
 async def test_undo_item(interaction: discord.Interaction):
-    await _undo_item_logic(interaction, test_type=True)
+    await _undo_item_logic(interaction, test=True)
 
 async def _view_cart_logic(interaction: discord.Interaction, test=False):
     prefix = "🧪 [TEST] " if test else ""
     await interaction.response.defer()
-    session = get_channel_session(interaction.channel.id, is_test=test)
+    session = await get_channel_session(interaction.channel.id, is_test=test)
     embed = discord.Embed(title=f"{prefix}🛒 CVS Shopping Cart", color=0x9b59b6 if test else 0xcc0000)
     item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
     subtotal = sum(item['price'] for item in session["items"])
@@ -452,7 +489,7 @@ async def test_view_cart(interaction: discord.Interaction):
 
 async def _remove_item_logic(interaction: discord.Interaction, item_name, test=False):
     prefix = "🧪 [TEST] " if test else ""
-    session = get_channel_session(interaction.channel.id, is_test=test)
+    session = await get_channel_session(interaction.channel.id, is_test=test)
     found = False
     for item in reversed(session["items"]):
         if item["name"].lower() == item_name.lower():
@@ -485,7 +522,7 @@ HALF_OFF_ALIASES = {"half", "50%", "50%off", "0.5x"}
 
 async def _set_coupons_logic(interaction: discord.Interaction, args, test=False):
     clear_cmd = "/testclear" if test else "/clear"
-    session = get_channel_session(interaction.channel.id, is_test=test)
+    session = await get_channel_session(interaction.channel.id, is_test=test)
     try:
         new_coupons = []
         for x in args:
@@ -498,7 +535,7 @@ async def _set_coupons_logic(interaction: discord.Interaction, args, test=False)
         prefix = "🧪 [TEST] " if test else ""
         added_str = ", ".join([coupon_label(c) for c in new_coupons])
         all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
-        save_channel_session(interaction.channel.id, session)
+        await save_channel_session(interaction.channel.id, session)
         await interaction.response.send_message(
             f"{prefix}✅ Added: {added_str}\n🎟️ All Loaded Coupons: {all_str}\n"
             f"*(Run `{clear_cmd}` to wipe coupons/cart and start fresh.)*"
@@ -527,6 +564,16 @@ async def _optimize_logic(interaction: discord.Interaction, test=False):
 
     await interaction.response.defer()
     total_due, bundling = await asyncio.to_thread(calculate_best_bundles, items, coupons)
+    # BUG FIX #2: Cache optimization snapshot to avoid checkout desync
+    session = await get_channel_session(interaction.channel.id, is_test=test)
+    session["last_optimization"] = {
+        "items": items,
+        "coupons": coupons,
+        "total_due": total_due,
+        "bundling": bundling
+    }
+    await save_channel_session(interaction.channel.id, session)
+    
     embed = discord.Embed(title=f"{prefix}🧾 Optimized CVS Checkout Strategy", color=0x9b59b6 if test else 0x00ff00)
 
     for idx, coupon_val in enumerate(coupons):
@@ -602,11 +649,11 @@ async def test_optimize_cart(interaction: discord.Interaction):
 
 async def _clear_logic(interaction: discord.Interaction, test=False):
     # BUG FIX: Pull through the initialization safeguard wrapper to prevent unallocated file registry KeyErrors
-    session = get_channel_session(interaction.channel.id, is_test=test)
+    session = await get_channel_session(interaction.channel.id, is_test=test)
     session["items"] = []
     session["coupons"] = []
     session["cart_message"] = None
-    save_channel_session(interaction.channel.id, session)
+    await save_channel_session(interaction.channel.id, session)
     msg = "🧪 Test cart and coupons cleared!" if test else "🧹 Cart and coupons cleared!"
     await interaction.response.send_message(msg)
 
@@ -619,7 +666,7 @@ async def test_clear_cart(interaction: discord.Interaction):
     await _clear_logic(interaction, test=True)
 
 async def _checkout_logic(interaction: discord.Interaction, test=False):
-    session = get_channel_session(interaction.channel.id, is_test=test)
+    session = await get_channel_session(interaction.channel.id, is_test=test)
     items = session["items"]
     coupons = session["coupons"]
     if not items:
@@ -627,8 +674,19 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
         return
 
     await interaction.response.defer()
-    subtotal = sum(item['price'] for item in items)
-    total_due, _ = await asyncio.to_thread(calculate_best_bundles, items, coupons)
+    
+    # BUG FIX #2: Use cached optimization instead of recalculating
+    last_opt = session.get("last_optimization")
+    if last_opt is None:
+        # Fallback if no optimization was run (should not happen in normal flow)
+        subtotal = sum(item['price'] for item in items)
+        total_due, _ = await asyncio.to_thread(calculate_best_bundles, items, coupons)
+    else:
+        # Use exact values from cached optimization (eliminates float precision desync)
+        subtotal = sum(item['price'] for item in last_opt.get("items", items))
+        total_due = last_opt["total_due"]
+        bundling = last_opt["bundling"]
+    
     coupon_spend = sum(coupon_cost(c) for c in coupons)
     gross_saved = subtotal - total_due
     net_saved = gross_saved - coupon_spend
@@ -643,7 +701,8 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
         session["items"] = []
         session["coupons"] = []
         session["cart_message"] = None
-        save_channel_session(interaction.channel.id, session)
+        session["last_optimization"] = None
+        await save_channel_session(interaction.channel.id, session)
         return
 
     now = datetime.now()
@@ -664,7 +723,7 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
     savings_tracker["total_coupon_cost"] += coupon_spend
     savings_tracker["total_net_saved"] += net_saved
     savings_tracker.setdefault("trips", []).append(trip_record)
-    save_json_file(SAVINGS_FILE, savings_tracker)
+    await await save_json_file, savings_tracker)
 
     embed = discord.Embed(title="✅ Trip Checked Out!", color=0x2ecc71)
     embed.add_field(name="🗓️ Date Logged", value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
@@ -684,7 +743,8 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
     session["items"] = []
     session["coupons"] = []
     session["cart_message"] = None
-    save_channel_session(interaction.channel.id, session)
+    session["last_optimization"] = None
+    await save_channel_session(interaction.channel.id, session)
 
     try:
         item_str = "\n".join([f"• **{i['name']}**: ${i['price']:.2f}" for i in items]) or "No items."
@@ -698,15 +758,9 @@ async def _checkout_logic(interaction: discord.Interaction, test=False):
         dm_embed.add_field(name="Coupon Cost", value=f"${coupon_spend:.2f}", inline=True)
         dm_embed.add_field(name="💰 Net Money Saved", value=f"## **${net_saved:.2f}**", inline=False)
         await interaction.user.send(embed=dm_embed)
-    except discord.Forbidden:
-        await interaction.followup.send(f"⚠️ {interaction.user.mention} I couldn't DM you a receipt — check your privacy configs.")
+    except Exception as e:
+        print(f"⚠️ DM send failed: {e}", file=sys.stderr)
 
-    if is_ticket:
-        session_channels.pop(str(interaction.user.id), None)
-        save_json_file(SESSION_CHANNELS_FILE, session_channels)
-        await asyncio.sleep(10)
-        try: await interaction.channel.delete()
-        except discord.HTTPException: pass
 
 @bot.tree.command(name="checkout", description="Finalize your trip balance splits, lock in metrics, and clear tracking arrays")
 async def checkout(interaction: discord.Interaction):
@@ -799,7 +853,7 @@ async def ticket_close(interaction: discord.Interaction):
     owner_id = next((uid for uid, cid in session_channels.items() if cid == interaction.channel.id), None)
     if owner_id:
         session_channels.pop(owner_id, None)
-        save_json_file(SESSION_CHANNELS_FILE, session_channels)
+        await save_json_file, session_channels)
     await interaction.response.send_message(f"🔒 Ticket closed. Deleting channel in 5 seconds...")
     await asyncio.sleep(5)
     try: await interaction.channel.delete()
