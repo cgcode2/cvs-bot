@@ -6,6 +6,7 @@ from threading import Thread
 import os
 import sys
 import json
+from datetime import datetime
 
 # 1. BACKGROUND WEB SERVER
 app = Flask('')
@@ -62,6 +63,7 @@ DEFAULT_SAVINGS = {
     "total_paid": 0.0,
     "total_coupon_cost": 0.0,
     "total_net_saved": 0.0,
+    "trips": [],
 }
 
 def load_savings():
@@ -224,6 +226,11 @@ async def help_menu(ctx):
     embed.add_field(name="📊 6. Calculate Strategy", value="`!optimize`", inline=False)
     embed.add_field(name="✅ 7. Check Out & Track Savings", value="`!checkout`\n*Locks in the trip, logs your net savings, and clears the cart.*", inline=False)
     embed.add_field(name="💰 8. View Lifetime Savings", value="`!savings`", inline=False)
+    embed.add_field(
+        name="📜 8b. Pull Trip History",
+        value="`!history` (last 10 trips)\n`!history 2026-07-01` (one day)\n`!history 2026-07-01 2026-07-12` (date range)",
+        inline=False
+    )
     embed.add_field(name="🧹 9. Clear Session (no tracking)", value="`!clear`", inline=False)
     embed.add_field(name="🏓 10. Bot Status", value="`!ping`", inline=False)
     embed.add_field(name="ℹ️ 11. About This Bot", value="`!about`", inline=False)
@@ -551,14 +558,28 @@ async def _checkout_logic(ctx, session, test=False):
         session["cart_message"] = None
         return
 
+    now = datetime.now()
+    trip_record = {
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "items": [{"name": i["name"], "price": i["price"]} for i in items],
+        "coupons": coupons,
+        "subtotal": subtotal,
+        "total_due": total_due,
+        "coupon_spend": coupon_spend,
+        "net_saved": net_saved,
+    }
+
     savings_tracker["trip_count"] += 1
     savings_tracker["total_full_price"] += subtotal
     savings_tracker["total_paid"] += total_due
     savings_tracker["total_coupon_cost"] += coupon_spend
     savings_tracker["total_net_saved"] += net_saved
+    savings_tracker.setdefault("trips", []).append(trip_record)
     save_savings(savings_tracker)
 
     embed = discord.Embed(title="✅ Trip Checked Out!", color=0x2ecc71)
+    embed.add_field(name="🗓️ Date Logged", value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
     embed.add_field(name="Full Price (No Coupons)", value=f"${subtotal:.2f}", inline=True)
     embed.add_field(name="Register Total Paid", value=f"${total_due:.2f}", inline=True)
     embed.add_field(name="Spent on Coupons", value=f"${coupon_spend:.2f}", inline=True)
@@ -572,7 +593,7 @@ async def _checkout_logic(ctx, session, test=False):
         value=f"**${savings_tracker['total_net_saved']:.2f}** across {savings_tracker['trip_count']} trip(s)",
         inline=False
     )
-    embed.set_footer(text="Run !savings anytime to check your lifetime stats. Cart has been cleared for your next trip.")
+    embed.set_footer(text="Run !savings for lifetime stats or !history to pull past trips. Cart has been cleared for your next trip.")
     await ctx.send(embed=embed)
 
     session["items"] = []
@@ -602,6 +623,71 @@ async def view_savings(ctx):
         embed.add_field(name="🎟️ Total Spent on Coupons", value=f"${s['total_coupon_cost']:.2f}", inline=True)
         embed.add_field(name="📊 Avg Net Saved / Trip", value=f"${avg_saved:.2f}", inline=True)
         embed.add_field(name="💰 Lifetime Net Money Saved", value=f"## **${s['total_net_saved']:.2f}**", inline=False)
+    await ctx.send(embed=embed)
+
+def _parse_history_date(raw):
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+@bot.command(name="history")
+async def view_history(ctx, start: str = None, end: str = None):
+    await safely_delete_message(ctx)
+    trips = savings_tracker.get("trips", [])
+
+    if not trips:
+        await ctx.send("📭 No checked-out trips logged yet. Run `!checkout` to start building your history!", delete_after=8)
+        return
+
+    start_date, end_date = None, None
+    if start:
+        start_date = _parse_history_date(start)
+        if not start_date:
+            await ctx.send("❌ Couldn't read that date. Use `YYYY-MM-DD`.\n*Example:* `!history 2026-07-01` or `!history 2026-07-01 2026-07-12`", delete_after=8)
+            return
+        end_date = _parse_history_date(end) if end else start_date
+        if end and not end_date:
+            await ctx.send("❌ Couldn't read that end date. Use `YYYY-MM-DD`.", delete_after=8)
+            return
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+
+    if start_date:
+        matches = [t for t in trips if start_date <= datetime.strptime(t["date"], "%Y-%m-%d").date() <= end_date]
+    else:
+        matches = trips[-10:]  # no date given: most recent 10 trips
+
+    if not matches:
+        range_str = f"{start_date} to {end_date}" if start_date != end_date else f"{start_date}"
+        await ctx.send(f"📭 No trips found for **{range_str}**.", delete_after=8)
+        return
+
+    if start_date:
+        title = f"📜 Trip History — {start_date}" + (f" to {end_date}" if end_date != start_date else "")
+    else:
+        title = "📜 Trip History — Last 10 Trips"
+
+    embed = discord.Embed(title=title, color=0x3498db)
+    for trip in matches[-15:]:  # cap fields shown to avoid embed limits
+        item_names = ", ".join(i["name"] for i in trip["items"])
+        embed.add_field(
+            name=f"🗓️ {trip['date']} @ {trip.get('time', '—')}",
+            value=(
+                f"Items: {item_names}\n"
+                f"Full Price: ${trip['subtotal']:.2f} ➔ Paid: ${trip['total_due']:.2f} "
+                f"(coupons cost ${trip['coupon_spend']:.2f})\n"
+                f"💰 Net Saved: **${trip['net_saved']:.2f}**"
+            ),
+            inline=False
+        )
+
+    total_saved = sum(t["net_saved"] for t in matches)
+    embed.add_field(name="📊 Total for This Range", value=f"**${total_saved:.2f}** saved across {len(matches)} trip(s)", inline=False)
+    if len(matches) > 15:
+        embed.set_footer(text=f"Showing the most recent 15 of {len(matches)} matching trips.")
     await ctx.send(embed=embed)
 
 @bot.command(name="nuke")
