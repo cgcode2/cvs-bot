@@ -44,6 +44,10 @@ Thumbs.db
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
-# Replit
+# Replit & Bot Artifacts
 .cache/
 .local/
+.env
+__pycache__/
+*.zip
+
