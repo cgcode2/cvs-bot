@@ -264,8 +264,8 @@ class TestAIOBot(unittest.TestCase):
     def test_format_account_card_links(self):
         acc = main.cvs_accounts_db[0]
         embed, file = main.format_account_card(acc)
-        self.assertIn("Direct Send-to-Card Hub", embed.description)
-        self.assertIn("redirectUrl=%2Fdeals%2Fcoupons", embed.description)
+        self.assertIn("Open Deals & Rewards (Send to Card)", embed.description)
+        self.assertIn("https://www.cvs.com/extracare/deals-and-rewards", embed.description)
         self.assertIn("cvs_barcode.png", file.filename)
 
 

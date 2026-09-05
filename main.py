@@ -688,15 +688,14 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     email = acc.get("email", "")
     pwd = acc.get("password", "")
 
-    encoded_email = urllib.parse.quote(email) if email else ""
-    coupon_link = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fdeals%2Fcoupons" if email else "https://www.cvs.com/deals/coupons"
-    extracare_link = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fextracare%2Fhome" if email else "https://www.cvs.com/extracare/home"
+    coupon_link = "https://www.cvs.com/extracare/deals-and-rewards"
+    extracare_link = "https://www.cvs.com/extracare/home"
 
     embed = discord.Embed(
         title=f"💳 CVS ExtraCare® Card — #{acc_id} {name}",
         description=(
             "Scannable barcode generated below for register & self-checkout scanners.\n\n"
-            f"🎯 **[Direct Send-to-Card Hub]({coupon_link})** • 💰 **[ExtraBucks Dashboard]({extracare_link})**"
+            f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 💰 **[ExtraCare Dashboard]({extracare_link})**"
         ),
         color=COLOR_PRIMARY
     )
@@ -729,7 +728,7 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
         embed.add_field(name="🎟️ Loaded Coupons & Notes", value=acc['notes'], inline=False)
 
     embed.set_image(url="attachment://cvs_barcode.png")
-    embed.set_footer(text=f"AIO Bot CVS Account Manager • Account #{acc_id} of {len(cvs_accounts_db)} • Run /cliphelp for 1-Click Send-All")
+    embed.set_footer(text=f"AIO Bot CVS Account Manager • Account #{acc_id} of {len(cvs_accounts_db)}")
     return embed, file
 
 
@@ -770,20 +769,10 @@ class CVSAccountsPaginationView(discord.ui.View):
         next_btn.callback = self.next_callback
         self.add_item(next_btn)
 
-        # Dynamic Row 2: 1-Click direct links for the selected account
-        acc = cvs_accounts_db[self.current_idx] if cvs_accounts_db and 0 <= self.current_idx < len(cvs_accounts_db) else None
-        email = acc.get("email", "") if acc else ""
-        if email:
-            encoded_email = urllib.parse.quote(email)
-            coupon_url = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fdeals%2Fcoupons"
-            extracare_url = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fextracare%2Fhome"
-        else:
-            coupon_url = "https://www.cvs.com/deals/coupons"
-            extracare_url = "https://www.cvs.com/extracare/home"
-
-        self.add_item(discord.ui.Button(label="Send-to-Card Hub", style=discord.ButtonStyle.link, url=coupon_url, emoji="🎯", row=2))
-        self.add_item(discord.ui.Button(label="ExtraBucks Rewards", style=discord.ButtonStyle.link, url=extracare_url, emoji="💰", row=2))
-        self.add_item(discord.ui.Button(label="CVS Sign In", style=discord.ButtonStyle.link, url="https://www.cvs.com/account/login", emoji="🔐", row=2))
+        # Direct Action Links in Row 2
+        self.add_item(discord.ui.Button(label="Deals & Rewards (Send to Card)", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/deals-and-rewards", emoji="🎯", row=2))
+        self.add_item(discord.ui.Button(label="Coupons Hub", style=discord.ButtonStyle.link, url="https://www.cvs.com/deals/coupons", emoji="🎟️", row=2))
+        self.add_item(discord.ui.Button(label="ExtraCare Home", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/home", emoji="💰", row=2))
 
     async def prev_callback(self, interaction: discord.Interaction):
         if not cvs_accounts_db:
