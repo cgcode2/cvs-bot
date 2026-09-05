@@ -678,26 +678,6 @@ def generate_code128_barcode_bytes(data: str, height: int = 100, bar_width: int 
 
 
 
-def build_cvs_dob_auth_url(acc: Dict[str, Any], target_path: str = "/deals/coupons") -> Optional[str]:
-    """Builds a direct CVS DOB fast-authentication link if xid or auth_url is available."""
-    encoded_target = urllib.parse.quote(target_path, safe='')
-    if acc.get("auth_url"):
-        raw_url = acc["auth_url"]
-        # If it's already an account-auth URL, ensure fURL and gURL point to our target
-        if "account-auth/dob" in raw_url:
-            parsed = urllib.parse.urlparse(raw_url)
-            qs = urllib.parse.parse_qs(parsed.query)
-            qs["fURL"] = [target_path]
-            qs["gURL"] = [target_path]
-            new_query = urllib.parse.urlencode(qs, doseq=True)
-            return urllib.parse.urlunparse(parsed._replace(query=new_query))
-        return raw_url
-    if acc.get("xid"):
-        xid = acc["xid"].strip()
-        return f"https://www.cvs.com/account-auth/dob?xid={xid}&fURL={encoded_target}&gURL={encoded_target}"
-    return None
-
-
 def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.File]:
     raw_card = str(acc.get("extraCareNumber", "0000000000")).strip()
     barcode_buffer = generate_code128_barcode_bytes(raw_card)
@@ -707,26 +687,15 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     acc_id = acc.get("id", 1)
     email = acc.get("email", "")
     pwd = acc.get("password", "")
-    bday = acc.get("birthday", "")
 
-    # Format birthday nicely for DOB prompt (MM/DD/YYYY)
-    bday_fmt = bday
-    if bday and "-" in bday:
-        parts = bday.split("-")
-        if len(parts) == 3:
-            bday_fmt = f"{parts[1]}/{parts[2]}/{parts[0]}"  # YYYY-MM-DD -> MM/DD/YYYY
-
-    dob_link = build_cvs_dob_auth_url(acc, "/deals/coupons")
-    coupon_link = dob_link or "https://www.cvs.com/extracare/deals-and-rewards"
-    extracare_link = build_cvs_dob_auth_url(acc, "/extracare/home") or "https://www.cvs.com/extracare/home"
-
-    link_text = f"⚡ **[1-Click DOB Login ➔ Deals & Rewards]({dob_link})**\n*(Enter DOB: `{bday_fmt}`)*" if dob_link else f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 💰 **[ExtraCare Dashboard]({extracare_link})**"
+    coupon_link = "https://www.cvs.com/extracare/deals-and-rewards"
+    extracare_link = "https://www.cvs.com/extracare/home"
 
     embed = discord.Embed(
         title=f"💳 CVS ExtraCare® Card — #{acc_id} {name}",
         description=(
             "Scannable barcode generated below for register & self-checkout scanners.\n\n"
-            f"{link_text}"
+            f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 💰 **[ExtraCare Dashboard]({extracare_link})**"
         ),
         color=COLOR_PRIMARY
     )
@@ -743,8 +712,8 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
 
     embed.add_field(name="👤 Cardholder", value=f"**{name}**", inline=True)
     embed.add_field(name="📞 Phone", value=f"`{phone_fmt}`", inline=True)
-    if bday_fmt:
-        embed.add_field(name="🎂 Birthday (DOB Prompt)", value=f"**`{bday_fmt}`**", inline=True)
+    if acc.get("birthday"):
+        embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
 
     val = f"📧 **Email:** `{email}`" if email else ""
     if pwd:
@@ -776,7 +745,7 @@ class AccountSelectDropdown(discord.ui.Select):
         idx = int(self.values[0])
         self.view.current_idx = idx
         embed, file = format_account_card(cvs_accounts_db[idx])
-        self.view.rebuild_items()
+        self.view.update_select()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self.view)
 
 
@@ -784,36 +753,21 @@ class CVSAccountsPaginationView(discord.ui.View):
     def __init__(self, current_idx: int = 0):
         super().__init__(timeout=180)
         self.current_idx = current_idx
-        self.rebuild_items()
+        self.dropdown = AccountSelectDropdown(current_idx)
+        self.add_item(self.dropdown)
 
-    def rebuild_items(self):
-        self.clear_items()
+        # Action Links in Row 2
+        self.add_item(discord.ui.Button(label="Deals & Rewards", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/deals-and-rewards", emoji="🎯", row=2))
+        self.add_item(discord.ui.Button(label="Digital Coupons", style=discord.ButtonStyle.link, url="https://www.cvs.com/deals/coupons", emoji="🎟️", row=2))
+        self.add_item(discord.ui.Button(label="ExtraCare Home", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/home", emoji="💰", row=2))
+
+    def update_select(self):
+        self.remove_item(self.dropdown)
         self.dropdown = AccountSelectDropdown(self.current_idx)
         self.add_item(self.dropdown)
 
-        # Pagination Buttons in Row 1
-        prev_btn = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1, custom_id="cvs_prev")
-        prev_btn.callback = self.prev_callback
-        self.add_item(prev_btn)
-
-        next_btn = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=1, custom_id="cvs_next")
-        next_btn.callback = self.next_callback
-        self.add_item(next_btn)
-
-        # Dynamic Action Links in Row 2
-        acc = cvs_accounts_db[self.current_idx] if cvs_accounts_db and 0 <= self.current_idx < len(cvs_accounts_db) else None
-        dob_deals_link = build_cvs_dob_auth_url(acc, "/deals/coupons") if acc else None
-        dob_home_link = build_cvs_dob_auth_url(acc, "/extracare/home") if acc else None
-
-        deals_url = dob_deals_link or "https://www.cvs.com/extracare/deals-and-rewards"
-        hub_url = "https://www.cvs.com/deals/coupons"
-        home_url = dob_home_link or "https://www.cvs.com/extracare/home"
-
-        self.add_item(discord.ui.Button(label="⚡ 1-Click DOB Deals", style=discord.ButtonStyle.link, url=deals_url, emoji="🎯", row=2))
-        self.add_item(discord.ui.Button(label="Coupons Hub", style=discord.ButtonStyle.link, url=hub_url, emoji="🎟️", row=2))
-        self.add_item(discord.ui.Button(label="ExtraCare Home", style=discord.ButtonStyle.link, url=home_url, emoji="💰", row=2))
-
-    async def prev_callback(self, interaction: discord.Interaction):
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not cvs_accounts_db:
             await interaction.response.send_message("No accounts found!", ephemeral=True)
             return
@@ -3235,89 +3189,6 @@ async def cvsaccount_cmd(
     embed.set_footer(text="AIO Bot CVS ExtraCare Barcode Generator • High-Resolution Scan")
 
     await ctx.send(embed=embed, file=file)
-
-
-@bot.hybrid_command(
-    name="setauth",
-    aliases=["setlink", "setxid", "addauth"],
-    description="Set the 1-Click DOB Fast-Auth link or xid for a CVS account"
-)
-async def setauth_cmd(ctx, account: str, auth_link_or_xid: str):
-    await safely_delete_message(ctx)
-    acc = get_cvs_account(account)
-    if not acc:
-        await ctx.send(f"❌ Could not find account matching `{account}`.", delete_after=6)
-        return
-
-    val = auth_link_or_xid.strip()
-    if "xid=" in val:
-        parsed = urllib.parse.urlparse(val)
-        qs = urllib.parse.parse_qs(parsed.query)
-        xid_vals = qs.get("xid", [])
-        if xid_vals:
-            acc["xid"] = xid_vals[0]
-        acc["auth_url"] = val
-    elif len(val) <= 20 and not val.startswith("http"):
-        acc["xid"] = val
-        acc["auth_url"] = f"https://www.cvs.com/account-auth/dob?xid={val}&fURL=%2Fdeals%2Fcoupons&gURL=%2Fdeals%2Fcoupons"
-    else:
-        acc["auth_url"] = val
-
-    save_cvs_accounts(cvs_accounts_db)
-    bday = acc.get("birthday", "2000-09-09")
-    bday_fmt = bday
-    if bday and "-" in bday:
-        parts = bday.split("-")
-        if len(parts) == 3:
-            bday_fmt = f"{parts[1]}/{parts[2]}/{parts[0]}"
-
-    embed = discord.Embed(
-        title="✅ 1-Click DOB Fast-Auth Link Linked!",
-        description=(
-            f"Successfully updated account **#{acc['id']} {acc.get('name', '')}**.\n\n"
-            f"⚡ **[Test 1-Click DOB Deals Link]({build_cvs_dob_auth_url(acc, '/deals/coupons')})**\n"
-            f"🎂 **DOB to Enter:** `{bday_fmt}`"
-        ),
-        color=COLOR_SUCCESS
-    )
-    await ctx.send(embed=embed)
-
-
-@bot.hybrid_command(
-    name="cliphelp",
-    aliases=["autoclip", "bookmarklet", "sendall", "clip"],
-    description="Get the 1-Click 'Send All to Card' bookmarklet and setup instructions"
-)
-async def cliphelp_cmd(ctx):
-    await safely_delete_message(ctx)
-    bookmarklet_code = (
-        "javascript:(function(){"
-        "const btns=Array.from(document.querySelectorAll('button')).filter(b=>"
-        "b.innerText.toLowerCase().includes('send to card')||b.getAttribute('aria-label')?.toLowerCase().includes('send to card'));"
-        "if(btns.length===0){alert('⚠️ No unclipped coupons found on this page!');return;}"
-        "let c=0;btns.forEach((btn,i)=>{setTimeout(()=>{btn.click();c++;if(c===btns.length){alert('🎉 Sent '+c+' coupons to card!');}},i*200);});"
-        "})();"
-    )
-
-    embed = discord.Embed(
-        title="⚡ 1-Click 'Send All to Card' Guide & Bookmarklet",
-        description=(
-            "Couponing servers use a **Browser Bookmarklet** or direct deep-link to clip all CVS coupons in 1 second.\n\n"
-            "### 🚀 How to Set It Up (1 Minute):\n"
-            "1. **Create a New Bookmark** in Chrome, Edge, Safari, or Firefox.\n"
-            "2. **Name it:** `CVS Clip All 🎯`\n"
-            "3. **Paste this code into the URL field:**\n"
-            f"```javascript\n{bookmarklet_code}\n```\n\n"
-            "### 🛒 How to Use It:\n"
-            "1. Run `/accounts` or `!accounts` in Discord.\n"
-            "2. Click the **🎯 Send-to-Card Hub** link (it opens CVS with your email pre-filled and takes you to the coupons screen).\n"
-            "3. Click your **CVS Clip All 🎯** bookmark in your browser bar!\n"
-            "4. ✨ **All coupons on the screen will instantly clip to your ExtraCare card!**"
-        ),
-        color=COLOR_PRIMARY
-    )
-    embed.set_footer(text="AIO Bot • 1-Click Digital Coupon Automation")
-    await ctx.send(embed=embed)
 
 
 # --- SETUP & CHANNELS ---

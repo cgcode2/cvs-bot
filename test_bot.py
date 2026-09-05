@@ -142,7 +142,7 @@ class TestAIOBot(unittest.TestCase):
             "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about",
             "lockdown", "filter", "modlogs", "case", "note",
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
-            "cvsaccount", "accounts", "cliphelp", "setauth"
+            "cvsaccount", "accounts"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -267,18 +267,6 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Open Deals & Rewards (Send to Card)", embed.description)
         self.assertIn("https://www.cvs.com/extracare/deals-and-rewards", embed.description)
         self.assertIn("cvs_barcode.png", file.filename)
-
-    def test_cvs_dob_auth_url(self):
-        test_acc = {"id": 99, "xid": "vUrxGYnes", "birthday": "2000-09-09"}
-        url = main.build_cvs_dob_auth_url(test_acc, "/deals/coupons")
-        self.assertIsNotNone(url)
-        self.assertIn("account-auth/dob", url)
-        self.assertIn("xid=vUrxGYnes", url)
-        self.assertIn("fURL=%2Fdeals%2Fcoupons", url)
-
-        embed, file = main.format_account_card(test_acc)
-        self.assertIn("1-Click DOB Login", embed.description)
-        self.assertIn("09/09/2000", embed.description)
 
 
 if __name__ == '__main__':
