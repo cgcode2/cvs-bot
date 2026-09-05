@@ -1,5 +1,5 @@
 {
-  "next_id": 18,
+  "next_id": 19,
   "cases": [
     {
       "case_id": 1,
@@ -170,6 +170,16 @@
       "reason": "Test Reason",
       "details": "None",
       "timestamp": "2026-09-05 19:24:23 UTC"
+    },
+    {
+      "case_id": 18,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:34:10 UTC"
     }
   ]
 }

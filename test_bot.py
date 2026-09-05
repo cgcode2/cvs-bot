@@ -324,6 +324,64 @@ class TestAIOBot(unittest.TestCase):
             main.economy_db.update(original_economy)
             main.save_economy(main.economy_db)
 
+    def test_3x3_slots_randomness_and_generation(self):
+        grid = main.roll_3x3_slots()
+        self.assertEqual(len(grid), 3)
+        for row in grid:
+            self.assertEqual(len(row), 3)
+            for cell in row:
+                self.assertIn(cell, main.SLOT_SYMBOLS)
+
+        # Statistical distribution test over multiple rolls
+        counts = {s: 0 for s in main.SLOT_SYMBOLS}
+        total_cells = 0
+        for _ in range(200):
+            g = main.roll_3x3_slots()
+            for r in g:
+                for c in r:
+                    counts[c] += 1
+                    total_cells += 1
+
+        self.assertEqual(total_cells, 200 * 9)
+        for s, count in counts.items():
+            self.assertGreater(count, 0, f"Symbol {s} was never rolled")
+
+    def test_3x3_slots_evaluations(self):
+        stake = 100
+
+        # Center row jackpot: 777
+        grid_jackpot = [
+            ["🍒", "🍋", "⭐"],
+            ["7️⃣", "7️⃣", "7️⃣"],
+            ["💎", "🔔", "🍇"]
+        ]
+        winnings, hits, title = main.evaluate_3x3_slots(grid_jackpot, stake)
+        self.assertEqual(winnings, int(100 * 50.0))
+        self.assertIn("Center Row", hits[0])
+
+        # Diagonal win
+        grid_diag = [
+            ["💎", "🍋", "⭐"],
+            ["🍒", "💎", "🔔"],
+            ["🍇", "🍒", "💎"]
+        ]
+        winnings_d, hits_d, title_d = main.evaluate_3x3_slots(grid_diag, stake)
+        self.assertEqual(winnings_d, int(100 * 25.0))
+        self.assertTrue(any("Diagonal ↘" in h for h in hits_d))
+
+        # Full Board 9x jackpot
+        grid_full = [["7️⃣"] * 3 for _ in range(3)]
+        winnings_f, hits_f, title_f = main.evaluate_3x3_slots(grid_full, stake)
+        self.assertEqual(winnings_f, int(100 * 100.0))
+        self.assertIn("FULL BOARD", title_f)
+
+        # Grid format helper
+        fmt_spinning = main.format_3x3_grid(grid_jackpot, active_cols=0)
+        self.assertIn("🌀", fmt_spinning)
+        fmt_done = main.format_3x3_grid(grid_jackpot, active_cols=3)
+        self.assertNotIn("🌀", fmt_done)
+        self.assertIn("7️⃣", fmt_done)
+
 
 if __name__ == '__main__':
     unittest.main()
