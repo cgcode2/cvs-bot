@@ -748,6 +748,11 @@ class CVSAccountsPaginationView(discord.ui.View):
         self.dropdown = AccountSelectDropdown(current_idx)
         self.add_item(self.dropdown)
 
+        # Row 2: 1-Click CVS Direct Action Links
+        self.add_item(discord.ui.Button(label="Send-to-Card Hub", style=discord.ButtonStyle.link, url="https://www.cvs.com/deals/coupons", emoji="🎯", row=2))
+        self.add_item(discord.ui.Button(label="ExtraBucks Rewards", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/home", emoji="💰", row=2))
+        self.add_item(discord.ui.Button(label="CVS Sign In", style=discord.ButtonStyle.link, url="https://www.cvs.com/account/login", emoji="🔐", row=2))
+
     def update_select(self):
         self.remove_item(self.dropdown)
         self.dropdown = AccountSelectDropdown(self.current_idx)
