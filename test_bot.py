@@ -142,6 +142,7 @@ class TestAIOBot(unittest.TestCase):
             "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about",
             "lockdown", "filter", "modlogs", "case", "note",
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
+            "balance", "daily", "pay", "leaderboard",
             "cvsaccount", "accounts"
         ]
         for cmd in expected_commands:
@@ -267,6 +268,61 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Open Deals & Rewards (Send to Card)", embed.description)
         self.assertIn("https://www.cvs.com/extracare/deals-and-rewards", embed.description)
         self.assertIn("cvs_barcode.png", file.filename)
+
+    def test_economy_system(self):
+        original_economy = copy_db = dict(main.economy_db)
+        test_uid1 = 88888801
+        test_uid2 = 88888802
+
+        try:
+            # Clean test keys
+            main.economy_db.pop(str(test_uid1), None)
+            main.economy_db.pop(str(test_uid2), None)
+
+            # Initial default balance
+            bal1 = main.get_user_coins(test_uid1)
+            self.assertEqual(bal1, main.DEFAULT_STARTING_COINS)
+
+            # Add coins
+            main.add_user_coins(test_uid1, 500)
+            self.assertEqual(main.get_user_coins(test_uid1), 1500)
+
+            # Deduct coins (success)
+            deducted = main.deduct_user_coins(test_uid1, 300)
+            self.assertTrue(deducted)
+            self.assertEqual(main.get_user_coins(test_uid1), 1200)
+
+            # Deduct coins (insufficient funds)
+            deducted_fail = main.deduct_user_coins(test_uid1, 50000)
+            self.assertFalse(deducted_fail)
+            self.assertEqual(main.get_user_coins(test_uid1), 1200)
+
+            # Daily claim (first time)
+            success, reward, rem = main.claim_daily_coins(test_uid1)
+            self.assertTrue(success)
+            self.assertEqual(reward, main.DAILY_REWARD_COINS)
+            self.assertEqual(main.get_user_coins(test_uid1), 1450)
+
+            # Daily claim (on cooldown)
+            success2, current_bal, rem2 = main.claim_daily_coins(test_uid1)
+            self.assertFalse(success2)
+            self.assertIsNotNone(rem2)
+            self.assertGreater(rem2, 0)
+
+            # Transfer coins
+            t_success, t_msg = main.transfer_user_coins(test_uid1, test_uid2, 200)
+            self.assertTrue(t_success)
+            self.assertEqual(main.get_user_coins(test_uid1), 1250)
+            self.assertEqual(main.get_user_coins(test_uid2), main.DEFAULT_STARTING_COINS + 200)
+
+            # Leaderboard
+            board = main.get_coin_leaderboard(limit=5)
+            self.assertIsInstance(board, list)
+            self.assertGreater(len(board), 0)
+        finally:
+            main.economy_db.clear()
+            main.economy_db.update(original_economy)
+            main.save_economy(main.economy_db)
 
 
 if __name__ == '__main__':
