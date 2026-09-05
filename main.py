@@ -1,4 +1,5 @@
 import io
+import urllib.parse
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,7 +8,7 @@ import asyncio
 import itertools
 import copy
 import re
-from flask import Flask, jsonify
+from flask import Flask, jsonify, redirect
 from threading import Thread
 import os
 import sys
@@ -684,10 +685,19 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
 
     name = acc.get("name", "Account Holder")
     acc_id = acc.get("id", 1)
+    email = acc.get("email", "")
+    pwd = acc.get("password", "")
+
+    encoded_email = urllib.parse.quote(email) if email else ""
+    coupon_link = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fdeals%2Fcoupons" if email else "https://www.cvs.com/deals/coupons"
+    extracare_link = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fextracare%2Fhome" if email else "https://www.cvs.com/extracare/home"
 
     embed = discord.Embed(
         title=f"💳 CVS ExtraCare® Card — #{acc_id} {name}",
-        description="Scannable barcode generated below for register & self-checkout scanners.",
+        description=(
+            "Scannable barcode generated below for register & self-checkout scanners.\n\n"
+            f"🎯 **[Direct Send-to-Card Hub]({coupon_link})** • 💰 **[ExtraBucks Dashboard]({extracare_link})**"
+        ),
         color=COLOR_PRIMARY
     )
     embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
@@ -706,12 +716,11 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     if acc.get("birthday"):
         embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
 
-    email = acc.get("email", "")
-    pwd = acc.get("password", "")
-    val = f"📧 **Email:** `{email}`"
+    val = f"📧 **Email:** `{email}`" if email else ""
     if pwd:
         val += f"\n🔑 **Password:** ||`{pwd}`||"
-    embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
+    if val:
+        embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
 
     if acc.get("extrabucks"):
         embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{acc['extrabucks']}**", inline=True)
@@ -720,7 +729,7 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
         embed.add_field(name="🎟️ Loaded Coupons & Notes", value=acc['notes'], inline=False)
 
     embed.set_image(url="attachment://cvs_barcode.png")
-    embed.set_footer(text=f"AIO Bot CVS Account Manager • Account #{acc_id} of {len(cvs_accounts_db)}")
+    embed.set_footer(text=f"AIO Bot CVS Account Manager • Account #{acc_id} of {len(cvs_accounts_db)} • Run /cliphelp for 1-Click Send-All")
     return embed, file
 
 
@@ -737,7 +746,7 @@ class AccountSelectDropdown(discord.ui.Select):
         idx = int(self.values[0])
         self.view.current_idx = idx
         embed, file = format_account_card(cvs_accounts_db[idx])
-        self.view.update_select()
+        self.view.rebuild_items()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self.view)
 
 
@@ -745,37 +754,53 @@ class CVSAccountsPaginationView(discord.ui.View):
     def __init__(self, current_idx: int = 0):
         super().__init__(timeout=180)
         self.current_idx = current_idx
-        self.dropdown = AccountSelectDropdown(current_idx)
-        self.add_item(self.dropdown)
+        self.rebuild_items()
 
-        # Row 2: 1-Click CVS Direct Action Links
-        self.add_item(discord.ui.Button(label="Send-to-Card Hub", style=discord.ButtonStyle.link, url="https://www.cvs.com/deals/coupons", emoji="🎯", row=2))
-        self.add_item(discord.ui.Button(label="ExtraBucks Rewards", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/home", emoji="💰", row=2))
-        self.add_item(discord.ui.Button(label="CVS Sign In", style=discord.ButtonStyle.link, url="https://www.cvs.com/account/login", emoji="🔐", row=2))
-
-    def update_select(self):
-        self.remove_item(self.dropdown)
+    def rebuild_items(self):
+        self.clear_items()
         self.dropdown = AccountSelectDropdown(self.current_idx)
         self.add_item(self.dropdown)
 
-    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Pagination Buttons in Row 1
+        prev_btn = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1, custom_id="cvs_prev")
+        prev_btn.callback = self.prev_callback
+        self.add_item(prev_btn)
+
+        next_btn = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=1, custom_id="cvs_next")
+        next_btn.callback = self.next_callback
+        self.add_item(next_btn)
+
+        # Dynamic Row 2: 1-Click direct links for the selected account
+        acc = cvs_accounts_db[self.current_idx] if cvs_accounts_db and 0 <= self.current_idx < len(cvs_accounts_db) else None
+        email = acc.get("email", "") if acc else ""
+        if email:
+            encoded_email = urllib.parse.quote(email)
+            coupon_url = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fdeals%2Fcoupons"
+            extracare_url = f"https://www.cvs.com/account/login?email={encoded_email}&redirectUrl=%2Fextracare%2Fhome"
+        else:
+            coupon_url = "https://www.cvs.com/deals/coupons"
+            extracare_url = "https://www.cvs.com/extracare/home"
+
+        self.add_item(discord.ui.Button(label="Send-to-Card Hub", style=discord.ButtonStyle.link, url=coupon_url, emoji="🎯", row=2))
+        self.add_item(discord.ui.Button(label="ExtraBucks Rewards", style=discord.ButtonStyle.link, url=extracare_url, emoji="💰", row=2))
+        self.add_item(discord.ui.Button(label="CVS Sign In", style=discord.ButtonStyle.link, url="https://www.cvs.com/account/login", emoji="🔐", row=2))
+
+    async def prev_callback(self, interaction: discord.Interaction):
         if not cvs_accounts_db:
             await interaction.response.send_message("No accounts found!", ephemeral=True)
             return
         self.current_idx = (self.current_idx - 1) % len(cvs_accounts_db)
         embed, file = format_account_card(cvs_accounts_db[self.current_idx])
-        self.update_select()
+        self.rebuild_items()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=1)
-    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def next_callback(self, interaction: discord.Interaction):
         if not cvs_accounts_db:
             await interaction.response.send_message("No accounts found!", ephemeral=True)
             return
         self.current_idx = (self.current_idx + 1) % len(cvs_accounts_db)
         embed, file = format_account_card(cvs_accounts_db[self.current_idx])
-        self.update_select()
+        self.rebuild_items()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
 class CVSAccountModal(discord.ui.Modal, title="💳 CVS ExtraCare® Card Formatter"):
@@ -3182,6 +3207,43 @@ async def cvsaccount_cmd(
     embed.set_footer(text="AIO Bot CVS ExtraCare Barcode Generator • High-Resolution Scan")
 
     await ctx.send(embed=embed, file=file)
+
+
+@bot.hybrid_command(
+    name="cliphelp",
+    aliases=["autoclip", "bookmarklet", "sendall", "clip"],
+    description="Get the 1-Click 'Send All to Card' bookmarklet and setup instructions"
+)
+async def cliphelp_cmd(ctx):
+    await safely_delete_message(ctx)
+    bookmarklet_code = (
+        "javascript:(function(){"
+        "const btns=Array.from(document.querySelectorAll('button')).filter(b=>"
+        "b.innerText.toLowerCase().includes('send to card')||b.getAttribute('aria-label')?.toLowerCase().includes('send to card'));"
+        "if(btns.length===0){alert('⚠️ No unclipped coupons found on this page!');return;}"
+        "let c=0;btns.forEach((btn,i)=>{setTimeout(()=>{btn.click();c++;if(c===btns.length){alert('🎉 Sent '+c+' coupons to card!');}},i*200);});"
+        "})();"
+    )
+
+    embed = discord.Embed(
+        title="⚡ 1-Click 'Send All to Card' Guide & Bookmarklet",
+        description=(
+            "Couponing servers use a **Browser Bookmarklet** or direct deep-link to clip all CVS coupons in 1 second.\n\n"
+            "### 🚀 How to Set It Up (1 Minute):\n"
+            "1. **Create a New Bookmark** in Chrome, Edge, Safari, or Firefox.\n"
+            "2. **Name it:** `CVS Clip All 🎯`\n"
+            "3. **Paste this code into the URL field:**\n"
+            f"```javascript\n{bookmarklet_code}\n```\n\n"
+            "### 🛒 How to Use It:\n"
+            "1. Run `/accounts` or `!accounts` in Discord.\n"
+            "2. Click the **🎯 Send-to-Card Hub** link (it opens CVS with your email pre-filled and takes you to the coupons screen).\n"
+            "3. Click your **CVS Clip All 🎯** bookmark in your browser bar!\n"
+            "4. ✨ **All coupons on the screen will instantly clip to your ExtraCare card!**"
+        ),
+        color=COLOR_PRIMARY
+    )
+    embed.set_footer(text="AIO Bot • 1-Click Digital Coupon Automation")
+    await ctx.send(embed=embed)
 
 
 # --- SETUP & CHANNELS ---

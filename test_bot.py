@@ -142,7 +142,7 @@ class TestAIOBot(unittest.TestCase):
             "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about",
             "lockdown", "filter", "modlogs", "case", "note",
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
-            "cvsaccount", "accounts"
+            "cvsaccount", "accounts", "cliphelp"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -260,6 +260,13 @@ class TestAIOBot(unittest.TestCase):
         acc_name = main.get_cvs_account("Murphy")
         self.assertIsNotNone(acc_name)
         self.assertEqual(acc_name["id"], 2)
+
+    def test_format_account_card_links(self):
+        acc = main.cvs_accounts_db[0]
+        embed, file = main.format_account_card(acc)
+        self.assertIn("Direct Send-to-Card Hub", embed.description)
+        self.assertIn("redirectUrl=%2Fdeals%2Fcoupons", embed.description)
+        self.assertIn("cvs_barcode.png", file.filename)
 
 
 if __name__ == '__main__':
