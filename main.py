@@ -678,6 +678,26 @@ def generate_code128_barcode_bytes(data: str, height: int = 100, bar_width: int 
 
 
 
+def build_cvs_dob_auth_url(acc: Dict[str, Any], target_path: str = "/deals/coupons") -> Optional[str]:
+    """Builds a direct CVS DOB fast-authentication link if xid or auth_url is available."""
+    encoded_target = urllib.parse.quote(target_path, safe='')
+    if acc.get("auth_url"):
+        raw_url = acc["auth_url"]
+        # If it's already an account-auth URL, ensure fURL and gURL point to our target
+        if "account-auth/dob" in raw_url:
+            parsed = urllib.parse.urlparse(raw_url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            qs["fURL"] = [target_path]
+            qs["gURL"] = [target_path]
+            new_query = urllib.parse.urlencode(qs, doseq=True)
+            return urllib.parse.urlunparse(parsed._replace(query=new_query))
+        return raw_url
+    if acc.get("xid"):
+        xid = acc["xid"].strip()
+        return f"https://www.cvs.com/account-auth/dob?xid={xid}&fURL={encoded_target}&gURL={encoded_target}"
+    return None
+
+
 def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.File]:
     raw_card = str(acc.get("extraCareNumber", "0000000000")).strip()
     barcode_buffer = generate_code128_barcode_bytes(raw_card)
@@ -687,15 +707,26 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     acc_id = acc.get("id", 1)
     email = acc.get("email", "")
     pwd = acc.get("password", "")
+    bday = acc.get("birthday", "")
 
-    coupon_link = "https://www.cvs.com/extracare/deals-and-rewards"
-    extracare_link = "https://www.cvs.com/extracare/home"
+    # Format birthday nicely for DOB prompt (MM/DD/YYYY)
+    bday_fmt = bday
+    if bday and "-" in bday:
+        parts = bday.split("-")
+        if len(parts) == 3:
+            bday_fmt = f"{parts[1]}/{parts[2]}/{parts[0]}"  # YYYY-MM-DD -> MM/DD/YYYY
+
+    dob_link = build_cvs_dob_auth_url(acc, "/deals/coupons")
+    coupon_link = dob_link or "https://www.cvs.com/extracare/deals-and-rewards"
+    extracare_link = build_cvs_dob_auth_url(acc, "/extracare/home") or "https://www.cvs.com/extracare/home"
+
+    link_text = f"⚡ **[1-Click DOB Login ➔ Deals & Rewards]({dob_link})**\n*(Enter DOB: `{bday_fmt}`)*" if dob_link else f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 💰 **[ExtraCare Dashboard]({extracare_link})**"
 
     embed = discord.Embed(
         title=f"💳 CVS ExtraCare® Card — #{acc_id} {name}",
         description=(
             "Scannable barcode generated below for register & self-checkout scanners.\n\n"
-            f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 💰 **[ExtraCare Dashboard]({extracare_link})**"
+            f"{link_text}"
         ),
         color=COLOR_PRIMARY
     )
@@ -712,8 +743,8 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
 
     embed.add_field(name="👤 Cardholder", value=f"**{name}**", inline=True)
     embed.add_field(name="📞 Phone", value=f"`{phone_fmt}`", inline=True)
-    if acc.get("birthday"):
-        embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
+    if bday_fmt:
+        embed.add_field(name="🎂 Birthday (DOB Prompt)", value=f"**`{bday_fmt}`**", inline=True)
 
     val = f"📧 **Email:** `{email}`" if email else ""
     if pwd:
@@ -769,10 +800,18 @@ class CVSAccountsPaginationView(discord.ui.View):
         next_btn.callback = self.next_callback
         self.add_item(next_btn)
 
-        # Direct Action Links in Row 2
-        self.add_item(discord.ui.Button(label="Deals & Rewards (Send to Card)", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/deals-and-rewards", emoji="🎯", row=2))
-        self.add_item(discord.ui.Button(label="Coupons Hub", style=discord.ButtonStyle.link, url="https://www.cvs.com/deals/coupons", emoji="🎟️", row=2))
-        self.add_item(discord.ui.Button(label="ExtraCare Home", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/home", emoji="💰", row=2))
+        # Dynamic Action Links in Row 2
+        acc = cvs_accounts_db[self.current_idx] if cvs_accounts_db and 0 <= self.current_idx < len(cvs_accounts_db) else None
+        dob_deals_link = build_cvs_dob_auth_url(acc, "/deals/coupons") if acc else None
+        dob_home_link = build_cvs_dob_auth_url(acc, "/extracare/home") if acc else None
+
+        deals_url = dob_deals_link or "https://www.cvs.com/extracare/deals-and-rewards"
+        hub_url = "https://www.cvs.com/deals/coupons"
+        home_url = dob_home_link or "https://www.cvs.com/extracare/home"
+
+        self.add_item(discord.ui.Button(label="⚡ 1-Click DOB Deals", style=discord.ButtonStyle.link, url=deals_url, emoji="🎯", row=2))
+        self.add_item(discord.ui.Button(label="Coupons Hub", style=discord.ButtonStyle.link, url=hub_url, emoji="🎟️", row=2))
+        self.add_item(discord.ui.Button(label="ExtraCare Home", style=discord.ButtonStyle.link, url=home_url, emoji="💰", row=2))
 
     async def prev_callback(self, interaction: discord.Interaction):
         if not cvs_accounts_db:
@@ -3196,6 +3235,52 @@ async def cvsaccount_cmd(
     embed.set_footer(text="AIO Bot CVS ExtraCare Barcode Generator • High-Resolution Scan")
 
     await ctx.send(embed=embed, file=file)
+
+
+@bot.hybrid_command(
+    name="setauth",
+    aliases=["setlink", "setxid", "addauth"],
+    description="Set the 1-Click DOB Fast-Auth link or xid for a CVS account"
+)
+async def setauth_cmd(ctx, account: str, auth_link_or_xid: str):
+    await safely_delete_message(ctx)
+    acc = get_cvs_account(account)
+    if not acc:
+        await ctx.send(f"❌ Could not find account matching `{account}`.", delete_after=6)
+        return
+
+    val = auth_link_or_xid.strip()
+    if "xid=" in val:
+        parsed = urllib.parse.urlparse(val)
+        qs = urllib.parse.parse_qs(parsed.query)
+        xid_vals = qs.get("xid", [])
+        if xid_vals:
+            acc["xid"] = xid_vals[0]
+        acc["auth_url"] = val
+    elif len(val) <= 20 and not val.startswith("http"):
+        acc["xid"] = val
+        acc["auth_url"] = f"https://www.cvs.com/account-auth/dob?xid={val}&fURL=%2Fdeals%2Fcoupons&gURL=%2Fdeals%2Fcoupons"
+    else:
+        acc["auth_url"] = val
+
+    save_cvs_accounts(cvs_accounts_db)
+    bday = acc.get("birthday", "2000-09-09")
+    bday_fmt = bday
+    if bday and "-" in bday:
+        parts = bday.split("-")
+        if len(parts) == 3:
+            bday_fmt = f"{parts[1]}/{parts[2]}/{parts[0]}"
+
+    embed = discord.Embed(
+        title="✅ 1-Click DOB Fast-Auth Link Linked!",
+        description=(
+            f"Successfully updated account **#{acc['id']} {acc.get('name', '')}**.\n\n"
+            f"⚡ **[Test 1-Click DOB Deals Link]({build_cvs_dob_auth_url(acc, '/deals/coupons')})**\n"
+            f"🎂 **DOB to Enter:** `{bday_fmt}`"
+        ),
+        color=COLOR_SUCCESS
+    )
+    await ctx.send(embed=embed)
 
 
 @bot.hybrid_command(
