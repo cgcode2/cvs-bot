@@ -1709,29 +1709,43 @@ class SlotsSpinView(discord.ui.View):
         r3 = random.choice(SLOT_SYMBOLS)
         combo = f"{r1}{r2}{r3}"
 
-        embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
-        embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
+        anim_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
+        anim_embed.description = "**[ 🌀 | 🌀 | 🌀 ]**\n\n*Spinning the high-roller reels...*"
+        anim_embed.set_footer(text=f"Spinning for {self.user.display_name} • Stake: {self.bet:,} 🪙")
+        await interaction.response.edit_message(embed=anim_embed, view=None)
+
+        await asyncio.sleep(0.6)
+        anim_embed.description = f"**[ {r1} | 🌀 | 🌀 ]**\n\n*Reels 2 & 3 slowing down...*"
+        await interaction.message.edit(embed=anim_embed)
+
+        await asyncio.sleep(0.5)
+        anim_embed.description = f"**[ {r1} | {r2} | 🌀 ]**\n\n*Final reel locking in...*"
+        await interaction.message.edit(embed=anim_embed)
+
+        await asyncio.sleep(0.5)
+        final_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
+        final_embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
 
         if combo in SLOT_PAYOUTS:
             mult, title = SLOT_PAYOUTS[combo]
             winnings = int(self.bet * mult)
             add_user_coins(self.user.id, winnings)
             cur_bal = get_user_coins(self.user.id)
-            embed.color = COLOR_SUCCESS
-            embed.description += f"🎉 **{title}**\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
+            final_embed.color = COLOR_SUCCESS
+            final_embed.description += f"🎉 **{title}**\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
         elif r1 == r2 or r2 == r3 or r1 == r3:
             winnings = int(self.bet * 1.5)
             add_user_coins(self.user.id, winnings)
             cur_bal = get_user_coins(self.user.id)
-            embed.color = COLOR_WARN
-            embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
+            final_embed.color = COLOR_WARN
+            final_embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
         else:
             cur_bal = get_user_coins(self.user.id)
-            embed.color = COLOR_ERROR
-            embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **{self.bet:,} 🪙**\n👛 Balance: **{cur_bal:,} 🪙**"
+            final_embed.color = COLOR_ERROR
+            final_embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **{self.bet:,} 🪙**\n👛 Balance: **{cur_bal:,} 🪙**"
 
-        embed.set_footer(text=f"Spun by {self.user.display_name} • Click Spin Again 🎰 to roll again!")
-        await interaction.response.edit_message(embed=embed, view=self)
+        final_embed.set_footer(text=f"Spun by {self.user.display_name} • Click Spin Again 🎰 to roll again!")
+        await interaction.message.edit(embed=final_embed, view=self)
 
 class HelpCategorySelect(discord.ui.Select):
     def __init__(self, author_perms: discord.Permissions, is_owner: bool):
@@ -2545,9 +2559,17 @@ async def optimize_cart(ctx):
         await ctx.send("❌ Your cart is empty! Add items with `/add`, `!add`, or `/panel` first.", delete_after=8)
         return
 
+    thinking_embed = discord.Embed(
+        title="🧠 Calculating Optimal Coupon Strategy...",
+        description=f"🔬 *Analyzing **{len(items)} items** (${sum(i['price'] for i in items):.2f}) and **{len(coupons)} coupons**...*\n\n`[████████░░] Finding lowest out-of-pocket splits...`",
+        color=COLOR_INFO
+    )
+    msg = await ctx.send(embed=thinking_embed)
+    await asyncio.sleep(0.5)
+
     embed = build_strategy_embed(items, coupons)
     view = QuickCartActionView(ctx.author.id)
-    await ctx.send(embed=embed, view=view)
+    await msg.edit(embed=embed, view=view)
 
 @bot.hybrid_command(name="calc", aliases=["quickcalc"], description="Instant 1-step calculation without saving a cart (e.g. Fairlife 4.49, Shampoo 6.59 | 8 5)")
 async def quick_calc(ctx, *, query: str):
@@ -2563,8 +2585,16 @@ async def quick_calc(ctx, *, query: str):
         await ctx.send("❌ Could not parse items.\n*Format:* `/calc Item1 Price1, Item2 Price2 | Coupon1 Coupon2` (or `!calc ...`)\n*Example:* `!calc Fairlife 4.49, Shampoo 6.59 | 8 5` or `/calc ...`", delete_after=10)
         return
 
+    thinking_embed = discord.Embed(
+        title="🧮 Calculating Instant Strategy...",
+        description=f"🔍 *Parsing & optimizing **{len(items)} items** with **{len(coupons)} coupons**...*",
+        color=COLOR_INFO
+    )
+    msg = await ctx.send(embed=thinking_embed)
+    await asyncio.sleep(0.4)
+
     embed = build_strategy_embed(items, coupons)
-    await ctx.send(embed=embed)
+    await msg.edit(embed=embed)
 
 @bot.hybrid_command(name="cart", description="View your current shopping cart")
 async def view_cart(ctx):
@@ -2675,29 +2705,72 @@ async def run_stress_test_cmd(ctx, num_items: Optional[int] = 16, num_coupons: O
 
     sample_coupon_vals = [2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 12.0, "half"]
     test_coupons = random.sample(sample_coupon_vals, min(n_coups, len(sample_coupon_vals)))
+    full_price = sum(i['price'] for i in test_items)
 
+    # Step 1: Initial Launch & Synthesis
+    embed = discord.Embed(
+        title="⚡ Optimizer Stress Test & Performance Benchmark",
+        description="🚀 **Initializing combinatorial stress test engine...**",
+        color=COLOR_INFO
+    )
+    embed.add_field(
+        name="Phase 1 • Cart Synthesis",
+        value=f"🧪 Synthesizing **{n_items} items** (${full_price:.2f}) & **{len(test_coupons)} coupons**\n`[██░░░░░░░░] 20%`",
+        inline=False
+    )
+    embed.set_footer(text="AIO Bot High-Performance Benchmark • Phase 1/4")
+    msg = await ctx.send(embed=embed)
+
+    await asyncio.sleep(0.7)
+
+    # Step 2: Pruning Tree & Combinatorial Permutations
+    embed.description = "⚙️ **Constructing branch-and-bound pruning tree & bounding constraints...**"
+    embed.set_field_at(
+        0,
+        name="Phase 2 • Exploration Graph",
+        value=f"🌲 Mapping tree with **{2**min(n_items, 14):,} permutations** across {len(test_coupons)} coupon groups\n`[█████░░░░░] 50%`",
+        inline=False
+    )
+    embed.set_footer(text="AIO Bot High-Performance Benchmark • Phase 2/4")
+    await msg.edit(embed=embed)
+
+    await asyncio.sleep(0.6)
+
+    # Step 3: Real benchmark computation
     start_time = time.perf_counter()
     total_due, bundling = calculate_best_bundles(test_items, test_coupons)
     elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-    full_price = sum(i['price'] for i in test_items)
     saved = full_price - total_due
     pct = (saved / full_price * 100) if full_price > 0 else 0
 
-    embed = discord.Embed(
-        title="⚡ Optimizer Stress Test & Performance Benchmark",
-        description=f"Successfully stress-tested the engine with **{n_items} items** and **{len(test_coupons)} coupons**.",
-        color=COLOR_SUCCESS if elapsed_ms < 50 else 0xf1c40f
+    embed.description = "🔬 **Evaluating multi-pass backtracking algorithms & cache efficiency...**"
+    embed.set_field_at(
+        0,
+        name="Phase 3 • Combinatorial Benchmark Execution",
+        value=f"⚡ **Latency Measured:** `{elapsed_ms:.2f} ms`\n🎟️ **Active Bundles:** {len(bundling)} optimal registers created\n`[████████░░] 80%`",
+        inline=False
     )
-    embed.add_field(name="⏱️ Computation Latency", value=f"**{elapsed_ms:.2f} ms**", inline=True)
-    embed.add_field(name="📦 Items Processed", value=f"**{n_items}** items (${full_price:.2f})", inline=True)
-    embed.add_field(name="🎟️ Coupons Bundled", value=", ".join(coupon_label(c) for c in test_coupons), inline=True)
-    embed.add_field(name="💵 Register Total Due", value=f"**${total_due:.2f}**", inline=True)
-    embed.add_field(name="💰 Dollars Saved", value=f"**${saved:.2f}** ({pct:.0f}% off)", inline=True)
-    status_label = "✅ **Sub-10ms Branch-and-Bound (Ultra Fast)**" if elapsed_ms < 10 else "✅ **Healthy (<100ms)**"
-    embed.add_field(name="🚀 Engine Health", value=status_label, inline=False)
-    embed.set_footer(text="AIO Bot High-Performance Combinatorial Engine")
-    await ctx.send(embed=embed)
+    embed.set_footer(text="AIO Bot High-Performance Benchmark • Phase 3/4")
+    await msg.edit(embed=embed)
+
+    await asyncio.sleep(0.6)
+
+    # Step 4: Final Comprehensive Telemetry Report
+    final_embed = discord.Embed(
+        title="⚡ Optimizer Stress Test & Performance Benchmark",
+        description=f"✅ **Benchmark Complete!** Evaluated **{n_items} items** (${full_price:.2f}) and **{len(test_coupons)} coupons**.\n`[██████████] 100% (Completed)`",
+        color=COLOR_SUCCESS if elapsed_ms < 50 else COLOR_WARN
+    )
+    final_embed.add_field(name="⏱️ Computation Latency", value=f"**{elapsed_ms:.2f} ms**", inline=True)
+    final_embed.add_field(name="📦 Items Processed", value=f"**{n_items}** items (${full_price:.2f})", inline=True)
+    final_embed.add_field(name="🎟️ Coupons Bundled", value=", ".join(coupon_label(c) for c in test_coupons), inline=True)
+    final_embed.add_field(name="💵 Register Total Due", value=f"**${total_due:.2f}**", inline=True)
+    final_embed.add_field(name="💰 Dollars Saved", value=f"**${saved:.2f}** ({pct:.0f}% off)", inline=True)
+    status_label = "🚀 **Sub-10ms Branch-and-Bound (Ultra Fast)**" if elapsed_ms < 10 else "✅ **Healthy Performance (<100ms)**"
+    final_embed.add_field(name="⚡ Engine Health", value=status_label, inline=False)
+    final_embed.set_footer(text="AIO Bot High-Performance Combinatorial Engine • Benchmark Finished")
+    await msg.edit(embed=final_embed)
 
 # --- TEST MODE COMMANDS (Isolated Test Cart) ---
 
@@ -2732,9 +2805,18 @@ async def test_optimize(ctx):
     if not session["items"]:
         await ctx.send("❌ Test cart is empty! Add items with `/testadd` or `!testadd` first.", delete_after=8)
         return
+
+    thinking_embed = discord.Embed(
+        title="🧪 [TEST] Calculating Optimal Bundles...",
+        description=f"🔬 *Evaluating test cart (**{len(session['items'])} items**, **{len(session['coupons'])} coupons**)...*",
+        color=COLOR_TEST
+    )
+    msg = await ctx.send(embed=thinking_embed)
+    await asyncio.sleep(0.5)
+
     embed = build_strategy_embed(session["items"], session["coupons"])
     embed.title = "🧪 [TEST] " + embed.title
-    await ctx.send(embed=embed)
+    await msg.edit(embed=embed)
 
 @bot.hybrid_command(name="testcart", description="[TEST] View your test shopping cart")
 async def test_cart(ctx):
@@ -3141,35 +3223,50 @@ async def slots_cmd(ctx, bet: Optional[int] = 10):
         )
         return
 
+    # Initial reel animation embed
+    anim_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
+    anim_embed.description = "**[ 🌀 | 🌀 | 🌀 ]**\n\n*Spinning the high-roller reels...*"
+    anim_embed.set_footer(text=f"Bet: {stake:,} 🪙 • Player: {ctx.author.display_name}")
+    msg = await ctx.send(embed=anim_embed)
+
     r1 = random.choice(SLOT_SYMBOLS)
     r2 = random.choice(SLOT_SYMBOLS)
     r3 = random.choice(SLOT_SYMBOLS)
     combo = f"{r1}{r2}{r3}"
 
-    embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
-    embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
+    await asyncio.sleep(0.6)
+    anim_embed.description = f"**[ {r1} | 🌀 | 🌀 ]**\n\n*Reels 2 & 3 slowing down...*"
+    await msg.edit(embed=anim_embed)
+
+    await asyncio.sleep(0.5)
+    anim_embed.description = f"**[ {r1} | {r2} | 🌀 ]**\n\n*Final reel locking in...*"
+    await msg.edit(embed=anim_embed)
+
+    await asyncio.sleep(0.5)
+    final_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
+    final_embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
 
     if combo in SLOT_PAYOUTS:
         mult, title = SLOT_PAYOUTS[combo]
         winnings = int(stake * mult)
         add_user_coins(ctx.author.id, winnings)
         cur_bal = get_user_coins(ctx.author.id)
-        embed.color = COLOR_SUCCESS
-        embed.description += f"🎉 **{title}**\n💰 Stake: **{stake:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
+        final_embed.color = COLOR_SUCCESS
+        final_embed.description += f"🎉 **{title}**\n💰 Stake: **{stake:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
     elif r1 == r2 or r2 == r3 or r1 == r3:
         winnings = int(stake * 1.5)
         add_user_coins(ctx.author.id, winnings)
         cur_bal = get_user_coins(ctx.author.id)
-        embed.color = COLOR_WARN
-        embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **{stake:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
+        final_embed.color = COLOR_WARN
+        final_embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **{stake:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
     else:
         cur_bal = get_user_coins(ctx.author.id)
-        embed.color = COLOR_ERROR
-        embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **{stake:,} 🪙**\n👛 Balance: **{cur_bal:,} 🪙**"
+        final_embed.color = COLOR_ERROR
+        final_embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **{stake:,} 🪙**\n👛 Balance: **{cur_bal:,} 🪙**"
 
-    embed.set_footer(text=f"Spun by {ctx.author.display_name} • Click Spin Again 🎰 to roll again!")
+    final_embed.set_footer(text=f"Spun by {ctx.author.display_name} • Click Spin Again 🎰 to roll again!")
     view = SlotsSpinView(user=ctx.author, bet=stake)
-    await ctx.send(embed=embed, view=view)
+    await msg.edit(embed=final_embed, view=view)
 
 
 @bot.hybrid_command(name="rps", description="Play Rock-Paper-Scissors against a friend or the bot")
@@ -3201,6 +3298,16 @@ async def coinflip_cmd(ctx, choice: Optional[Literal["heads", "tails"]] = None, 
             )
             return
 
+    # Animated flipping coin embed
+    anim_embed = discord.Embed(title="🪙 Coinflip in Progress...", color=COLOR_INFO)
+    anim_embed.description = "🪙 *Flipping the coin high into the air...*\n\n`[ 🪙 🔄 🪙 🔄 🪙 ]`"
+    call_str = f" • Called: **{choice.upper()}**" if choice else ""
+    stake_str = f" • Stake: **{stake:,} 🪙**" if stake > 0 else ""
+    anim_embed.set_footer(text=f"Flipping for {ctx.author.display_name}{call_str}{stake_str}")
+    msg = await ctx.send(embed=anim_embed)
+
+    await asyncio.sleep(1.0)
+
     result = random.choice(["heads", "tails"])
     coin_emoji = "🪙"
 
@@ -3228,7 +3335,7 @@ async def coinflip_cmd(ctx, choice: Optional[Literal["heads", "tails"]] = None, 
         embed.description = f"The coin landed on **{result.upper()}**!"
 
     embed.set_footer(text=f"Flipped by {ctx.author.display_name}")
-    await ctx.send(embed=embed)
+    await msg.edit(embed=embed)
 
 
 # --- COIN ECONOMY COMMANDS ---
