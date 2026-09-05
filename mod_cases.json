@@ -1,0 +1,175 @@
+{
+  "next_id": 18,
+  "cases": [
+    {
+      "case_id": 1,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:19:38 UTC"
+    },
+    {
+      "case_id": 2,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:24:10 UTC"
+    },
+    {
+      "case_id": 3,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:26:47 UTC"
+    },
+    {
+      "case_id": 4,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:33:15 UTC"
+    },
+    {
+      "case_id": 5,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:39:30 UTC"
+    },
+    {
+      "case_id": 6,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:42:17 UTC"
+    },
+    {
+      "case_id": 7,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:48:42 UTC"
+    },
+    {
+      "case_id": 8,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 18:56:35 UTC"
+    },
+    {
+      "case_id": 9,
+      "guild_id": "731326405937201183",
+      "action": "Lockdown ON",
+      "target": "5 channels",
+      "moderator": "codyg__",
+      "reason": "Emergency Server Lockdown",
+      "details": "None",
+      "timestamp": "2026-09-05 19:03:08 UTC"
+    },
+    {
+      "case_id": 10,
+      "guild_id": "731326405937201183",
+      "action": "Lockdown OFF",
+      "target": "5 channels",
+      "moderator": "codyg__",
+      "reason": "Emergency Server Lockdown",
+      "details": "None",
+      "timestamp": "2026-09-05 19:03:26 UTC"
+    },
+    {
+      "case_id": 11,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:04:27 UTC"
+    },
+    {
+      "case_id": 12,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:16:42 UTC"
+    },
+    {
+      "case_id": 13,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:17:13 UTC"
+    },
+    {
+      "case_id": 14,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:17:24 UTC"
+    },
+    {
+      "case_id": 15,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:19:03 UTC"
+    },
+    {
+      "case_id": 16,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:22:00 UTC"
+    },
+    {
+      "case_id": 17,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-05 19:24:23 UTC"
+    }
+  ]
+}

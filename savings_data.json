@@ -1,0 +1,49 @@
+{
+  "trip_count": 1,
+  "total_full_price": 29.59,
+  "total_paid": 0.59,
+  "total_coupon_cost": 3.5,
+  "total_net_saved": 25.5,
+  "trips": [
+    {
+      "date": "2026-08-27",
+      "time": "14:21:54",
+      "items": [
+        {
+          "name": "Fairlife",
+          "price": 5.0
+        },
+        {
+          "name": "Milk",
+          "price": 8.0
+        },
+        {
+          "name": "Water",
+          "price": 3.0
+        },
+        {
+          "name": "Joyride",
+          "price": 6.59
+        },
+        {
+          "name": "Orange",
+          "price": 2.0
+        },
+        {
+          "name": "Body Armour",
+          "price": 5.0
+        }
+      ],
+      "coupons": [
+        8.0,
+        8.0,
+        8.0,
+        5.0
+      ],
+      "subtotal": 29.59,
+      "total_due": 0.5899999999999999,
+      "coupon_spend": 3.5,
+      "net_saved": 25.5
+    }
+  ]
+}

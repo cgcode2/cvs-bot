@@ -1708,41 +1708,47 @@ class SlotsSpinView(discord.ui.View):
         r2 = random.choice(SLOT_SYMBOLS)
         r3 = random.choice(SLOT_SYMBOLS)
         combo = f"{r1}{r2}{r3}"
+        cur_bal = get_user_coins(self.user.id)
 
-        anim_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
-        anim_embed.description = "**[ 🌀 | 🌀 | 🌀 ]**\n\n*Spinning the high-roller reels...*"
-        anim_embed.set_footer(text=f"Spinning for {self.user.display_name} • Stake: {self.bet:,} 🪙")
-        await interaction.response.edit_message(embed=anim_embed, view=None)
+        def make_spin_embed(reel_display: str, status_text: str, color_val: int = COLOR_PRIMARY):
+            emb = discord.Embed(
+                title="🎰 AIO High-Roller Slots",
+                description=f"**{reel_display}**\n\n{status_text}",
+                color=color_val
+            )
+            emb.add_field(name="💰 Stake", value=f"**{self.bet:,} 🪙**", inline=True)
+            emb.add_field(name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
+            emb.set_footer(text=f"Spun by {self.user.display_name} • High-Roller Arcade")
+            return emb
 
+        # Reel animation step 1: spinning
+        await interaction.response.edit_message(embed=make_spin_embed("[ 🌀 | 🌀 | 🌀 ]", "*Spinning the high-roller reels...*"), view=None)
         await asyncio.sleep(0.9)
-        anim_embed.description = f"**[ {r1} | 🌀 | 🌀 ]**\n\n*Reels 2 & 3 slowing down...*"
-        await interaction.message.edit(embed=anim_embed)
 
+        # Reel animation step 2: reel 1 stops
+        await interaction.message.edit(embed=make_spin_embed(f"[ {r1} | 🌀 | 🌀 ]", "*Reels 2 & 3 slowing down...*"))
         await asyncio.sleep(0.8)
-        anim_embed.description = f"**[ {r1} | {r2} | 🌀 ]**\n\n*Final reel locking in...*"
-        await interaction.message.edit(embed=anim_embed)
 
+        # Reel animation step 3: reel 2 stops
+        await interaction.message.edit(embed=make_spin_embed(f"[ {r1} | {r2} | 🌀 ]", "*Final reel locking in...*"))
         await asyncio.sleep(0.8)
-        final_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
-        final_embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
 
+        # Reel animation step 4: final reveal & payouts
         if combo in SLOT_PAYOUTS:
             mult, title = SLOT_PAYOUTS[combo]
             winnings = int(self.bet * mult)
             add_user_coins(self.user.id, winnings)
             cur_bal = get_user_coins(self.user.id)
-            final_embed.color = COLOR_SUCCESS
-            final_embed.description += f"🎉 **{title}**\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
+            final_embed = make_spin_embed(f"[ {r1} | {r2} | {r3} ]", f"🎉 **{title}**\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!", COLOR_SUCCESS)
+            final_embed.set_field_at(1, name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
         elif r1 == r2 or r2 == r3 or r1 == r3:
             winnings = int(self.bet * 1.5)
             add_user_coins(self.user.id, winnings)
             cur_bal = get_user_coins(self.user.id)
-            final_embed.color = COLOR_WARN
-            final_embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
+            final_embed = make_spin_embed(f"[ {r1} | {r2} | {r3} ]", f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!", COLOR_WARN)
+            final_embed.set_field_at(1, name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
         else:
-            cur_bal = get_user_coins(self.user.id)
-            final_embed.color = COLOR_ERROR
-            final_embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **{self.bet:,} 🪙**\n👛 Balance: **{cur_bal:,} 🪙**"
+            final_embed = make_spin_embed(f"[ {r1} | {r2} | {r3} ]", f"💀 **No match!** Better luck next spin!\n💰 Lost: **{self.bet:,} 🪙**", COLOR_ERROR)
 
         final_embed.set_footer(text=f"Spun by {self.user.display_name} • Click Spin Again 🎰 to roll again!")
         await interaction.message.edit(embed=final_embed, view=self)
@@ -3228,71 +3234,14 @@ async def slots_cmd(ctx, bet: Optional[int] = 10, rounds: Optional[int] = 1):
         )
         return
 
-    # Single Round Mode
-    if total_rounds == 1:
-        anim_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
-        anim_embed.description = "**[ 🌀 | 🌀 | 🌀 ]**\n\n*Spinning the high-roller reels...*"
-        anim_embed.set_footer(text=f"Bet: {stake:,} 🪙 • Player: {ctx.author.display_name}")
-        msg = await ctx.send(embed=anim_embed)
-
-        r1 = random.choice(SLOT_SYMBOLS)
-        r2 = random.choice(SLOT_SYMBOLS)
-        r3 = random.choice(SLOT_SYMBOLS)
-        combo = f"{r1}{r2}{r3}"
-
-        await asyncio.sleep(0.9)
-        anim_embed.description = f"**[ {r1} | 🌀 | 🌀 ]**\n\n*Reels 2 & 3 slowing down...*"
-        await msg.edit(embed=anim_embed)
-
-        await asyncio.sleep(0.8)
-        anim_embed.description = f"**[ {r1} | {r2} | 🌀 ]**\n\n*Final reel locking in...*"
-        await msg.edit(embed=anim_embed)
-
-        await asyncio.sleep(0.8)
-        final_embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
-        final_embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
-
-        if combo in SLOT_PAYOUTS:
-            mult, title = SLOT_PAYOUTS[combo]
-            winnings = int(stake * mult)
-            add_user_coins(ctx.author.id, winnings)
-            cur_bal = get_user_coins(ctx.author.id)
-            final_embed.color = COLOR_SUCCESS
-            final_embed.description += f"🎉 **{title}**\n💰 Stake: **{stake:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
-        elif r1 == r2 or r2 == r3 or r1 == r3:
-            winnings = int(stake * 1.5)
-            add_user_coins(ctx.author.id, winnings)
-            cur_bal = get_user_coins(ctx.author.id)
-            final_embed.color = COLOR_WARN
-            final_embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **{stake:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!\n👛 Balance: **{cur_bal:,} 🪙**"
-        else:
-            cur_bal = get_user_coins(ctx.author.id)
-            final_embed.color = COLOR_ERROR
-            final_embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **{stake:,} 🪙**\n👛 Balance: **{cur_bal:,} 🪙**"
-
-        final_embed.set_footer(text=f"Spun by {ctx.author.display_name} • Click Spin Again 🎰 to roll again!")
-        view = SlotsSpinView(user=ctx.author, bet=stake)
-        await msg.edit(embed=final_embed, view=view)
-        return
-
-    # Multi-Round Auto Spin Mode
+    # Track multi-round / session stats
     total_spent = 0
     total_won = 0
     wins_count = 0
     best_multiplier = 0.0
     best_payout_title = "None"
     history_lines = []
-
-    embed = discord.Embed(
-        title=f"🎰 AIO High-Roller Slots — {total_rounds} Auto-Spins",
-        description=f"🚀 **Starting {total_rounds} automated spins at {stake:,} 🪙 each...**",
-        color=COLOR_PRIMARY
-    )
-    cur_bal = get_user_coins(ctx.author.id)
-    embed.add_field(name="💰 Stake per Spin", value=f"**{stake:,} 🪙**", inline=True)
-    embed.add_field(name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
-    embed.set_footer(text=f"Auto-Spin Mode • Round 0/{total_rounds} • Player: {ctx.author.display_name}")
-    msg = await ctx.send(embed=embed)
+    msg = None
 
     for round_num in range(1, total_rounds + 1):
         if round_num > 1:
@@ -3301,21 +3250,66 @@ async def slots_cmd(ctx, bet: Optional[int] = 10, rounds: Optional[int] = 1):
                 break
 
         total_spent += stake
+        cur_bal = get_user_coins(ctx.author.id)
+        net = total_won - total_spent
+        net_str = f"+{net:,}" if net >= 0 else f"{net:,}"
+        win_rate_str = f"{wins_count}/{max(1, round_num-1)} ({wins_count/max(1, round_num-1)*100:.0f}%)" if round_num > 1 else "0/0 (0%)"
+
         r1 = random.choice(SLOT_SYMBOLS)
         r2 = random.choice(SLOT_SYMBOLS)
         r3 = random.choice(SLOT_SYMBOLS)
         combo = f"{r1}{r2}{r3}"
 
+        title_prefix = f"🎰 AIO High-Roller Slots — Round {round_num}/{total_rounds}" if total_rounds > 1 else "🎰 AIO High-Roller Slots"
+
+        def build_reel_frame(reel_str: str, subtext: str, color_code: int = COLOR_PRIMARY):
+            emb = discord.Embed(
+                title=title_prefix,
+                description=f"**{reel_str}**\n\n{subtext}",
+                color=color_code
+            )
+            if history_lines and total_rounds > 1:
+                emb.description += "\n\n**Recent Spins:**\n" + "\n".join(history_lines[-4:])
+            emb.add_field(name="💰 Total Bet", value=f"**{total_spent:,} 🪙**", inline=True)
+            emb.add_field(name="🏆 Total Won", value=f"**{total_won:,} 🪙**", inline=True)
+            emb.add_field(name="📈 Net Outcome", value=f"**{net_str} 🪙**", inline=True)
+            if total_rounds > 1:
+                emb.add_field(name="🎯 Win Rate", value=f"**{win_rate_str}**", inline=True)
+            emb.add_field(name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
+            emb.set_footer(text=f"Round {round_num}/{total_rounds} • Player: {ctx.author.display_name}")
+            return emb
+
+        # Step 1: All reels spinning
+        frame1 = build_reel_frame("[ 🌀 | 🌀 | 🌀 ]", "*Spinning the high-roller reels...*")
+        if msg is None:
+            msg = await ctx.send(embed=frame1)
+        else:
+            await msg.edit(embed=frame1)
+        await asyncio.sleep(0.9)
+
+        # Step 2: Reel 1 stops
+        frame2 = build_reel_frame(f"[ {r1} | 🌀 | 🌀 ]", "*Reels 2 & 3 slowing down...*")
+        await msg.edit(embed=frame2)
+        await asyncio.sleep(0.8)
+
+        # Step 3: Reel 2 stops
+        frame3 = build_reel_frame(f"[ {r1} | {r2} | 🌀 ]", "*Final reel locking in...*")
+        await msg.edit(embed=frame3)
+        await asyncio.sleep(0.8)
+
+        # Step 4: Final reveal & calculate payouts
         if combo in SLOT_PAYOUTS:
-            mult, title = SLOT_PAYOUTS[combo]
+            mult, payout_title = SLOT_PAYOUTS[combo]
             winnings = int(stake * mult)
             add_user_coins(ctx.author.id, winnings)
             total_won += winnings
             wins_count += 1
             if mult > best_multiplier:
                 best_multiplier = mult
-                best_payout_title = title
-            round_res = f"🎉 **{title}** (+{winnings:,} 🪙)"
+                best_payout_title = payout_title
+            outcome_text = f"🎉 **{payout_title}**\n💰 Won: **+{winnings:,} 🪙**!"
+            round_log_text = f"🎉 **{payout_title}** (+{winnings:,} 🪙)"
+            round_color = COLOR_SUCCESS
         elif r1 == r2 or r2 == r3 or r1 == r3:
             winnings = int(stake * 1.5)
             add_user_coins(ctx.author.id, winnings)
@@ -3324,33 +3318,42 @@ async def slots_cmd(ctx, bet: Optional[int] = 10, rounds: Optional[int] = 1):
             if 1.5 > best_multiplier:
                 best_multiplier = 1.5
                 best_payout_title = "Pair Match (1.5x)"
-            round_res = f"✨ **Pair Match** (+{winnings:,} 🪙)"
+            outcome_text = f"✨ **Pair Match!** (1.5x)\n💰 Won: **+{winnings:,} 🪙**!"
+            round_log_text = f"✨ **Pair Match** (+{winnings:,} 🪙)"
+            round_color = COLOR_WARN
         else:
-            round_res = f"💀 **Miss** (-{stake:,} 🪙)"
+            outcome_text = f"💀 **No match!** Lost **{stake:,} 🪙**"
+            round_log_text = f"💀 **Miss** (-{stake:,} 🪙)"
+            round_color = COLOR_ERROR
 
         cur_bal = get_user_coins(ctx.author.id)
-        history_lines.append(f"`#{round_num}` **[ {r1} {r2} {r3} ]** ➔ {round_res}")
-
-        recent_history = "\n".join(history_lines[-6:])
+        history_lines.append(f"`#{round_num}` **[ {r1} {r2} {r3} ]** ➔ {round_log_text}")
         net = total_won - total_spent
         net_str = f"+{net:,}" if net >= 0 else f"{net:,}"
+        win_rate_str = f"{wins_count}/{round_num} ({wins_count/round_num*100:.0f}%)"
 
-        round_embed = discord.Embed(
-            title=f"🎰 AIO Slots — Auto-Spinning ({round_num}/{total_rounds})",
-            description=f"**Current Roll:** `[ {r1} | {r2} | {r3} ]` ➔ {round_res}\n\n**Recent Spins:**\n{recent_history}",
-            color=COLOR_SUCCESS if net >= 0 else COLOR_ERROR
-        )
-        round_embed.add_field(name="💰 Total Bet", value=f"**{total_spent:,} 🪙**", inline=True)
-        round_embed.add_field(name="🏆 Total Won", value=f"**{total_won:,} 🪙**", inline=True)
-        round_embed.add_field(name="📈 Net Outcome", value=f"**{net_str} 🪙**", inline=True)
-        round_embed.add_field(name="🎯 Win Rate", value=f"**{wins_count}/{round_num}** ({wins_count/round_num*100:.0f}%)", inline=True)
-        round_embed.add_field(name="👛 Current Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
-        round_embed.set_footer(text=f"Auto-Spinning • Round {round_num}/{total_rounds} • {ctx.author.display_name}")
+        final_frame = build_reel_frame(f"[ {r1} | {r2} | {r3} ]", outcome_text, round_color)
+        final_frame.set_field_at(0, name="💰 Total Bet", value=f"**{total_spent:,} 🪙**", inline=True)
+        final_frame.set_field_at(1, name="🏆 Total Won", value=f"**{total_won:,} 🪙**", inline=True)
+        final_frame.set_field_at(2, name="📈 Net Outcome", value=f"**{net_str} 🪙**", inline=True)
+        if total_rounds > 1:
+            final_frame.set_field_at(3, name="🎯 Win Rate", value=f"**{win_rate_str}**", inline=True)
+            final_frame.set_field_at(4, name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
+        else:
+            final_frame.set_field_at(3, name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
 
-        await msg.edit(embed=round_embed)
-        await asyncio.sleep(1.3)
+        # If single round, attach spin again button directly
+        if total_rounds == 1:
+            final_frame.set_footer(text=f"Spun by {ctx.author.display_name} • Click Spin Again 🎰 to roll again!")
+            view = SlotsSpinView(user=ctx.author, bet=stake)
+            await msg.edit(embed=final_frame, view=view)
+            return
 
-    # Final summary embed
+        await msg.edit(embed=final_frame)
+        if round_num < total_rounds:
+            await asyncio.sleep(1.2)
+
+    # Multi-Round Final Summary Card
     net = total_won - total_spent
     net_str = f"+{net:,}" if net >= 0 else f"{net:,}"
     cur_bal = get_user_coins(ctx.author.id)
