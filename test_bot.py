@@ -141,7 +141,8 @@ class TestAIOBot(unittest.TestCase):
             "testadd", "testcoupons", "testoptimize", "testcart", "testcheckout", "testclear",
             "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about",
             "lockdown", "filter", "modlogs", "case", "note",
-            "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll"
+            "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
+            "cvsaccount"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -214,12 +215,10 @@ class TestAIOBot(unittest.TestCase):
     def test_connect4_win_detection(self):
         board = main.create_connect4_board()
         self.assertFalse(main.check_connect4_win(board, "🔴"))
-        # Horizontal win
         for col in range(4):
             main.drop_piece(board, col, "🔴")
         self.assertTrue(main.check_connect4_win(board, "🔴"))
 
-        # Vertical win
         b2 = main.create_connect4_board()
         for _ in range(4):
             main.drop_piece(b2, 0, "🟡")
@@ -244,8 +243,16 @@ class TestAIOBot(unittest.TestCase):
         cleared = main.clear_mod_notes(1234, 5678)
         self.assertEqual(cleared, 1)
 
+    def test_barcode_generation(self):
+        buf = main.generate_code128_barcode_bytes("48443912049281")
+        self.assertIsNotNone(buf)
+        buf_val = buf.getvalue()
+        self.assertTrue(len(buf_val) > 100)
+        self.assertEqual(buf_val[:8], b'\x89PNG\r\n\x1a\n') # Valid PNG magic header
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
 

@@ -1,3 +1,4 @@
+import io
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -581,7 +582,147 @@ SLOT_PAYOUTS = {
     "🍒🍒🍒": (3.0, "Cherry Trio! 🍒 3x Payout"),
 }
 
+
+# --- CODE 128 BARCODE GENERATOR & CVS ACCOUNT FORMATTER ---
+
+CODE128_PATTERNS = [
+    '212222', '222122', '222221', '121223', '121322', '131222', '122213', '122312',
+    '132212', '221213', '221312', '231212', '112232', '122132', '122231', '113222',
+    '123122', '123221', '223211', '221132', '221231', '213212', '223112', '312131',
+    '311222', '321122', '321221', '312212', '322112', '322211', '212123', '212321',
+    '232121', '111323', '131123', '131321', '112313', '132113', '132311', '211313',
+    '231113', '231311', '112133', '112331', '132131', '113123', '113321', '133121',
+    '313121', '211331', '231131', '213113', '213311', '213131', '311123', '311321',
+    '331121', '312113', '312311', '332111', '314111', '221411', '431111', '111224',
+    '111422', '121124', '121421', '141122', '141221', '112214', '112412', '122114',
+    '122411', '142112', '142211', '241211', '221114', '413111', '241112', '134111',
+    '111242', '121142', '121241', '114212', '124112', '124211', '411212', '421112',
+    '421211', '212141', '214121', '412121', '111143', '111341', '131141', '114113',
+    '114311', '411113', '411311', '113141', '114131', '311141', '411131', '211412',
+    '211214', '211232', '2331112'
+]
+
+def generate_code128_barcode_bytes(data: str, height: int = 100, bar_width: int = 3) -> io.BytesIO:
+    from PIL import Image, ImageDraw
+    clean_data = re.sub(r'[^A-Za-z0-9]', '', str(data)).upper()
+    if not clean_data:
+        clean_data = "0000000000"
+
+    start_code = 104  # Start Code 128B
+    stop_code = 106
+    values = [start_code]
+    for char in clean_data:
+        val = ord(char) - 32
+        values.append(val if 0 <= val <= 95 else 0)
+
+    checksum = values[0]
+    for i, val in enumerate(values[1:], 1):
+        checksum += i * val
+    checksum %= 103
+    values.append(checksum)
+    values.append(stop_code)
+
+    bit_pattern = ''
+    for v in values:
+        pattern = CODE128_PATTERNS[v]
+        is_bar = True
+        for digit in pattern:
+            width = int(digit)
+            bit_pattern += ('1' if is_bar else '0') * width
+            is_bar = not is_bar
+
+    quiet_zone = 25 * bar_width
+    img_width = len(bit_pattern) * bar_width + 2 * quiet_zone
+    img_height = height + 45
+
+    img = Image.new('RGB', (img_width, img_height), color='white')
+    draw = ImageDraw.Draw(img)
+
+    x = quiet_zone
+    for bit in bit_pattern:
+        if bit == '1':
+            draw.rectangle([x, 15, x + bar_width - 1, 15 + height], fill='black')
+        x += bar_width
+
+    formatted_text = " ".join([clean_data[i:i+4] for i in range(0, len(clean_data), 4)])
+    draw.text((img_width // 2, 22 + height), formatted_text, fill='black', anchor='mm')
+
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    return buffer
+
 # 4. DISCORD UI MODALS & INTERACTIVE VIEWS
+
+
+class CVSAccountModal(discord.ui.Modal, title="💳 CVS ExtraCare® Card Formatter"):
+    card_num = discord.ui.TextInput(
+        label="ExtraCare / Card Number (Barcode)",
+        placeholder="e.g. 48443912049281 (numbers/letters)",
+        required=True,
+        max_length=50
+    )
+    name_phone = discord.ui.TextInput(
+        label="Name & Phone Number (Optional)",
+        placeholder="e.g. John Doe | (555) 123-4567",
+        required=False,
+        max_length=100
+    )
+    creds = discord.ui.TextInput(
+        label="Email & Password (Optional - Hidden in Spoilers)",
+        placeholder="e.g. account@email.com | Password123",
+        required=False,
+        max_length=150
+    )
+    extrabucks = discord.ui.TextInput(
+        label="ExtraBucks Balance / Rewards (Optional)",
+        placeholder="e.g. $14.00 ExtraBucks Available",
+        required=False,
+        max_length=100
+    )
+    coupons_notes = discord.ui.TextInput(
+        label="Loaded Coupons / Account Notes (Optional)",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g. $8 off $40 basket, $4 off Crest, CarePass active",
+        required=False,
+        max_length=500
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_card = self.card_num.value.strip()
+        barcode_buffer = generate_code128_barcode_bytes(raw_card)
+        file = discord.File(fp=barcode_buffer, filename="cvs_barcode.png")
+
+        embed = discord.Embed(
+            title="💳 CVS ExtraCare® Account & Barcode",
+            description="Scannable barcode generated below for register & self-checkout scanners.",
+            color=COLOR_PRIMARY
+        )
+        embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
+
+        formatted_card = " ".join([raw_card[i:i+4] for i in range(0, len(raw_card), 4)])
+        embed.add_field(name="🔢 ExtraCare Number", value=f"```\n{formatted_card}\n```", inline=False)
+
+        if self.name_phone.value.strip():
+            embed.add_field(name="👤 Cardholder", value=f"**{self.name_phone.value.strip()}**", inline=True)
+
+        if self.extrabucks.value.strip():
+            embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{self.extrabucks.value.strip()}**", inline=True)
+
+        if self.creds.value.strip():
+            parts = self.creds.value.strip().split("|")
+            email_part = parts[0].strip()
+            pass_part = parts[1].strip() if len(parts) > 1 else ""
+            val = f"📧 **Email:** `{email_part}`\n🔑 **Password:** ||`{pass_part}`||" if pass_part else f"📧 **Email:** `{email_part}`"
+            embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
+
+        if self.coupons_notes.value.strip():
+            embed.add_field(name="🎟️ Loaded Coupons & Notes", value=self.coupons_notes.value.strip(), inline=False)
+
+        embed.set_image(url="attachment://cvs_barcode.png")
+        embed.set_footer(text="AIO Bot CVS ExtraCare Barcode Generator • High-Resolution Scan")
+
+        await interaction.response.send_message(embed=embed, file=file)
 
 class AddItemModal(discord.ui.Modal, title="🛒 Add Item(s) to Cart"):
     item_input = discord.ui.TextInput(
@@ -928,10 +1069,30 @@ class BlackjackGameView(discord.ui.View):
 
         if outcome:
             embed.add_field(name="🏁 Result", value=outcome, inline=False)
-            embed.set_footer(text="Game finished • Thanks for playing!")
+            embed.set_footer(text="Click 'Play Again 🔄' below to start a new round!")
         else:
             embed.set_footer(text="Choose an action below to continue.")
         return embed
+
+    def finish_game(self):
+        self.game_over = True
+        self.clear_items()
+        play_again_btn = discord.ui.Button(label="Play Again", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="bj_replay")
+        async def replay_cb(interaction: discord.Interaction):
+            if interaction.user.id != self.player.id:
+                await interaction.response.send_message("⛔ This is not your game!", ephemeral=True)
+                return
+            new_view = BlackjackGameView(self.player, self.bet)
+            p_val = calculate_hand_value(new_view.player_hand)
+            if p_val == 21:
+                new_embed = new_view.build_embed(hide_dealer=False, outcome="🌟 **NATURAL BLACKJACK!** Instant Win! (3:2 Payout)")
+                new_view.finish_game()
+                await interaction.response.edit_message(embed=new_embed, view=new_view)
+            else:
+                new_embed = new_view.build_embed(hide_dealer=True)
+                await interaction.response.edit_message(embed=new_embed, view=new_view)
+        play_again_btn.callback = replay_cb
+        self.add_item(play_again_btn)
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.success, emoji="🟢")
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -943,9 +1104,7 @@ class BlackjackGameView(discord.ui.View):
         p_val = calculate_hand_value(self.player_hand)
 
         if p_val > 21:
-            self.game_over = True
-            for child in self.children:
-                child.disabled = True
+            self.finish_game()
             embed = self.build_embed(hide_dealer=False, outcome="💥 **BUST!** You exceeded 21. Dealer wins.")
             await interaction.response.edit_message(embed=embed, view=self)
             self.stop()
@@ -958,10 +1117,6 @@ class BlackjackGameView(discord.ui.View):
         if interaction.user.id != self.player.id:
             await interaction.response.send_message("⛔ This is not your blackjack game!", ephemeral=True)
             return
-
-        self.game_over = True
-        for child in self.children:
-            child.disabled = True
 
         while calculate_hand_value(self.dealer_hand) < 17 and self.deck:
             self.dealer_hand.append(self.deck.pop())
@@ -978,6 +1133,7 @@ class BlackjackGameView(discord.ui.View):
         else:
             outcome = f"🤝 **PUSH / TIE!** Both scored {p_val}."
 
+        self.finish_game()
         embed = self.build_embed(hide_dealer=False, outcome=outcome)
         await interaction.response.edit_message(embed=embed, view=self)
         self.stop()
@@ -990,12 +1146,10 @@ class BlackjackGameView(discord.ui.View):
 
         self.bet *= 2
         self.player_hand.append(self.deck.pop())
-        self.game_over = True
-        for child in self.children:
-            child.disabled = True
 
         p_val = calculate_hand_value(self.player_hand)
         if p_val > 21:
+            self.finish_game()
             embed = self.build_embed(hide_dealer=False, outcome="💥 **BUST on Double Down!** Dealer wins.")
             await interaction.response.edit_message(embed=embed, view=self)
             self.stop()
@@ -1014,6 +1168,7 @@ class BlackjackGameView(discord.ui.View):
         else:
             outcome = f"🤝 **PUSH / TIE!** ({p_val} each)"
 
+        self.finish_game()
         embed = self.build_embed(hide_dealer=False, outcome=outcome)
         await interaction.response.edit_message(embed=embed, view=self)
         self.stop()
@@ -1084,8 +1239,17 @@ class Connect4View(discord.ui.View):
 
             if check_connect4_win(self.board, piece):
                 self.game_over = True
-                for child in self.children:
-                    child.disabled = True
+                self.clear_items()
+                play_again_btn = discord.ui.Button(label="Play Again", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="c4_replay")
+                async def c4_replay_cb(itx: discord.Interaction):
+                    if itx.user.id not in (self.p1.id, (self.p2.id if self.p2 else self.p1.id)):
+                        await itx.response.send_message("⛔ This is not your game!", ephemeral=True)
+                        return
+                    new_v = Connect4View(self.p1, self.p2)
+                    await itx.response.edit_message(embed=new_v.build_embed(), view=new_v)
+                play_again_btn.callback = c4_replay_cb
+                self.add_item(play_again_btn)
+
                 winner = self.p1 if piece == "🔴" else (self.p2 or interaction.client.user)
                 embed = self.build_embed(f"🏆 **CONNECT 4!** {winner.mention} wins the game!")
                 embed.color = COLOR_SUCCESS
@@ -1173,7 +1337,26 @@ class TriviaView(discord.ui.View):
                 inline=True
             )
             embed.add_field(name="Did You Know?", value=self.q_data.get("info", "Great knowledge!"), inline=False)
-            embed.set_footer(text=f"Played by {self.user.display_name}")
+            embed.set_footer(text=f"Played by {self.user.display_name} • Click 'Next Question ➡️' to continue!")
+
+            next_btn = discord.ui.Button(label="Next Question", style=discord.ButtonStyle.primary, emoji="➡️", row=2)
+            async def next_q_cb(itx: discord.Interaction):
+                if itx.user.id != self.user.id:
+                    await itx.response.send_message("⛔ Start your own trivia with `/trivia`!", ephemeral=True)
+                    return
+                all_qs = [q for cat in TRIVIA_QUESTIONS.values() for q in cat]
+                new_q = random.choice(all_qs)
+                new_v = TriviaView(self.user, new_q)
+                new_embed = discord.Embed(
+                    title="🧠 Trivia Challenge",
+                    description=f"**{new_q['q']}**\n\nSelect the correct option below (45s timer):",
+                    color=COLOR_PRIMARY
+                )
+                for i_idx, opt in enumerate(new_q["options"]):
+                    new_embed.add_field(name=f"Option {chr(65+i_idx)}", value=opt, inline=True)
+                await itx.response.edit_message(embed=new_embed, view=new_v)
+            next_btn.callback = next_q_cb
+            self.add_item(next_btn)
 
             await interaction.response.edit_message(embed=embed, view=self)
             self.stop()
@@ -1244,6 +1427,43 @@ class RPSView(discord.ui.View):
         else:
             p2_str = p2.mention if p2 else "AIO Bot 🤖"
             return f"💀 **{p2_str} WINS!** ({c2} beats {c1})"
+
+
+class SlotsSpinView(discord.ui.View):
+    def __init__(self, user: discord.User, bet: float = 10.0):
+        super().__init__(timeout=90)
+        self.user = user
+        self.bet = bet
+
+    @discord.ui.button(label="Spin Again", style=discord.ButtonStyle.success, emoji="🎰")
+    async def spin_again(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("⛔ Spin your own slots with `/slots`!", ephemeral=True)
+            return
+
+        r1 = random.choice(SLOT_SYMBOLS)
+        r2 = random.choice(SLOT_SYMBOLS)
+        r3 = random.choice(SLOT_SYMBOLS)
+        combo = f"{r1}{r2}{r3}"
+
+        embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
+        embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
+
+        if combo in SLOT_PAYOUTS:
+            mult, title = SLOT_PAYOUTS[combo]
+            winnings = self.bet * mult
+            embed.color = COLOR_SUCCESS
+            embed.description += f"🎉 **{title}**\n💰 Stake: **${self.bet:.2f}** ➔ Won: **${winnings:.2f}**!"
+        elif r1 == r2 or r2 == r3 or r1 == r3:
+            winnings = self.bet * 1.5
+            embed.color = COLOR_WARN
+            embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **${self.bet:.2f}** ➔ Won: **${winnings:.2f}**!"
+        else:
+            embed.color = COLOR_ERROR
+            embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **${self.bet:.2f}**"
+
+        embed.set_footer(text=f"Spun by {self.user.display_name} • Click Spin Again 🎰 to roll again!")
+        await interaction.response.edit_message(embed=embed, view=self)
 
 class HelpCategorySelect(discord.ui.Select):
     def __init__(self, author_perms: discord.Permissions, is_owner: bool):
@@ -1369,8 +1589,14 @@ async def on_ready():
             print(f"ℹ️ Note on auto role rename in guild '{guild.name}': {e}", file=sys.stderr)
 
     try:
+        for g in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=g)
+                await bot.tree.sync(guild=g)
+            except Exception:
+                pass
         synced = await bot.tree.sync()
-        print(f'✅ Synced {len(synced)} global slash command(s).')
+        print(f'✅ Synced {len(synced)} global & guild slash command(s).')
     except Exception as e:
         print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr)
 
@@ -2624,7 +2850,7 @@ async def trivia_cmd(ctx, category: Optional[Literal["general", "tech", "gaming"
 @bot.hybrid_command(name="slots", aliases=["slot", "spin"], description="Spin the high-roller slot machine")
 async def slots_cmd(ctx, bet: Optional[float] = 10.0):
     await safely_delete_message(ctx)
-    bet = max(1.0, bet or 10.0)
+    stake = max(1.0, bet or 10.0)
     r1 = random.choice(SLOT_SYMBOLS)
     r2 = random.choice(SLOT_SYMBOLS)
     r3 = random.choice(SLOT_SYMBOLS)
@@ -2635,19 +2861,20 @@ async def slots_cmd(ctx, bet: Optional[float] = 10.0):
 
     if combo in SLOT_PAYOUTS:
         mult, title = SLOT_PAYOUTS[combo]
-        winnings = bet * mult
+        winnings = stake * mult
         embed.color = COLOR_SUCCESS
-        embed.description += f"🎉 **{title}**\n💰 Stake: **${bet:.2f}** ➔ Won: **${winnings:.2f}**!"
+        embed.description += f"🎉 **{title}**\n💰 Stake: **${stake:.2f}** ➔ Won: **${winnings:.2f}**!"
     elif r1 == r2 or r2 == r3 or r1 == r3:
-        winnings = bet * 1.5
+        winnings = stake * 1.5
         embed.color = COLOR_WARN
-        embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **${bet:.2f}** ➔ Won: **${winnings:.2f}**!"
+        embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **${stake:.2f}** ➔ Won: **${winnings:.2f}**!"
     else:
         embed.color = COLOR_ERROR
-        embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **${bet:.2f}**"
+        embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **${stake:.2f}**"
 
-    embed.set_footer(text=f"Spun by {ctx.author.display_name}")
-    await ctx.send(embed=embed)
+    embed.set_footer(text=f"Spun by {ctx.author.display_name} • Click Spin Again 🎰 to roll again!")
+    view = SlotsSpinView(user=ctx.author, bet=stake)
+    await ctx.send(embed=embed, view=view)
 
 
 @bot.hybrid_command(name="rps", description="Play Rock-Paper-Scissors against a friend or the bot")
@@ -2720,6 +2947,92 @@ async def roll_cmd(ctx, dice: Optional[str] = "1d6"):
         await ctx.send(embed=embed)
     except Exception:
         await ctx.send("❌ Invalid dice format. Examples: `1d6`, `2d20`, `100`.", delete_after=6)
+
+
+
+# --- CVS ACCOUNT BARCODE GENERATOR ---
+
+@bot.hybrid_command(
+    name="cvsaccount",
+    aliases=["cvscard", "extracare", "account", "barcode"],
+    description="Format a CVS ExtraCare account and generate a scannable register barcode"
+)
+async def cvsaccount_cmd(
+    ctx,
+    card_number: Optional[str] = None,
+    name: Optional[str] = None,
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+    password: Optional[str] = None,
+    extrabucks: Optional[str] = None,
+    *,
+    notes: Optional[str] = None
+):
+    await safely_delete_message(ctx)
+
+    if not card_number and ctx.interaction:
+        await ctx.interaction.response.send_modal(CVSAccountModal())
+        return
+
+    if not card_number:
+        embed = discord.Embed(
+            title="💳 CVS ExtraCare® Card Formatter",
+            description=(
+                "Generate a scannable Code 128 barcode and format your CVS account details.\n\n"
+                "**Usage:**\n"
+                "`/cvsaccount [card_number] [name] [phone] [email] [password] [extrabucks] [notes]`\n"
+                "*Example:* `/cvsaccount card_number:48443912049281 name:John Doe extrabucks:$14.00 notes:$8 off $40`\n\n"
+                "Or click the button below to open the interactive form!"
+            ),
+            color=COLOR_PRIMARY
+        )
+        modal_btn_view = discord.ui.View()
+        btn = discord.ui.Button(label="Open CVS Card Form", style=discord.ButtonStyle.primary, emoji="💳")
+        async def open_modal_cb(itx: discord.Interaction):
+            await itx.response.send_modal(CVSAccountModal())
+        btn.callback = open_modal_cb
+        modal_btn_view.add_item(btn)
+        await ctx.send(embed=embed, view=modal_btn_view)
+        return
+
+    raw_card = card_number.strip()
+    barcode_buffer = generate_code128_barcode_bytes(raw_card)
+    file = discord.File(fp=barcode_buffer, filename="cvs_barcode.png")
+
+    embed = discord.Embed(
+        title="💳 CVS ExtraCare® Account & Barcode",
+        description="Scannable barcode generated below for register & self-checkout scanners.",
+        color=COLOR_PRIMARY
+    )
+    embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
+
+    formatted_card = " ".join([raw_card[i:i+4] for i in range(0, len(raw_card), 4)])
+    embed.add_field(name="🔢 ExtraCare Number", value=f"```\n{formatted_card}\n```", inline=False)
+
+    cardholder_parts = []
+    if name:
+        cardholder_parts.append(name.strip())
+    if phone:
+        cardholder_parts.append(phone.strip())
+    if cardholder_parts:
+        embed.add_field(name="👤 Cardholder", value=" | ".join(cardholder_parts), inline=True)
+
+    if extrabucks:
+        embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{extrabucks.strip()}**", inline=True)
+
+    if email or password:
+        val = f"📧 **Email:** `{email}`" if email else ""
+        if password:
+            val += f"\n🔑 **Password:** ||`{password}`||"
+        embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
+
+    if notes:
+        embed.add_field(name="🎟️ Loaded Coupons & Notes", value=notes.strip(), inline=False)
+
+    embed.set_image(url="attachment://cvs_barcode.png")
+    embed.set_footer(text="AIO Bot CVS ExtraCare Barcode Generator • High-Resolution Scan")
+
+    await ctx.send(embed=embed, file=file)
 
 
 # --- SETUP & CHANNELS ---
