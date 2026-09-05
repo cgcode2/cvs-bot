@@ -142,7 +142,7 @@ class TestAIOBot(unittest.TestCase):
             "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about",
             "lockdown", "filter", "modlogs", "case", "note",
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
-            "cvsaccount"
+            "cvsaccount", "accounts"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -250,9 +250,21 @@ class TestAIOBot(unittest.TestCase):
         self.assertTrue(len(buf_val) > 100)
         self.assertEqual(buf_val[:8], b'\x89PNG\r\n\x1a\n') # Valid PNG magic header
 
+    def test_cvs_accounts_db(self):
+        self.assertEqual(len(main.cvs_accounts_db), 21)
+        acc1 = main.get_cvs_account("1")
+        self.assertIsNotNone(acc1)
+        self.assertEqual(acc1["name"], "Andrew Bartlett")
+        self.assertEqual(acc1["extraCareNumber"], "4767093294360")
+        
+        acc_name = main.get_cvs_account("Murphy")
+        self.assertIsNotNone(acc_name)
+        self.assertEqual(acc_name["id"], 2)
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
 
 

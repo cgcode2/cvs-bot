@@ -104,6 +104,27 @@ def save_json_file(filename: str, data: Any) -> None:
 
 session_channels: Dict[str, int] = load_json_file(SESSION_CHANNELS_FILE, {})
 warnings_db: Dict[str, List[Dict[str, Any]]] = load_json_file(WARNINGS_FILE, {})
+CVS_ACCOUNTS_FILE = "cvs_accounts.json"
+cvs_accounts_db: List[Dict[str, Any]] = load_json_file(CVS_ACCOUNTS_FILE, [])
+
+def save_cvs_accounts(data: List[Dict[str, Any]]) -> None:
+    save_json_file(CVS_ACCOUNTS_FILE, data)
+
+def get_cvs_account(query: str) -> Optional[Dict[str, Any]]:
+    q = str(query).strip().lower()
+    for acc in cvs_accounts_db:
+        if str(acc.get("id")) == q:
+            return acc
+        if q in str(acc.get("name", "")).lower():
+            return acc
+        if q in str(acc.get("email", "")).lower():
+            return acc
+        if q in str(acc.get("phone", "")).lower():
+            return acc
+        if q in str(acc.get("extraCareNumber", "")).lower():
+            return acc
+    return None
+
 FILTERS_FILE = "automod_filters.json"
 MOD_CASES_FILE = "mod_cases.json"
 MOD_NOTES_FILE = "mod_notes.json"
@@ -654,6 +675,103 @@ def generate_code128_barcode_bytes(data: str, height: int = 100, bar_width: int 
 
 # 4. DISCORD UI MODALS & INTERACTIVE VIEWS
 
+
+
+def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.File]:
+    raw_card = str(acc.get("extraCareNumber", "0000000000")).strip()
+    barcode_buffer = generate_code128_barcode_bytes(raw_card)
+    file = discord.File(fp=barcode_buffer, filename="cvs_barcode.png")
+
+    name = acc.get("name", "Account Holder")
+    acc_id = acc.get("id", 1)
+
+    embed = discord.Embed(
+        title=f"💳 CVS ExtraCare® Card — #{acc_id} {name}",
+        description="Scannable barcode generated below for register & self-checkout scanners.",
+        color=COLOR_PRIMARY
+    )
+    embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
+
+    formatted_card = " ".join([raw_card[i:i+4] for i in range(0, len(raw_card), 4)])
+    embed.add_field(name="🔢 ExtraCare Number", value=f"```\n{formatted_card}\n```", inline=False)
+
+    phone = acc.get("phone", "")
+    if len(phone) == 10:
+        phone_fmt = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
+    else:
+        phone_fmt = phone or "—"
+
+    embed.add_field(name="👤 Cardholder", value=f"**{name}**", inline=True)
+    embed.add_field(name="📞 Phone", value=f"`{phone_fmt}`", inline=True)
+    if acc.get("birthday"):
+        embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
+
+    email = acc.get("email", "")
+    pwd = acc.get("password", "")
+    val = f"📧 **Email:** `{email}`"
+    if pwd:
+        val += f"\n🔑 **Password:** ||`{pwd}`||"
+    embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
+
+    if acc.get("extrabucks"):
+        embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{acc['extrabucks']}**", inline=True)
+
+    if acc.get("notes"):
+        embed.add_field(name="🎟️ Loaded Coupons & Notes", value=acc['notes'], inline=False)
+
+    embed.set_image(url="attachment://cvs_barcode.png")
+    embed.set_footer(text=f"AIO Bot CVS Account Manager • Account #{acc_id} of {len(cvs_accounts_db)}")
+    return embed, file
+
+
+class AccountSelectDropdown(discord.ui.Select):
+    def __init__(self, current_idx: int = 0):
+        options = []
+        for idx, acc in enumerate(cvs_accounts_db[:25]):
+            label = f"#{acc['id']} {acc.get('name', 'Account')}"
+            desc = f"EC: {acc.get('extraCareNumber', '')} | {acc.get('phone', '')}"
+            options.append(discord.SelectOption(label=label[:100], value=str(idx), description=desc[:100], default=(idx == current_idx)))
+        super().__init__(placeholder="📋 Choose an account to view barcode...", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        idx = int(self.values[0])
+        self.view.current_idx = idx
+        embed, file = format_account_card(cvs_accounts_db[idx])
+        self.view.update_select()
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self.view)
+
+
+class CVSAccountsPaginationView(discord.ui.View):
+    def __init__(self, current_idx: int = 0):
+        super().__init__(timeout=180)
+        self.current_idx = current_idx
+        self.dropdown = AccountSelectDropdown(current_idx)
+        self.add_item(self.dropdown)
+
+    def update_select(self):
+        self.remove_item(self.dropdown)
+        self.dropdown = AccountSelectDropdown(self.current_idx)
+        self.add_item(self.dropdown)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not cvs_accounts_db:
+            await interaction.response.send_message("No accounts found!", ephemeral=True)
+            return
+        self.current_idx = (self.current_idx - 1) % len(cvs_accounts_db)
+        embed, file = format_account_card(cvs_accounts_db[self.current_idx])
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=1)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not cvs_accounts_db:
+            await interaction.response.send_message("No accounts found!", ephemeral=True)
+            return
+        self.current_idx = (self.current_idx + 1) % len(cvs_accounts_db)
+        embed, file = format_account_card(cvs_accounts_db[self.current_idx])
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
 class CVSAccountModal(discord.ui.Modal, title="💳 CVS ExtraCare® Card Formatter"):
     card_num = discord.ui.TextInput(
@@ -2952,6 +3070,23 @@ async def roll_cmd(ctx, dice: Optional[str] = "1d6"):
 
 # --- CVS ACCOUNT BARCODE GENERATOR ---
 
+
+@bot.hybrid_command(
+    name="accounts",
+    aliases=["cvsaccounts", "myaccounts", "cards"],
+    description="Browse all imported CVS ExtraCare accounts with barcodes & pagination"
+)
+async def list_accounts_cmd(ctx):
+    await safely_delete_message(ctx)
+    if not cvs_accounts_db:
+        await ctx.send("📭 No CVS accounts currently loaded. Use `/cvsaccount` to generate a card or import a batch.", delete_after=8)
+        return
+
+    view = CVSAccountsPaginationView(current_idx=0)
+    embed, file = format_account_card(cvs_accounts_db[0])
+    await ctx.send(embed=embed, file=file, view=view)
+
+
 @bot.hybrid_command(
     name="cvsaccount",
     aliases=["cvscard", "extracare", "account", "barcode"],
@@ -2969,6 +3104,15 @@ async def cvsaccount_cmd(
     notes: Optional[str] = None
 ):
     await safely_delete_message(ctx)
+
+    # Check if card_number is actually an account query or ID (e.g. /cvsaccount 1 or /cvsaccount Bartlett)
+    if card_number:
+        matched = get_cvs_account(card_number)
+        if matched and not (name or phone or email or password or extrabucks or notes):
+            embed, file = format_account_card(matched)
+            view = CVSAccountsPaginationView(current_idx=cvs_accounts_db.index(matched))
+            await ctx.send(embed=embed, file=file, view=view)
+            return
 
     if not card_number and ctx.interaction:
         await ctx.interaction.response.send_modal(CVSAccountModal())
