@@ -139,18 +139,18 @@ class TestAIOBot(unittest.TestCase):
             "createchannel", "blockrole", "unblockrole", "renamerole", "serverinfo", "userinfo", "add", "coupons",
             "optimize", "calc", "cart", "undo", "remove", "clear", "checkout", "run-stress-test",
             "testadd", "testcoupons", "testoptimize", "testcart", "testcheckout", "testclear",
-            "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about"
+            "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about",
+            "lockdown", "filter", "modlogs", "case", "note",
+            "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
 
     def test_delete_last_trip(self):
-        # Backup original state
         original_savings = dict(main.savings_tracker)
         original_trips = list(main.savings_tracker.get("trips", []))
         
         try:
-            # Simulate a trip
             items = [{"name": "Item A", "price": 10.0}]
             coupons = [8.0]
             embed, subtotal, total_due, coupon_spend, net_saved, now = main._do_checkout(items, coupons)
@@ -158,13 +158,11 @@ class TestAIOBot(unittest.TestCase):
             initial_count = main.savings_tracker["trip_count"]
             initial_net_saved = main.savings_tracker["total_net_saved"]
             
-            # Delete last trip
             removed = main.delete_last_trip()
             self.assertIsNotNone(removed)
             self.assertEqual(main.savings_tracker["trip_count"], initial_count - 1)
             self.assertAlmostEqual(main.savings_tracker["total_net_saved"], initial_net_saved - net_saved, places=2)
         finally:
-            # Restore state
             main.savings_tracker.clear()
             main.savings_tracker.update(original_savings)
             main.savings_tracker["trips"] = original_trips
@@ -191,6 +189,11 @@ class TestAIOBot(unittest.TestCase):
             "lock": "manage_channels",
             "unlock": "manage_channels",
             "slowmode": "manage_channels",
+            "lockdown": "administrator",
+            "filter": "manage_guild",
+            "modlogs": "manage_messages",
+            "case": "manage_messages",
+            "note": "manage_messages",
             "setup": "is_owner",
             "permit": "is_owner",
         }
@@ -200,7 +203,49 @@ class TestAIOBot(unittest.TestCase):
             self.assertIsNotNone(cmd, f"Command '{cmd_name}' not found!")
             self.assertTrue(len(cmd.checks) > 0, f"Command '{cmd_name}' has no permission checks!")
 
+    def test_blackjack_hand_calculations(self):
+        self.assertEqual(main.calculate_hand_value(["10♠", "K♥"]), 20)
+        self.assertEqual(main.calculate_hand_value(["A♠", "9♥"]), 20)
+        self.assertEqual(main.calculate_hand_value(["A♠", "A♥", "9♦"]), 21) # 11 + 1 + 9 = 21
+        self.assertEqual(main.calculate_hand_value(["10♠", "8♥", "5♦"]), 23) # Bust
+        deck = main.create_shuffled_deck()
+        self.assertEqual(len(deck), 52)
+
+    def test_connect4_win_detection(self):
+        board = main.create_connect4_board()
+        self.assertFalse(main.check_connect4_win(board, "🔴"))
+        # Horizontal win
+        for col in range(4):
+            main.drop_piece(board, col, "🔴")
+        self.assertTrue(main.check_connect4_win(board, "🔴"))
+
+        # Vertical win
+        b2 = main.create_connect4_board()
+        for _ in range(4):
+            main.drop_piece(b2, 0, "🟡")
+        self.assertTrue(main.check_connect4_win(b2, "🟡"))
+
+    def test_automod_word_filter(self):
+        test_gid = 999999
+        main.add_filter_word(test_gid, "badword")
+        words = main.get_filter_words(test_gid)
+        self.assertIn("badword", words)
+        main.remove_filter_word(test_gid, "badword")
+        self.assertNotIn("badword", main.get_filter_words(test_gid))
+
+    def test_mod_cases_and_notes(self):
+        case_id = main.log_mod_case(1234, "Warn", "User1", "Mod1", "Test Reason")
+        self.assertIsInstance(case_id, int)
+        
+        main.add_mod_note(1234, 5678, "Mod1", "Suspicious account")
+        notes = main.get_mod_notes(1234, 5678)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["note"], "Suspicious account")
+        cleared = main.clear_mod_notes(1234, 5678)
+        self.assertEqual(cleared, 1)
+
 
 if __name__ == '__main__':
     unittest.main()
+
 

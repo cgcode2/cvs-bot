@@ -103,12 +103,100 @@ def save_json_file(filename: str, data: Any) -> None:
 
 session_channels: Dict[str, int] = load_json_file(SESSION_CHANNELS_FILE, {})
 warnings_db: Dict[str, List[Dict[str, Any]]] = load_json_file(WARNINGS_FILE, {})
+FILTERS_FILE = "automod_filters.json"
+MOD_CASES_FILE = "mod_cases.json"
+MOD_NOTES_FILE = "mod_notes.json"
+
+filters_db: Dict[str, List[str]] = load_json_file(FILTERS_FILE, {})
+mod_cases_db: Dict[str, Any] = load_json_file(MOD_CASES_FILE, {"next_id": 1, "cases": []})
+mod_notes_db: Dict[str, Dict[str, List[Dict[str, Any]]]] = load_json_file(MOD_NOTES_FILE, {})
 
 def save_session_channels(data: Dict[str, int]) -> None:
     save_json_file(SESSION_CHANNELS_FILE, data)
 
 def save_warnings(data: Dict[str, List[Dict[str, Any]]]) -> None:
     save_json_file(WARNINGS_FILE, data)
+
+def save_filters(data: Dict[str, List[str]]) -> None:
+    save_json_file(FILTERS_FILE, data)
+
+def save_mod_cases(data: Dict[str, Any]) -> None:
+    save_json_file(MOD_CASES_FILE, data)
+
+def save_mod_notes(data: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> None:
+    save_json_file(MOD_NOTES_FILE, data)
+
+def log_mod_case(guild_id: int, action: str, target: str, moderator: str, reason: str, details: Optional[str] = None) -> int:
+    case_id = mod_cases_db.get("next_id", 1)
+    mod_cases_db["next_id"] = case_id + 1
+    case_entry = {
+        "case_id": case_id,
+        "guild_id": str(guild_id),
+        "action": action,
+        "target": target,
+        "moderator": moderator,
+        "reason": reason,
+        "details": details or "None",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    }
+    if "cases" not in mod_cases_db:
+        mod_cases_db["cases"] = []
+    mod_cases_db["cases"].append(case_entry)
+    save_mod_cases(mod_cases_db)
+    return case_id
+
+def get_filter_words(guild_id: int) -> List[str]:
+    return filters_db.get(str(guild_id), [])
+
+def add_filter_word(guild_id: int, word: str) -> bool:
+    gid = str(guild_id)
+    if gid not in filters_db:
+        filters_db[gid] = []
+    w = word.strip().lower()
+    if w and w not in filters_db[gid]:
+        filters_db[gid].append(w)
+        save_filters(filters_db)
+        return True
+    return False
+
+def remove_filter_word(guild_id: int, word: str) -> bool:
+    gid = str(guild_id)
+    if gid not in filters_db:
+        return False
+    w = word.strip().lower()
+    if w in filters_db[gid]:
+        filters_db[gid].remove(w)
+        save_filters(filters_db)
+        return True
+    return False
+
+def add_mod_note(guild_id: int, user_id: int, moderator: str, note: str) -> None:
+    gid = str(guild_id)
+    uid = str(user_id)
+    if gid not in mod_notes_db:
+        mod_notes_db[gid] = {}
+    if uid not in mod_notes_db[gid]:
+        mod_notes_db[gid][uid] = []
+    mod_notes_db[gid][uid].append({
+        "moderator": moderator,
+        "note": note,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    })
+    save_mod_notes(mod_notes_db)
+
+def get_mod_notes(guild_id: int, user_id: int) -> List[Dict[str, Any]]:
+    return mod_notes_db.get(str(guild_id), {}).get(str(user_id), [])
+
+def clear_mod_notes(guild_id: int, user_id: int) -> int:
+    gid = str(guild_id)
+    uid = str(user_id)
+    if gid in mod_notes_db and uid in mod_notes_db[gid]:
+        count = len(mod_notes_db[gid][uid])
+        del mod_notes_db[gid][uid]
+        save_mod_notes(mod_notes_db)
+        return count
+    return 0
+
 
 # 3. COLOR CONSTANTS
 COLOR_PRIMARY = 0xcc0000   # AIO Bot red
@@ -379,6 +467,119 @@ def calculate_best_bundles(items: List[Dict[str, Any]], coupons: List[Any]) -> T
     backtrack(0, 0.0)
     total_due = max(0.0, total_price - best_discount[0])
     return total_due, best_distribution[0]
+
+
+# 3.5 GAME ENGINES & CONSTANTS
+CARD_VALUES = {
+    '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+    'J': 10, 'Q': 10, 'K': 10, 'A': 11
+}
+CARD_SUITS = ['♠', '♥', '♦', '♣']
+
+def calculate_hand_value(hand: List[str]) -> int:
+    val = 0
+    aces = 0
+    for card in hand:
+        rank = card[:-1]
+        val += CARD_VALUES.get(rank, 0)
+        if rank == 'A':
+            aces += 1
+    while val > 21 and aces > 0:
+        val -= 10
+        aces -= 1
+    return val
+
+def create_shuffled_deck() -> List[str]:
+    ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+    deck = [f"{r}{s}" for r in ranks for s in CARD_SUITS]
+    random.shuffle(deck)
+    return deck
+
+CONNECT4_ROWS = 6
+CONNECT4_COLS = 7
+
+def create_connect4_board() -> List[List[str]]:
+    return [["⚪" for _ in range(CONNECT4_COLS)] for _ in range(CONNECT4_ROWS)]
+
+def render_connect4_board(board: List[List[str]]) -> str:
+    rows = []
+    for r in board:
+        rows.append("".join(r))
+    rows.append("1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣")
+    return "\n".join(rows)
+
+def drop_piece(board: List[List[str]], col: int, piece: str) -> Optional[int]:
+    if col < 0 or col >= CONNECT4_COLS:
+        return None
+    for r in range(CONNECT4_ROWS - 1, -1, -1):
+        if board[r][col] == "⚪":
+            board[r][col] = piece
+            return r
+    return None
+
+def check_connect4_win(board: List[List[str]], piece: str) -> bool:
+    # Horizontal
+    for r in range(CONNECT4_ROWS):
+        for c in range(CONNECT4_COLS - 3):
+            if all(board[r][c+i] == piece for i in range(4)):
+                return True
+    # Vertical
+    for r in range(CONNECT4_ROWS - 3):
+        for c in range(CONNECT4_COLS):
+            if all(board[r+i][c] == piece for i in range(4)):
+                return True
+    # Diagonal Down-Right
+    for r in range(CONNECT4_ROWS - 3):
+        for c in range(CONNECT4_COLS - 3):
+            if all(board[r+i][c+i] == piece for i in range(4)):
+                return True
+    # Diagonal Up-Right
+    for r in range(3, CONNECT4_ROWS):
+        for c in range(CONNECT4_COLS - 3):
+            if all(board[r-i][c+i] == piece for i in range(4)):
+                return True
+    return False
+
+def is_connect4_full(board: List[List[str]]) -> bool:
+    return all(board[0][c] != "⚪" for c in range(CONNECT4_COLS))
+
+TRIVIA_QUESTIONS = {
+    "general": [
+        {"q": "What is the capital of Australia?", "options": ["Sydney", "Melbourne", "Canberra", "Brisbane"], "ans": 2, "info": "Canberra was chosen as the capital in 1908."},
+        {"q": "How many continents are there on Earth?", "options": ["5", "6", "7", "8"], "ans": 2, "info": "The 7 continents are Africa, Antarctica, Asia, Europe, North America, Oceania, and South America."},
+        {"q": "What is the longest river in the world?", "options": ["Amazon", "Nile", "Mississippi", "Yangtze"], "ans": 1, "info": "The Nile River spans over 6,650 km."},
+        {"q": "Which planet is known as the Red Planet?", "options": ["Venus", "Mars", "Jupiter", "Saturn"], "ans": 1, "info": "Mars appears red due to iron oxide on its surface."}
+    ],
+    "tech": [
+        {"q": "Who created the Python programming language?", "options": ["Linus Torvalds", "Guido van Rossum", "Dennis Ritchie", "James Gosling"], "ans": 1, "info": "Guido van Rossum released Python in 1991."},
+        {"q": "What does CPU stand for?", "options": ["Central Process Unit", "Central Processing Unit", "Computer Personal Unit", "Control Power Unit"], "ans": 1, "info": "The CPU is often called the brains of the computer."},
+        {"q": "Which year was Git released by Linus Torvalds?", "options": ["2001", "2005", "2008", "2011"], "ans": 1, "info": "Git was created in 2005 to manage Linux kernel development."},
+        {"q": "What is the default port for HTTPS traffic?", "options": ["80", "8080", "443", "22"], "ans": 2, "info": "Port 443 is the standard port for secure HTTPS web traffic."}
+    ],
+    "gaming": [
+        {"q": "In Minecraft, what block is needed to build a Nether Portal?", "options": ["Bedrock", "Obsidian", "Crying Obsidian", "Netherite"], "ans": 1, "info": "A minimum of 10 Obsidian blocks is required."},
+        {"q": "What is the name of Mario's dinosaur companion?", "options": ["Bowser", "Toad", "Yoshi", "Koopa"], "ans": 2, "info": "Yoshi made his debut in Super Mario World (1990)."},
+        {"q": "Which game popularized the Battle Royale genre in 2017?", "options": ["Fortnite", "PUBG", "Apex Legends", "H1Z1"], "ans": 1, "info": "PUBG sparked the global Battle Royale wave in 2017."},
+        {"q": "What is the highest competitive rank in Valorant?", "options": ["Immortal", "Challenger", "Radiant", "Master"], "ans": 2, "info": "Radiant is the top rank in Valorant."}
+    ],
+    "science": [
+        {"q": "What is the chemical symbol for Gold?", "options": ["Go", "Gd", "Au", "Ag"], "ans": 2, "info": "Au comes from the Latin word for gold, 'Aurum'."},
+        {"q": "What is the powerhouse of the cell?", "options": ["Nucleus", "Ribosome", "Mitochondria", "Endoplasmic Reticulum"], "ans": 2, "info": "Mitochondria generate most of the cellular ATP energy."},
+        {"q": "What is the speed of light in a vacuum (approx)?", "options": ["300,000 km/s", "150,000 km/s", "30,000 km/s", "1,000,000 km/s"], "ans": 0, "info": "Light travels at ~299,792 km/s in a vacuum."},
+        {"q": "Which gas makes up approximately 78% of Earth's atmosphere?", "options": ["Oxygen", "Carbon Dioxide", "Nitrogen", "Argon"], "ans": 2, "info": "Nitrogen constitutes ~78% of Earth's atmosphere."}
+    ]
+}
+
+SLOT_SYMBOLS = ["🍒", "🍋", "🍇", "🔔", "⭐", "💎", "7️⃣"]
+SLOT_PAYOUTS = {
+    "7️⃣7️⃣7️⃣": (50.0, "JACKPOT! 🏆 50x Payout"),
+    "💎💎💎": (25.0, "Diamond Win! 💎 25x Payout"),
+    "⭐⭐⭐": (15.0, "Super Star! ⭐ 15x Payout"),
+    "🔔🔔🔔": (10.0, "Triple Bells! 🔔 10x Payout"),
+    "🍇🍇🍇": (5.0, "Fruit Burst! 🍇 5x Payout"),
+    "🍋🍋🍋": (4.0, "Triple Lemon! 🍋 4x Payout"),
+    "🍒🍒🍒": (3.0, "Cherry Trio! 🍒 3x Payout"),
+}
 
 # 4. DISCORD UI MODALS & INTERACTIVE VIEWS
 
@@ -688,13 +889,370 @@ class ModerationPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(ModerationSelect())
 
+
+class BlackjackGameView(discord.ui.View):
+    def __init__(self, player: discord.User, bet: float = 0.0):
+        super().__init__(timeout=120)
+        self.player = player
+        self.bet = bet
+        self.deck = create_shuffled_deck()
+        self.player_hand = [self.deck.pop(), self.deck.pop()]
+        self.dealer_hand = [self.deck.pop(), self.deck.pop()]
+        self.game_over = False
+
+    def build_embed(self, hide_dealer: bool = True, outcome: Optional[str] = None) -> discord.Embed:
+        p_val = calculate_hand_value(self.player_hand)
+        p_cards = " ".join(f"`[{c}]`" for c in self.player_hand)
+
+        if hide_dealer:
+            d_cards = f"`[{self.dealer_hand[0]}]` `[🂠 ?]`"
+            d_val_str = f"{calculate_hand_value([self.dealer_hand[0]])} + ?"
+        else:
+            d_cards = " ".join(f"`[{c}]`" for c in self.dealer_hand)
+            d_val_str = str(calculate_hand_value(self.dealer_hand))
+
+        color = COLOR_PRIMARY
+        if outcome:
+            if "Win" in outcome or "Blackjack" in outcome or "WIN" in outcome:
+                color = COLOR_SUCCESS
+            elif "BUST" in outcome or "DEALER WINS" in outcome:
+                color = COLOR_ERROR
+            else:
+                color = COLOR_WARN
+
+        embed = discord.Embed(title="🃏 Blackjack Table", color=color)
+        embed.add_field(name=f"👤 {self.player.display_name}'s Hand ({p_val})", value=p_cards, inline=False)
+        embed.add_field(name=f"🤖 Dealer's Hand ({d_val_str})", value=d_cards, inline=False)
+        if self.bet > 0:
+            embed.add_field(name="💰 Current Stake", value=f"${self.bet:.2f}", inline=True)
+
+        if outcome:
+            embed.add_field(name="🏁 Result", value=outcome, inline=False)
+            embed.set_footer(text="Game finished • Thanks for playing!")
+        else:
+            embed.set_footer(text="Choose an action below to continue.")
+        return embed
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.success, emoji="🟢")
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.player.id:
+            await interaction.response.send_message("⛔ This is not your blackjack game!", ephemeral=True)
+            return
+
+        self.player_hand.append(self.deck.pop())
+        p_val = calculate_hand_value(self.player_hand)
+
+        if p_val > 21:
+            self.game_over = True
+            for child in self.children:
+                child.disabled = True
+            embed = self.build_embed(hide_dealer=False, outcome="💥 **BUST!** You exceeded 21. Dealer wins.")
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.stop()
+        else:
+            embed = self.build_embed(hide_dealer=True)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.danger, emoji="🔴")
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.player.id:
+            await interaction.response.send_message("⛔ This is not your blackjack game!", ephemeral=True)
+            return
+
+        self.game_over = True
+        for child in self.children:
+            child.disabled = True
+
+        while calculate_hand_value(self.dealer_hand) < 17 and self.deck:
+            self.dealer_hand.append(self.deck.pop())
+
+        p_val = calculate_hand_value(self.player_hand)
+        d_val = calculate_hand_value(self.dealer_hand)
+
+        if d_val > 21:
+            outcome = f"🎉 **DEALER BUSTS ({d_val})!** You win!"
+        elif p_val > d_val:
+            outcome = f"🎉 **YOU WIN!** ({p_val} vs {d_val})"
+        elif d_val > p_val:
+            outcome = f"💀 **DEALER WINS!** ({d_val} vs {p_val})"
+        else:
+            outcome = f"🤝 **PUSH / TIE!** Both scored {p_val}."
+
+        embed = self.build_embed(hide_dealer=False, outcome=outcome)
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.stop()
+
+    @discord.ui.button(label="Double Down", style=discord.ButtonStyle.primary, emoji="🟡")
+    async def double_down(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.player.id:
+            await interaction.response.send_message("⛔ This is not your blackjack game!", ephemeral=True)
+            return
+
+        self.bet *= 2
+        self.player_hand.append(self.deck.pop())
+        self.game_over = True
+        for child in self.children:
+            child.disabled = True
+
+        p_val = calculate_hand_value(self.player_hand)
+        if p_val > 21:
+            embed = self.build_embed(hide_dealer=False, outcome="💥 **BUST on Double Down!** Dealer wins.")
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.stop()
+            return
+
+        while calculate_hand_value(self.dealer_hand) < 17 and self.deck:
+            self.dealer_hand.append(self.deck.pop())
+
+        d_val = calculate_hand_value(self.dealer_hand)
+        if d_val > 21:
+            outcome = f"🎉 **DEALER BUSTS ({d_val})!** Double down win! (${self.bet:.2f})"
+        elif p_val > d_val:
+            outcome = f"🎉 **YOU WIN!** ({p_val} vs {d_val}) — Double payout (${self.bet:.2f})!"
+        elif d_val > p_val:
+            outcome = f"💀 **DEALER WINS!** ({d_val} vs {p_val})"
+        else:
+            outcome = f"🤝 **PUSH / TIE!** ({p_val} each)"
+
+        embed = self.build_embed(hide_dealer=False, outcome=outcome)
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.stop()
+
+
+class Connect4View(discord.ui.View):
+    def __init__(self, p1: discord.User, p2: Optional[discord.User] = None):
+        super().__init__(timeout=180)
+        self.p1 = p1
+        self.p2 = p2
+        self.turn = p1.id
+        self.board = create_connect4_board()
+        self.game_over = False
+
+        for col in range(CONNECT4_COLS):
+            btn = discord.ui.Button(
+                label=f"{col+1}",
+                style=discord.ButtonStyle.secondary,
+                row=0 if col < 4 else 1,
+                custom_id=f"c4_col_{col}"
+            )
+            btn.callback = self.make_callback(col)
+            self.add_item(btn)
+
+    def build_embed(self, status_msg: Optional[str] = None) -> discord.Embed:
+        p2_name = self.p2.display_name if self.p2 else "AIO Bot AI 🤖"
+        embed = discord.Embed(title="🔴 Connect 4 Arena 🟡", color=COLOR_PRIMARY)
+        embed.description = f"**Player 1 (🔴):** {self.p1.mention}\n**Player 2 (🟡):** {self.p2.mention if self.p2 else p2_name}\n\n" + render_connect4_board(self.board)
+        if status_msg:
+            embed.add_field(name="Status", value=status_msg, inline=False)
+        else:
+            current = self.p1.mention if self.turn == self.p1.id else (self.p2.mention if self.p2 else "AIO Bot 🤖")
+            piece = "🔴" if self.turn == self.p1.id else "🟡"
+            embed.add_field(name="Turn", value=f"{piece} {current}'s turn to drop!", inline=False)
+        return embed
+
+    def bot_make_move(self) -> Optional[int]:
+        for c in range(CONNECT4_COLS):
+            b_copy = [row[:] for row in self.board]
+            if drop_piece(b_copy, c, "🟡") is not None:
+                if check_connect4_win(b_copy, "🟡"):
+                    return c
+        for c in range(CONNECT4_COLS):
+            b_copy = [row[:] for row in self.board]
+            if drop_piece(b_copy, c, "🔴") is not None:
+                if check_connect4_win(b_copy, "🔴"):
+                    return c
+        valid = [c for c in range(CONNECT4_COLS) if self.board[0][c] == "⚪"]
+        if 3 in valid and random.random() < 0.6:
+            return 3
+        return random.choice(valid) if valid else None
+
+    def make_callback(self, col: int):
+        async def callback(interaction: discord.Interaction):
+            if self.game_over:
+                await interaction.response.send_message("Game has ended!", ephemeral=True)
+                return
+
+            if interaction.user.id != self.turn:
+                await interaction.response.send_message("⛔ It is not your turn!", ephemeral=True)
+                return
+
+            piece = "🔴" if self.turn == self.p1.id else "🟡"
+            row = drop_piece(self.board, col, piece)
+            if row is None:
+                await interaction.response.send_message("❌ That column is already full! Pick another.", ephemeral=True)
+                return
+
+            if check_connect4_win(self.board, piece):
+                self.game_over = True
+                for child in self.children:
+                    child.disabled = True
+                winner = self.p1 if piece == "🔴" else (self.p2 or interaction.client.user)
+                embed = self.build_embed(f"🏆 **CONNECT 4!** {winner.mention} wins the game!")
+                embed.color = COLOR_SUCCESS
+                await interaction.response.edit_message(embed=embed, view=self)
+                self.stop()
+                return
+
+            if is_connect4_full(self.board):
+                self.game_over = True
+                for child in self.children:
+                    child.disabled = True
+                embed = self.build_embed("🤝 **DRAW!** The board is full.")
+                embed.color = COLOR_WARN
+                await interaction.response.edit_message(embed=embed, view=self)
+                self.stop()
+                return
+
+            if self.p2:
+                self.turn = self.p2.id if self.turn == self.p1.id else self.p1.id
+                embed = self.build_embed()
+                await interaction.response.edit_message(embed=embed, view=self)
+            else:
+                bot_col = self.bot_make_move()
+                if bot_col is not None:
+                    b_row = drop_piece(self.board, bot_col, "🟡")
+                    if check_connect4_win(self.board, "🟡"):
+                        self.game_over = True
+                        for child in self.children:
+                            child.disabled = True
+                        embed = self.build_embed("🤖 **CONNECT 4!** AIO Bot AI wins!")
+                        embed.color = COLOR_ERROR
+                        await interaction.response.edit_message(embed=embed, view=self)
+                        self.stop()
+                        return
+                embed = self.build_embed()
+                await interaction.response.edit_message(embed=embed, view=self)
+        return callback
+
+
+class TriviaView(discord.ui.View):
+    def __init__(self, user: discord.User, question_data: Dict[str, Any]):
+        super().__init__(timeout=45)
+        self.user = user
+        self.q_data = question_data
+        self.answered = False
+
+        for idx, opt in enumerate(question_data["options"]):
+            btn = discord.ui.Button(
+                label=f"{chr(65+idx)}. {opt}",
+                style=discord.ButtonStyle.secondary,
+                row=idx // 2,
+                custom_id=f"trivia_{idx}"
+            )
+            btn.callback = self.make_callback(idx)
+            self.add_item(btn)
+
+    def make_callback(self, chosen_idx: int):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user.id:
+                await interaction.response.send_message("⛔ Start your own trivia game with `/trivia`!", ephemeral=True)
+                return
+
+            if self.answered:
+                return
+            self.answered = True
+
+            correct_idx = self.q_data["ans"]
+            is_correct = (chosen_idx == correct_idx)
+
+            for idx, child in enumerate(self.children):
+                child.disabled = True
+                if idx == correct_idx:
+                    child.style = discord.ButtonStyle.success
+                elif idx == chosen_idx and not is_correct:
+                    child.style = discord.ButtonStyle.danger
+
+            embed = discord.Embed(
+                title="🧠 Trivia Challenge — " + ("🎉 Correct!" if is_correct else "❌ Incorrect!"),
+                color=COLOR_SUCCESS if is_correct else COLOR_ERROR
+            )
+            embed.add_field(name="Question", value=self.q_data["q"], inline=False)
+            embed.add_field(
+                name="Correct Answer",
+                value=f"**{chr(65+correct_idx)}. {self.q_data['options'][correct_idx]}**",
+                inline=True
+            )
+            embed.add_field(name="Did You Know?", value=self.q_data.get("info", "Great knowledge!"), inline=False)
+            embed.set_footer(text=f"Played by {self.user.display_name}")
+
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.stop()
+        return callback
+
+
+class RPSView(discord.ui.View):
+    def __init__(self, p1: discord.User, p2: Optional[discord.User] = None):
+        super().__init__(timeout=60)
+        self.p1 = p1
+        self.p2 = p2
+        self.choices: Dict[int, str] = {}
+
+    @discord.ui.button(label="Rock", emoji="🪨", style=discord.ButtonStyle.secondary)
+    async def rock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "Rock")
+
+    @discord.ui.button(label="Paper", emoji="📄", style=discord.ButtonStyle.secondary)
+    async def paper(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "Paper")
+
+    @discord.ui.button(label="Scissors", emoji="✂️", style=discord.ButtonStyle.secondary)
+    async def scissors(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "Scissors")
+
+    async def handle_choice(self, interaction: discord.Interaction, choice: str):
+        uid = interaction.user.id
+        if self.p2:
+            if uid not in (self.p1.id, self.p2.id):
+                await interaction.response.send_message("⛔ You are not in this match!", ephemeral=True)
+                return
+            self.choices[uid] = choice
+            if len(self.choices) < 2:
+                await interaction.response.send_message(f"🔒 Locked in **{choice}**! Waiting for opponent...", ephemeral=True)
+                return
+            c1 = self.choices[self.p1.id]
+            c2 = self.choices[self.p2.id]
+            outcome = self.evaluate(c1, c2, self.p1, self.p2)
+            for child in self.children:
+                child.disabled = True
+            embed = discord.Embed(title="🪨📄✂️ Rock-Paper-Scissors Duel", color=COLOR_PRIMARY)
+            embed.add_field(name=f"👤 {self.p1.display_name}", value=f"Picked **{c1}**", inline=True)
+            embed.add_field(name=f"👤 {self.p2.display_name}", value=f"Picked **{c2}**", inline=True)
+            embed.add_field(name="Result", value=outcome, inline=False)
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.stop()
+        else:
+            if uid != self.p1.id:
+                await interaction.response.send_message("⛔ Start your own game with `/rps`!", ephemeral=True)
+                return
+            bot_choice = random.choice(["Rock", "Paper", "Scissors"])
+            outcome = self.evaluate(choice, bot_choice, self.p1, None)
+            for child in self.children:
+                child.disabled = True
+            embed = discord.Embed(title="🪨📄✂️ Rock-Paper-Scissors Duel", color=COLOR_PRIMARY)
+            embed.add_field(name=f"👤 {self.p1.display_name}", value=f"Picked **{choice}**", inline=True)
+            embed.add_field(name="🤖 AIO Bot", value=f"Picked **{bot_choice}**", inline=True)
+            embed.add_field(name="Result", value=outcome, inline=False)
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.stop()
+
+    def evaluate(self, c1: str, c2: str, p1: discord.User, p2: Optional[discord.User]) -> str:
+        beats = {"Rock": "Scissors", "Paper": "Rock", "Scissors": "Paper"}
+        if c1 == c2:
+            return f"🤝 **It's a Tie!** Both chose {c1}."
+        elif beats[c1] == c2:
+            return f"🏆 **{p1.mention} WINS!** ({c1} beats {c2})"
+        else:
+            p2_str = p2.mention if p2 else "AIO Bot 🤖"
+            return f"💀 **{p2_str} WINS!** ({c2} beats {c1})"
+
 class HelpCategorySelect(discord.ui.Select):
     def __init__(self, author_perms: discord.Permissions, is_owner: bool):
         self.author_perms = author_perms
         self.is_owner = is_owner
         options = [
             discord.SelectOption(label="Coupon Optimizer", value="coupons", description="Smart cart calculation & coupon bundling", emoji="🛍️"),
-            discord.SelectOption(label="Server Moderation", value="mod", description="Server control, nuking, timeouts & locks", emoji="🛡️"),
+            discord.SelectOption(label="Server Moderation", value="mod", description="Server control, anti-raid, filters & mod cases", emoji="🛡️"),
+            discord.SelectOption(label="Games & Arcade", value="games", description="Blackjack, Connect 4, Trivia, Slots, RPS & Dice", emoji="🎮"),
             discord.SelectOption(label="Embeds & Utilities", value="utils", description="Custom rich embeds, latency & diagnostics", emoji="🎨"),
         ]
         if is_owner:
@@ -716,14 +1274,24 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Performance Stress Test", value="`/run-stress-test` or `!stresstest` — benchmark algorithm latency & CPU execution (aliases: `!stress`, `!benchmark`)", inline=False)
             embed.add_field(name="Test Mode (Simulated)", value="Use `!` or `/` with `test` commands (`/testadd` / `!testadd`, `/testcoupons` / `!testcoupons`, `/testoptimize` / `!testoptimize`, `/testcheckout` / `!testcheckout`, `/testclear` / `!testclear`) to practice without affecting lifetime savings.", inline=False)
         elif cat == "mod":
-            embed.title = "🛡️ AIO Bot — Server Moderation Tools"
-            embed.description = "Complete administrative control suite for your Discord server. Run using either `!` or `/`."
-            embed.add_field(name="Mod Control Panel", value="`/modpanel` or `!modpanel` — interactive menu to lock, slowmode, purge & nuke", inline=False)
-            embed.add_field(name="Channel Nuking", value="`/nukechannel` or `!nukechannel` (alias `!nuke`) — clones the channel identically and wipes previous messages", inline=False)
-            embed.add_field(name="Purge / Bulk Delete", value="`/purge` or `!purge [amount] [user]` — delete messages cleanly", inline=False)
+            embed.title = "🛡️ AIO Bot — Server Moderation Suite"
+            embed.description = "Complete administrative security and moderation suite. Run using either `!` or `/`."
+            embed.add_field(name="Server Lockdown & Anti-Raid", value="`/lockdown [action: on/off] [reason]` — emergency lockdown for all server text channels", inline=False)
+            embed.add_field(name="Auto-Mod Word Filter", value="`/filter add [word]` / `/filter remove [word]` / `/filter list` — automatic word censor & warning trigger", inline=False)
+            embed.add_field(name="Case & Incident Logs", value="`/modlogs [@member]` — view all historical infractions\n`/case [id]` — look up detailed case file", inline=False)
+            embed.add_field(name="Staff Private Notes", value="`/note add [@member] [note]` / `/note view` / `/note clear` — staff internal records", inline=False)
             embed.add_field(name="Member Discipline", value="`/kick` or `!kick [@member] [reason]`\n`/ban` or `!ban [@member] [reason]`\n`/unban` or `!unban [user_id_or_name]`\n`/timeout` or `!timeout [@member] [duration]` (e.g. `10m`, `1h`, `1d`)\n`/untimeout` or `!untimeout [@member]`", inline=False)
             embed.add_field(name="Warnings System", value="`/warn` or `!warn [@member] [reason]` — log a warning\n`/warnings` or `!warnings [@member]` — view warning record\n`/clearwarnings` or `!clearwarnings [@member]` — wipe records", inline=False)
-            embed.add_field(name="Channel & Role Management", value="`/lock` or `!lock` / `/unlock` or `!unlock` — lockdown channel\n`/slowmode` or `!slowmode [seconds]` — set chat cooldown\n`/createchannel` or `!createchannel [name] [visibility]`\n`/blockrole` or `!blockrole` / `/unblockrole` or `!unblockrole`\n`/renamerole [@role] [new_name]` — rename server role", inline=False)
+            embed.add_field(name="Channel & Role Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]` / `/createchannel`\n`/blockrole` & `/unblockrole` / `/renamerole`", inline=False)
+        elif cat == "games":
+            embed.title = "🎮 AIO Bot — Arcade & Mini-Games"
+            embed.description = "Interactive Discord mini-games powered by Discord UI Buttons! Run using either `!` or `/`."
+            embed.add_field(name="🃏 Blackjack / 21", value="`/blackjack [bet]` or `!blackjack` — play 21 against the dealer with interactive Hit, Stand & Double Down buttons", inline=False)
+            embed.add_field(name="🔴🟡 Connect 4", value="`/connect4 [@opponent]` or `!connect4` — 7-column interactive drop board against friends or smart Bot AI", inline=False)
+            embed.add_field(name="🧠 Trivia Quiz Challenge", value="`/trivia [category: general/tech/gaming/science]` or `!trivia` — 4-choice timed quiz challenge", inline=False)
+            embed.add_field(name="🎰 High-Roller Slots", value="`/slots [bet]` or `!slots` — spinning slot machine with 50x 7️⃣7️⃣7️⃣ Jackpot multipliers", inline=False)
+            embed.add_field(name="🪨📄✂️ Rock-Paper-Scissors", value="`/rps [choice] [@opponent]` or `!rps` — secret choice duel against friends or the bot", inline=False)
+            embed.add_field(name="🪙 Coinflip & Dice Roller", value="`/coinflip [heads/tails] [bet]` — animated flip\n`/roll [dice]` — tabletop dice roller (e.g. `2d6`, `1d20+5`, `100`)", inline=False)
         elif cat == "utils":
             embed.title = "🎨 AIO Bot — Embeds & Utilities"
             embed.description = "Creative and diagnostic server tools. Run using either `!` or `/`."
@@ -805,6 +1373,77 @@ async def on_ready():
         print(f'✅ Synced {len(synced)} global slash command(s).')
     except Exception as e:
         print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr)
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        await bot.process_commands(message)
+        return
+
+    # Auto-Mod Word Filter Inspection
+    filter_words = get_filter_words(message.guild.id)
+    if filter_words and not (message.author.guild_permissions.manage_messages or message.author.guild_permissions.administrator):
+        content_lower = message.content.lower()
+        for bad_word in filter_words:
+            pattern = rf"\b{re.escape(bad_word)}\b"
+            if re.search(pattern, content_lower):
+                try:
+                    await message.delete()
+                    case_id = log_mod_case(
+                        guild_id=message.guild.id,
+                        action="AutoMod Delete",
+                        target=str(message.author),
+                        moderator="AIO AutoMod 🛡️",
+                        reason=f"Used filtered word: '{bad_word}'",
+                        details=f"Message: {message.content[:100]}"
+                    )
+                    warn_record = {
+                        "reason": f"AutoMod: Blacklisted word '{bad_word}'",
+                        "moderator": "AIO AutoMod 🛡️",
+                        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    }
+                    key = f"{message.guild.id}_{message.author.id}"
+                    warnings_db.setdefault(key, []).append(warn_record)
+                    save_warnings(warnings_db)
+
+                    embed = discord.Embed(
+                        title="🛡️ Auto-Mod Filter Triggered",
+                        description=f"{message.author.mention}, your message contained a blacklisted word and was removed.",
+                        color=COLOR_ERROR
+                    )
+                    embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+                    embed.add_field(name="Warning Count", value=str(len(warnings_db[key])), inline=True)
+                    await message.channel.send(embed=embed, delete_after=8)
+                    return
+                except Exception as e:
+                    print(f"⚠️ AutoMod error: {e}", file=sys.stderr)
+
+    await bot.process_commands(message)
+
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    if not message.guild or message.author.bot:
+        return
+    # Ghost Ping Detection: message deleted containing member mentions
+    actual_mentions = [m for m in message.mentions if not m.bot and m.id != message.author.id]
+    if actual_mentions:
+        embed = discord.Embed(
+            title="👻 Ghost Ping Detected!",
+            description=f"A message with mentions was deleted.",
+            color=COLOR_WARN,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_author(name=str(message.author), icon_url=message.author.display_avatar.url)
+        embed.add_field(name="👤 Author", value=message.author.mention, inline=True)
+        embed.add_field(name="🎯 Pinged Users", value=" ".join(m.mention for m in actual_mentions), inline=True)
+        embed.add_field(name="💬 Message Content", value=message.content[:500] if message.content else "*[No text content]*", inline=False)
+        embed.set_footer(text="AIO Bot Anti-GhostPing Shield")
+        try:
+            await message.channel.send(embed=embed)
+        except Exception:
+            pass
+
 
 
 
@@ -1017,7 +1656,13 @@ async def kick_member(ctx, member: discord.Member, *, reason: Optional[str] = "N
         return
     try:
         await member.kick(reason=f"{reason} (by {ctx.author})")
-        await ctx.send(f"👢 Kicked **{member}** | Reason: `{reason}`", delete_after=8)
+        case_id = log_mod_case(ctx.guild.id, "Kick", str(member), str(ctx.author), reason or "No reason provided")
+        embed = discord.Embed(title="👢 Member Kicked", color=COLOR_WARN)
+        embed.add_field(name="Member", value=f"**{member}** (`{member.id}`)", inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Reason", value=f"`{reason}`", inline=False)
+        embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to kick this user.", delete_after=6)
 
@@ -1032,7 +1677,13 @@ async def ban_member(ctx, member: discord.Member, delete_message_days: Optional[
         return
     try:
         await member.ban(delete_message_days=min(delete_message_days or 0, 7), reason=f"{reason} (by {ctx.author})")
-        await ctx.send(f"🔨 Banned **{member}** | Reason: `{reason}`", delete_after=8)
+        case_id = log_mod_case(ctx.guild.id, "Ban", str(member), str(ctx.author), reason or "No reason provided", f"Purged {delete_message_days}d messages")
+        embed = discord.Embed(title="🔨 Member Banned", color=COLOR_ERROR)
+        embed.add_field(name="Member", value=f"**{member}** (`{member.id}`)", inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Reason", value=f"`{reason}`", inline=False)
+        embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to ban this user.", delete_after=6)
 
@@ -1056,7 +1707,12 @@ async def unban_user(ctx, *, user_query: str):
         return
 
     await ctx.guild.unban(target_user, reason=f"Unbanned by {ctx.author}")
-    await ctx.send(f"🕊️ Unbanned **{target_user}**!", delete_after=6)
+    case_id = log_mod_case(ctx.guild.id, "Unban", str(target_user), str(ctx.author), "Unbanned user")
+    embed = discord.Embed(title="🕊️ User Unbanned", color=COLOR_SUCCESS)
+    embed.add_field(name="User", value=f"**{target_user}** (`{target_user.id}`)", inline=True)
+    embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+    embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+    await ctx.send(embed=embed)
 
 @bot.hybrid_command(name="timeout", aliases=["mute"], description="Timeout/mute a member for a set duration (e.g. 5m, 1h, 1d)")
 @commands.guild_only()
@@ -1077,7 +1733,14 @@ async def timeout_member(ctx, member: discord.Member, duration: str, *, reason: 
 
     try:
         await member.timeout(td, reason=f"{reason} (by {ctx.author})")
-        await ctx.send(f"🔇 Timed out **{member.mention}** for **{duration}** | Reason: `{reason}`", delete_after=8)
+        case_id = log_mod_case(ctx.guild.id, "Timeout", str(member), str(ctx.author), reason or "No reason provided", f"Duration: {duration}")
+        embed = discord.Embed(title="🔇 Member Timed Out", color=COLOR_WARN)
+        embed.add_field(name="Member", value=member.mention, inline=True)
+        embed.add_field(name="Duration", value=f"**{duration}**", inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Reason", value=f"`{reason}`", inline=False)
+        embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to timeout this user.", delete_after=6)
 
@@ -1092,7 +1755,12 @@ async def untimeout_member(ctx, member: discord.Member):
         return
     try:
         await member.timeout(None, reason=f"Timeout removed by {ctx.author}")
-        await ctx.send(f"🔊 Removed timeout for **{member.mention}**.", delete_after=6)
+        case_id = log_mod_case(ctx.guild.id, "Untimeout", str(member), str(ctx.author), "Timeout removed")
+        embed = discord.Embed(title="🔊 Timeout Removed", color=COLOR_SUCCESS)
+        embed.add_field(name="Member", value=member.mention, inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to untimeout this user.", delete_after=6)
 
@@ -1118,7 +1786,14 @@ async def warn_member(ctx, member: discord.Member, *, reason: str):
     save_warnings(warnings_db)
 
     count = len(warnings_db[key])
-    await ctx.send(f"⚠️ Warned **{member.mention}** | Warning #{count} | Reason: `{reason}`", delete_after=10)
+    case_id = log_mod_case(ctx.guild.id, "Warning", str(member), str(ctx.author), reason, f"Active warning count: {count}")
+    embed = discord.Embed(title="⚠️ Official Warning Issued", color=COLOR_WARN)
+    embed.add_field(name="Member", value=member.mention, inline=True)
+    embed.add_field(name="Warning Count", value=f"**#{count}**", inline=True)
+    embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+    embed.add_field(name="Reason", value=f"`{reason}`", inline=False)
+    embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+    await ctx.send(embed=embed)
 
 @bot.hybrid_command(name="warnings", description="View warnings logged for a member")
 @commands.guild_only()
@@ -1715,6 +2390,336 @@ async def delete_last_trip_cmd(ctx):
     )
     embed.set_footer(text="The trip was removed from your history and lifetime stats have been recalculated.")
     await ctx.send(embed=embed)
+
+
+
+# --- ADVANCED MODERATION & SECURITY ---
+
+@bot.hybrid_command(name="lockdown", description="Emergency server lockdown: toggle message permissions across all text channels")
+@commands.guild_only()
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
+async def server_lockdown(ctx, action: Literal["on", "off"], *, reason: Optional[str] = "Emergency Server Lockdown"):
+    await safely_delete_message(ctx)
+    guild = ctx.guild
+    lock = (action.lower() == "on")
+    changed_count = 0
+
+    progress_msg = await ctx.send(f"⏳ Executing Server Lockdown (**{action.upper()}**)...")
+
+    for ch in guild.text_channels:
+        perms = ch.overwrites_for(guild.default_role)
+        if lock:
+            if perms.send_messages is not False:
+                perms.send_messages = False
+                try:
+                    await ch.set_permissions(guild.default_role, overwrite=perms, reason=f"Lockdown ON by {ctx.author}: {reason}")
+                    changed_count += 1
+                except Exception:
+                    pass
+        else:
+            if perms.send_messages is False:
+                perms.send_messages = None
+                try:
+                    await ch.set_permissions(guild.default_role, overwrite=perms, reason=f"Lockdown OFF by {ctx.author}: {reason}")
+                    changed_count += 1
+                except Exception:
+                    pass
+
+    case_id = log_mod_case(
+        guild_id=guild.id,
+        action=f"Lockdown {action.upper()}",
+        target=f"{changed_count} channels",
+        moderator=str(ctx.author),
+        reason=reason or "Emergency Lockdown Protocol"
+    )
+
+    embed = discord.Embed(
+        title=f"🚨 Server Lockdown {'ACTIVATED' if lock else 'DEACTIVATED'}",
+        description=f"Server-wide message permissions have been **{'LOCKED' if lock else 'UNLOCKED'}**.",
+        color=COLOR_ERROR if lock else COLOR_SUCCESS
+    )
+    embed.add_field(name="Channels Updated", value=f"**{changed_count}** text channels", inline=True)
+    embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+    embed.add_field(name="Reason", value=f"`{reason}`", inline=False)
+    embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+    await progress_msg.edit(content=None, embed=embed)
+
+
+@bot.hybrid_command(name="filter", description="Manage the server Auto-Mod blacklisted words")
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+async def filter_cmd(ctx, action: Literal["add", "remove", "list", "clear"], *, word: Optional[str] = None):
+    await safely_delete_message(ctx)
+    gid = ctx.guild.id
+    action = action.lower()
+
+    if action == "list":
+        words = get_filter_words(gid)
+        if not words:
+            await ctx.send("📋 Auto-Mod filter is currently empty. Add words with `/filter add [word]`.", delete_after=8)
+            return
+        embed = discord.Embed(title=f"🛡️ Auto-Mod Filtered Words ({len(words)})", color=COLOR_INFO)
+        embed.description = ", ".join(f"`{w}`" for w in words)
+        embed.set_footer(text="Messages matching these words will be deleted with an automated warning.")
+        await ctx.send(embed=embed)
+
+    elif action == "add":
+        if not word:
+            await ctx.send("❌ Please provide a word or phrase to blacklist: `/filter add [word]`", delete_after=6)
+            return
+        success = add_filter_word(gid, word)
+        if success:
+            await ctx.send(f"✅ Added `{word.strip().lower()}` to the Auto-Mod blacklist.", delete_after=8)
+        else:
+            await ctx.send(f"⚠️ `{word.strip().lower()}` is already in the blacklist.", delete_after=6)
+
+    elif action == "remove":
+        if not word:
+            await ctx.send("❌ Please provide a word to remove: `/filter remove [word]`", delete_after=6)
+            return
+        success = remove_filter_word(gid, word)
+        if success:
+            await ctx.send(f"✅ Removed `{word.strip().lower()}` from the Auto-Mod blacklist.", delete_after=8)
+        else:
+            await ctx.send(f"⚠️ `{word.strip().lower()}` was not found in the blacklist.", delete_after=6)
+
+    elif action == "clear":
+        filters_db[str(gid)] = []
+        save_filters(filters_db)
+        await ctx.send("🧹 Cleared all filtered words for this server.", delete_after=8)
+
+
+@bot.hybrid_command(name="modlogs", aliases=["modlog", "historylogs"], description="View moderation case history for a user")
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+async def modlogs_cmd(ctx, member: discord.Member):
+    await safely_delete_message(ctx)
+    cases = [c for c in mod_cases_db.get("cases", []) if c.get("guild_id") == str(ctx.guild.id) and str(member.id) in str(c.get("target")) or str(member) == str(c.get("target"))]
+
+    if not cases:
+        await ctx.send(f"✨ No moderation case records found for **{member.display_name}**.", delete_after=8)
+        return
+
+    embed = discord.Embed(title=f"📜 Modlogs for {member.display_name} ({len(cases)} Cases)", color=COLOR_INFO)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    for c in cases[-8:]:
+        embed.add_field(
+            name=f"`#CASE-{c['case_id']:04d}` • {c['action']} ({c['timestamp']})",
+            value=f"**Reason:** {c['reason']}\n**Mod:** {c['moderator']}",
+            inline=False
+        )
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(name="case", description="View specific details for a moderation case ID")
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+async def case_cmd(ctx, case_id: int):
+    await safely_delete_message(ctx)
+    cases = mod_cases_db.get("cases", [])
+    found = next((c for c in cases if c.get("case_id") == case_id and c.get("guild_id") == str(ctx.guild.id)), None)
+
+    if not found:
+        await ctx.send(f"❌ Case `#CASE-{case_id:04d}` not found in this server.", delete_after=6)
+        return
+
+    embed = discord.Embed(title=f"📁 Case File `#CASE-{found['case_id']:04d}`", color=COLOR_PRIMARY)
+    embed.add_field(name="Action", value=f"**{found['action']}**", inline=True)
+    embed.add_field(name="Target User", value=str(found['target']), inline=True)
+    embed.add_field(name="Moderator", value=str(found['moderator']), inline=True)
+    embed.add_field(name="Reason", value=f"`{found['reason']}`", inline=False)
+    if found.get("details") and found["details"] != "None":
+        embed.add_field(name="Details", value=found["details"], inline=False)
+    embed.add_field(name="Timestamp", value=found['timestamp'], inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(name="note", description="Manage internal staff notes on members")
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+async def note_cmd(ctx, action: Literal["add", "view", "clear"], member: discord.Member, *, note: Optional[str] = None):
+    await safely_delete_message(ctx)
+    gid = ctx.guild.id
+    uid = member.id
+    action = action.lower()
+
+    if action == "add":
+        if not note:
+            await ctx.send("❌ Please provide note text: `/note add [@member] [note]`", delete_after=6)
+            return
+        add_mod_note(gid, uid, str(ctx.author), note)
+        await ctx.send(f"📝 Added staff note to **{member.display_name}**.", delete_after=8)
+
+    elif action == "view":
+        notes = get_mod_notes(gid, uid)
+        if not notes:
+            await ctx.send(f"📋 No staff notes on record for **{member.display_name}**.", delete_after=8)
+            return
+        embed = discord.Embed(title=f"📝 Staff Notes — {member.display_name} ({len(notes)})", color=COLOR_WARN)
+        embed.set_thumbnail(url=member.display_avatar.url)
+        for idx, n in enumerate(notes, 1):
+            embed.add_field(
+                name=f"Note #{idx} • {n['timestamp']}",
+                value=f"**Text:** {n['note']}\n**By:** {n['moderator']}",
+                inline=False
+            )
+        await ctx.send(embed=embed)
+
+    elif action == "clear":
+        count = clear_mod_notes(gid, uid)
+        await ctx.send(f"🧹 Cleared **{count}** staff note(s) for **{member.display_name}**.", delete_after=8)
+
+
+
+# --- INTERACTIVE MINI-GAMES ---
+
+@bot.hybrid_command(name="blackjack", aliases=["bj", "21"], description="Play an interactive game of 21 against the Dealer")
+async def blackjack_cmd(ctx, bet: Optional[float] = 0.0):
+    await safely_delete_message(ctx)
+    view = BlackjackGameView(player=ctx.author, bet=max(0.0, bet or 0.0))
+    p_val = calculate_hand_value(view.player_hand)
+    if p_val == 21:
+        embed = view.build_embed(hide_dealer=False, outcome="🌟 **NATURAL BLACKJACK!** Instant Win! (3:2 Payout)")
+        await ctx.send(embed=embed)
+    else:
+        embed = view.build_embed(hide_dealer=True)
+        await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(name="connect4", aliases=["c4"], description="Play Connect 4 against a friend or the AIO Bot AI")
+async def connect4_cmd(ctx, opponent: Optional[discord.Member] = None):
+    await safely_delete_message(ctx)
+    if opponent and opponent.id == ctx.author.id:
+        await ctx.send("❌ You cannot play Connect 4 against yourself!", delete_after=6)
+        return
+    view = Connect4View(p1=ctx.author, p2=opponent)
+    embed = view.build_embed()
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(name="trivia", aliases=["quiz"], description="Test your knowledge in a 4-choice timed trivia challenge")
+async def trivia_cmd(ctx, category: Optional[Literal["general", "tech", "gaming", "science"]] = "general"):
+    await safely_delete_message(ctx)
+    cat = (category or "general").lower()
+    pool = TRIVIA_QUESTIONS.get(cat, TRIVIA_QUESTIONS["general"])
+    question_data = random.choice(pool)
+
+    view = TriviaView(user=ctx.author, question_data=question_data)
+    embed = discord.Embed(
+        title=f"🧠 Trivia Challenge — {cat.capitalize()} Knowledge",
+        description=f"**{question_data['q']}**\n\nSelect the correct option below (45s timer):",
+        color=COLOR_PRIMARY
+    )
+    for idx, opt in enumerate(question_data["options"]):
+        embed.add_field(name=f"Option {chr(65+idx)}", value=opt, inline=True)
+    embed.set_footer(text="Click a button below to submit your answer!")
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(name="slots", aliases=["slot", "spin"], description="Spin the high-roller slot machine")
+async def slots_cmd(ctx, bet: Optional[float] = 10.0):
+    await safely_delete_message(ctx)
+    bet = max(1.0, bet or 10.0)
+    r1 = random.choice(SLOT_SYMBOLS)
+    r2 = random.choice(SLOT_SYMBOLS)
+    r3 = random.choice(SLOT_SYMBOLS)
+    combo = f"{r1}{r2}{r3}"
+
+    embed = discord.Embed(title="🎰 AIO High-Roller Slots", color=COLOR_PRIMARY)
+    embed.description = f"**[ {r1} | {r2} | {r3} ]**\n\n"
+
+    if combo in SLOT_PAYOUTS:
+        mult, title = SLOT_PAYOUTS[combo]
+        winnings = bet * mult
+        embed.color = COLOR_SUCCESS
+        embed.description += f"🎉 **{title}**\n💰 Stake: **${bet:.2f}** ➔ Won: **${winnings:.2f}**!"
+    elif r1 == r2 or r2 == r3 or r1 == r3:
+        winnings = bet * 1.5
+        embed.color = COLOR_WARN
+        embed.description += f"✨ **Pair Match!** 1.5x Return\n💰 Stake: **${bet:.2f}** ➔ Won: **${winnings:.2f}**!"
+    else:
+        embed.color = COLOR_ERROR
+        embed.description += f"💀 **No match!** Better luck next spin!\n💰 Lost: **${bet:.2f}**"
+
+    embed.set_footer(text=f"Spun by {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(name="rps", description="Play Rock-Paper-Scissors against a friend or the bot")
+async def rps_cmd(ctx, opponent: Optional[discord.Member] = None):
+    await safely_delete_message(ctx)
+    if opponent and opponent.id == ctx.author.id:
+        await ctx.send("❌ You cannot duel yourself in RPS!", delete_after=6)
+        return
+    view = RPSView(p1=ctx.author, p2=opponent)
+    opp_str = opponent.mention if opponent else "AIO Bot 🤖"
+    embed = discord.Embed(
+        title="🪨📄✂️ Rock-Paper-Scissors",
+        description=f"**{ctx.author.mention}** challenges **{opp_str}** to a duel!\n\nClick your choice below:",
+        color=COLOR_PRIMARY
+    )
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(name="coinflip", aliases=["flip", "coin"], description="Flip a coin with animated call and streak result")
+async def coinflip_cmd(ctx, choice: Optional[Literal["heads", "tails"]] = None, bet: Optional[float] = 0.0):
+    await safely_delete_message(ctx)
+    result = random.choice(["heads", "tails"])
+    coin_emoji = "🪙"
+
+    embed = discord.Embed(title=f"{coin_emoji} Coinflip Result", color=COLOR_PRIMARY)
+    if choice:
+        user_choice = choice.lower()
+        won = (user_choice == result)
+        embed.color = COLOR_SUCCESS if won else COLOR_ERROR
+        embed.description = f"The coin landed on **{result.upper()}**!\n\n" + (f"🎉 **You called it correctly!**" if won else f"💀 **You called {user_choice.upper()} — Better luck next time!**")
+        if bet and bet > 0:
+            payout = bet * 2 if won else 0
+            embed.add_field(name="Stake", value=f"${bet:.2f}", inline=True)
+            embed.add_field(name="Payout", value=f"${payout:.2f}" if won else "$0.00", inline=True)
+    else:
+        embed.description = f"The coin landed on **{result.upper()}**!"
+
+    embed.set_footer(text=f"Flipped by {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(name="roll", aliases=["dice"], description="Roll dice using tabletop notation (e.g. 2d6, 1d20, 100)")
+async def roll_cmd(ctx, dice: Optional[str] = "1d6"):
+    await safely_delete_message(ctx)
+    dice_str = (dice or "1d6").strip().lower()
+
+    try:
+        if "d" in dice_str:
+            parts = dice_str.split("d")
+            count = int(parts[0]) if parts[0] else 1
+            sides = int(parts[1])
+        else:
+            count = 1
+            sides = int(dice_str)
+
+        if count < 1 or count > 50 or sides < 2 or sides > 1000:
+            await ctx.send("❌ Dice limits: 1–50 dice with 2–1000 sides (e.g. `2d6`, `1d20`, `100`).", delete_after=8)
+            return
+
+        rolls = [random.randint(1, sides) for _ in range(count)]
+        total = sum(rolls)
+
+        embed = discord.Embed(title="🎲 Dice Roll", color=COLOR_INFO)
+        embed.add_field(name="Formula", value=f"`{count}d{sides}`", inline=True)
+        embed.add_field(name="Total", value=f"**{total}**", inline=True)
+        if count > 1:
+            rolls_str = ", ".join(str(r) for r in rolls[:20]) + ("..." if len(rolls) > 20 else "")
+            embed.add_field(name="Individual Rolls", value=f"`[{rolls_str}]`", inline=False)
+        embed.set_footer(text=f"Rolled by {ctx.author.display_name}")
+        await ctx.send(embed=embed)
+    except Exception:
+        await ctx.send("❌ Invalid dice format. Examples: `1d6`, `2d20`, `100`.", delete_after=6)
 
 
 # --- SETUP & CHANNELS ---
