@@ -1,5 +1,5 @@
 {
-  "next_id": 19,
+  "next_id": 21,
   "cases": [
     {
       "case_id": 1,
@@ -180,6 +180,26 @@
       "reason": "Test Reason",
       "details": "None",
       "timestamp": "2026-09-05 19:34:10 UTC"
+    },
+    {
+      "case_id": 19,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-09 15:00:58 UTC"
+    },
+    {
+      "case_id": 20,
+      "guild_id": "1234",
+      "action": "Warn",
+      "target": "User1",
+      "moderator": "Mod1",
+      "reason": "Test Reason",
+      "details": "None",
+      "timestamp": "2026-09-09 15:04:38 UTC"
     }
   ]
 }

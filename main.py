@@ -604,7 +604,7 @@ def calculate_hand_value(hand: List[str]) -> int:
 def create_shuffled_deck() -> List[str]:
     ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
     deck = [f"{r}{s}" for r in ranks for s in CARD_SUITS]
-    random.shuffle(deck)
+    secrets.SystemRandom().shuffle(deck)
     return deck
 
 CONNECT4_ROWS = 6
@@ -1325,6 +1325,7 @@ class BlackjackGameView(discord.ui.View):
         super().__init__(timeout=180)
         self.player = player
         self.bet = max(0, int(bet))
+        self.initial_bet = self.bet
         self.deck = create_shuffled_deck()
         self.player_hand = [self.deck.pop(), self.deck.pop()]
         self.dealer_hand = [self.deck.pop(), self.deck.pop()]
@@ -1387,16 +1388,16 @@ class BlackjackGameView(discord.ui.View):
                 await interaction.response.send_message("⛔ This is not your game!", ephemeral=True)
                 return
 
-            if self.bet > 0:
-                if not deduct_user_coins(self.player.id, self.bet):
+            if self.initial_bet > 0:
+                if not deduct_user_coins(self.player.id, self.initial_bet):
                     current_bal = get_user_coins(self.player.id)
                     await interaction.response.send_message(
-                        f"❌ You don't have enough coins ({self.bet:,} 🪙) to play again! Current Balance: **{current_bal:,} 🪙**. Run `/daily` or `/balance`.",
+                        f"❌ You don't have enough coins ({self.initial_bet:,} 🪙) to play again! Current Balance: **{current_bal:,} 🪙**. Run `/daily` or `/balance`.",
                         ephemeral=True
                     )
                     return
 
-            new_view = BlackjackGameView(self.player, self.bet)
+            new_view = BlackjackGameView(self.player, self.initial_bet)
             p_val = calculate_hand_value(new_view.player_hand)
             if p_val == 21:
                 new_view.finish_game(outcome_type="natural")
@@ -1418,6 +1419,11 @@ class BlackjackGameView(discord.ui.View):
 
         self.player_hand.append(self.deck.pop())
         p_val = calculate_hand_value(self.player_hand)
+
+        # Disable double down once player has hit
+        for child in self.children:
+            if getattr(child, "label", None) == "Double Down":
+                child.disabled = True
 
         if p_val > 21:
             self.finish_game(outcome_type="lose")
@@ -1459,6 +1465,10 @@ class BlackjackGameView(discord.ui.View):
     async def double_down(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.player.id:
             await interaction.response.send_message("⛔ This is not your blackjack game!", ephemeral=True)
+            return
+
+        if len(self.player_hand) > 2:
+            await interaction.response.send_message("⛔ You can only Double Down on your first 2 cards!", ephemeral=True)
             return
 
         if self.bet > 0:
@@ -1559,8 +1569,7 @@ class Connect4View(discord.ui.View):
                 await interaction.response.send_message("❌ That column is already full! Pick another.", ephemeral=True)
                 return
 
-            if check_connect4_win(self.board, piece):
-                self.game_over = True
+            def add_play_again_button():
                 self.clear_items()
                 play_again_btn = discord.ui.Button(label="Play Again", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="c4_replay")
                 async def c4_replay_cb(itx: discord.Interaction):
@@ -1572,6 +1581,9 @@ class Connect4View(discord.ui.View):
                 play_again_btn.callback = c4_replay_cb
                 self.add_item(play_again_btn)
 
+            if check_connect4_win(self.board, piece):
+                self.game_over = True
+                add_play_again_button()
                 winner = self.p1 if piece == "🔴" else (self.p2 or interaction.client.user)
                 embed = self.build_embed(f"🏆 **CONNECT 4!** {winner.mention} wins the game!")
                 embed.color = COLOR_SUCCESS
@@ -1580,8 +1592,7 @@ class Connect4View(discord.ui.View):
 
             if is_connect4_full(self.board):
                 self.game_over = True
-                for child in self.children:
-                    child.disabled = True
+                add_play_again_button()
                 embed = self.build_embed("🤝 **DRAW!** The board is full.")
                 embed.color = COLOR_WARN
                 await interaction.response.edit_message(embed=embed, view=self)
@@ -1597,8 +1608,7 @@ class Connect4View(discord.ui.View):
                     b_row = drop_piece(self.board, bot_col, "🟡")
                     if check_connect4_win(self.board, "🟡"):
                         self.game_over = True
-                        for child in self.children:
-                            child.disabled = True
+                        add_play_again_button()
                         embed = self.build_embed("🤖 **CONNECT 4!** AIO Bot AI wins!")
                         embed.color = COLOR_ERROR
                         await interaction.response.edit_message(embed=embed, view=self)
@@ -1671,7 +1681,7 @@ class TriviaView(discord.ui.View):
                     await itx.response.send_message("⛔ Start your own trivia with `/trivia`!", ephemeral=True)
                     return
                 all_qs = [q for cat in TRIVIA_QUESTIONS.values() for q in cat]
-                new_q = random.choice(all_qs)
+                new_q = secrets.choice(all_qs)
                 new_v = TriviaView(self.user, new_q)
                 new_embed = discord.Embed(
                     title="🧠 Trivia Challenge",
@@ -1732,7 +1742,7 @@ class RPSView(discord.ui.View):
             if uid != self.p1.id:
                 await interaction.response.send_message("⛔ Start your own game with `/rps`!", ephemeral=True)
                 return
-            bot_choice = random.choice(["Rock", "Paper", "Scissors"])
+            bot_choice = secrets.choice(["Rock", "Paper", "Scissors"])
             outcome = self.evaluate(choice, bot_choice, self.p1, None)
             for child in self.children:
                 child.disabled = True
@@ -1789,40 +1799,49 @@ class SlotsSpinView(discord.ui.View):
             emb.set_footer(text=f"Spun by {self.user.display_name} • 5 Multi-Paylines • Fair 100% Random PRNG")
             return emb
 
-        # Reel animation step 1: All 3 columns spinning
-        await interaction.response.edit_message(embed=make_spin_embed(format_3x3_grid(grid, 0), "*Spinning 3x3 high-roller reels...*"), view=None)
-        await asyncio.sleep(0.9)
+        try:
+            # Reel animation step 1: All 3 columns spinning
+            await interaction.response.edit_message(embed=make_spin_embed(format_3x3_grid(grid, 0), "*Spinning 3x3 high-roller reels...*"), view=None)
+            await asyncio.sleep(0.9)
 
-        # Reel animation step 2: Column 1 stops
-        await interaction.message.edit(embed=make_spin_embed(format_3x3_grid(grid, 1), "*Column 1 locked in... Columns 2 & 3 spinning...*"))
-        await asyncio.sleep(0.8)
+            # Reel animation step 2: Column 1 stops
+            await interaction.message.edit(embed=make_spin_embed(format_3x3_grid(grid, 1), "*Column 1 locked in... Columns 2 & 3 spinning...*"))
+            await asyncio.sleep(0.8)
 
-        # Reel animation step 3: Column 2 stops
-        await interaction.message.edit(embed=make_spin_embed(format_3x3_grid(grid, 2), "*Columns 1 & 2 locked in... Final column spinning...*"))
-        await asyncio.sleep(0.8)
+            # Reel animation step 3: Column 2 stops
+            await interaction.message.edit(embed=make_spin_embed(format_3x3_grid(grid, 2), "*Columns 1 & 2 locked in... Final column spinning...*"))
+            await asyncio.sleep(0.8)
 
-        # Reel animation step 4: Final reveal & payouts
-        winnings, hits, summary_title = evaluate_3x3_slots(grid, self.bet)
-        if winnings > 0:
-            add_user_coins(self.user.id, winnings)
-            cur_bal = get_user_coins(self.user.id)
-            hits_str = "\n".join(hits)
-            color = COLOR_SUCCESS if winnings >= self.bet * 2 else COLOR_WARN
-            final_embed = make_spin_embed(
-                format_3x3_grid(grid, 3),
-                f"🎉 **WINNER!**\n{hits_str}\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!",
-                color
-            )
-            final_embed.set_field_at(1, name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
-        else:
-            final_embed = make_spin_embed(
-                format_3x3_grid(grid, 3),
-                f"💀 **No matching lines!** Better luck next spin!\n💰 Lost: **{self.bet:,} 🪙**",
-                COLOR_ERROR
-            )
+            # Reel animation step 4: Final reveal & payouts
+            winnings, hits, summary_title = evaluate_3x3_slots(grid, self.bet)
+            if winnings > 0:
+                add_user_coins(self.user.id, winnings)
+                cur_bal = get_user_coins(self.user.id)
+                hits_str = "\n".join(hits)
+                color = COLOR_SUCCESS if winnings >= self.bet * 2 else COLOR_WARN
+                final_embed = make_spin_embed(
+                    format_3x3_grid(grid, 3),
+                    f"🎉 **WINNER!**\n{hits_str}\n💰 Stake: **{self.bet:,} 🪙** ➔ Won: **+{winnings:,} 🪙**!",
+                    color
+                )
+                final_embed.set_field_at(1, name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
+            else:
+                final_embed = make_spin_embed(
+                    format_3x3_grid(grid, 3),
+                    f"💀 **No matching lines!** Better luck next spin!\n💰 Lost: **{self.bet:,} 🪙**",
+                    COLOR_ERROR
+                )
 
-        final_embed.set_footer(text=f"Spun by {self.user.display_name} • Click Spin Again 🎰 to roll again!")
-        await interaction.message.edit(embed=final_embed, view=self)
+            final_embed.set_footer(text=f"Spun by {self.user.display_name} • Click Spin Again 🎰 to roll again!")
+            fresh_view = SlotsSpinView(user=self.user, bet=self.bet)
+            await interaction.message.edit(embed=final_embed, view=fresh_view)
+        except Exception as e:
+            add_user_coins(self.user.id, self.bet)
+            print(f"⚠️ Slots spin error: {e}", file=sys.stderr)
+            try:
+                await interaction.followup.send(f"⚠️ A network error occurred. Your **{self.bet:,} 🪙** coins were refunded!", ephemeral=True)
+            except Exception:
+                pass
 
 class HelpCategorySelect(discord.ui.Select):
     def __init__(self, author_perms: discord.Permissions, is_owner: bool):
@@ -3273,7 +3292,7 @@ async def trivia_cmd(ctx, category: Optional[Literal["general", "tech", "gaming"
     await safely_delete_message(ctx)
     cat = (category or "general").lower()
     pool = TRIVIA_QUESTIONS.get(cat, TRIVIA_QUESTIONS["general"])
-    question_data = random.choice(pool)
+    question_data = secrets.choice(pool)
 
     view = TriviaView(user=ctx.author, question_data=question_data)
     embed = discord.Embed(
@@ -3346,23 +3365,26 @@ async def slots_cmd(ctx, bet: Optional[int] = 10, rounds: Optional[int] = 1):
             emb.set_footer(text=f"Round {round_num}/{total_rounds} • 5 Paylines • Player: {ctx.author.display_name}")
             return emb
 
-        # Step 1: All 3 columns spinning
-        frame1 = build_reel_frame(format_3x3_grid(grid, 0), "*Spinning 3x3 high-roller reels...*")
-        if msg is None:
-            msg = await ctx.send(embed=frame1)
-        else:
-            await msg.edit(embed=frame1)
-        await asyncio.sleep(0.9)
+        try:
+            # Step 1: All 3 columns spinning
+            frame1 = build_reel_frame(format_3x3_grid(grid, 0), "*Spinning 3x3 high-roller reels...*")
+            if msg is None:
+                msg = await ctx.send(embed=frame1)
+            else:
+                await msg.edit(embed=frame1)
+            await asyncio.sleep(0.9)
 
-        # Step 2: Column 1 stops
-        frame2 = build_reel_frame(format_3x3_grid(grid, 1), "*Column 1 locked in... Columns 2 & 3 spinning...*")
-        await msg.edit(embed=frame2)
-        await asyncio.sleep(0.8)
+            # Step 2: Column 1 stops
+            frame2 = build_reel_frame(format_3x3_grid(grid, 1), "*Column 1 locked in... Columns 2 & 3 spinning...*")
+            await msg.edit(embed=frame2)
+            await asyncio.sleep(0.8)
 
-        # Step 3: Column 2 stops
-        frame3 = build_reel_frame(format_3x3_grid(grid, 2), "*Columns 1 & 2 locked in... Final column spinning...*")
-        await msg.edit(embed=frame3)
-        await asyncio.sleep(0.8)
+            # Step 3: Column 2 stops
+            frame3 = build_reel_frame(format_3x3_grid(grid, 2), "*Columns 1 & 2 locked in... Final column spinning...*")
+            await msg.edit(embed=frame3)
+            await asyncio.sleep(0.8)
+        except (discord.NotFound, discord.HTTPException):
+            break
 
         # Step 4: Final reveal & calculate payouts
         winnings, hits, summary_title = evaluate_3x3_slots(grid, stake)
@@ -3399,16 +3421,19 @@ async def slots_cmd(ctx, bet: Optional[int] = 10, rounds: Optional[int] = 1):
         else:
             final_frame.set_field_at(3, name="👛 Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
 
-        # If single round, attach spin again button directly
-        if total_rounds == 1:
-            final_frame.set_footer(text=f"Spun by {ctx.author.display_name} • Click Spin Again 🎰 to roll again!")
-            view = SlotsSpinView(user=ctx.author, bet=stake)
-            await msg.edit(embed=final_frame, view=view)
-            return
+        try:
+            # If single round, attach spin again button directly
+            if total_rounds == 1:
+                final_frame.set_footer(text=f"Spun by {ctx.author.display_name} • Click Spin Again 🎰 to roll again!")
+                view = SlotsSpinView(user=ctx.author, bet=stake)
+                await msg.edit(embed=final_frame, view=view)
+                return
 
-        await msg.edit(embed=final_frame)
-        if round_num < total_rounds:
-            await asyncio.sleep(1.2)
+            await msg.edit(embed=final_frame)
+            if round_num < total_rounds:
+                await asyncio.sleep(1.2)
+        except (discord.NotFound, discord.HTTPException):
+            break
 
     # Multi-Round Final Summary Card
     net = total_won - total_spent
@@ -3429,8 +3454,11 @@ async def slots_cmd(ctx, bet: Optional[int] = 10, rounds: Optional[int] = 1):
     summary_embed.add_field(name="👛 Final Balance", value=f"**{cur_bal:,} 🪙**", inline=True)
     summary_embed.set_footer(text=f"Completed {len(history_lines)} spins • Click Spin Again 🎰 to spin!")
 
-    view = SlotsSpinView(user=ctx.author, bet=stake)
-    await msg.edit(embed=summary_embed, view=view)
+    try:
+        view = SlotsSpinView(user=ctx.author, bet=stake)
+        await msg.edit(embed=summary_embed, view=view)
+    except Exception:
+        pass
 
 
 @bot.hybrid_command(name="rps", description="Play Rock-Paper-Scissors against a friend or the bot")
@@ -3472,7 +3500,7 @@ async def coinflip_cmd(ctx, choice: Optional[Literal["heads", "tails"]] = None, 
 
     await asyncio.sleep(1.8)
 
-    result = random.choice(["heads", "tails"])
+    result = secrets.choice(["heads", "tails"])
     coin_emoji = "🪙"
 
     embed = discord.Embed(title=f"{coin_emoji} Coinflip Result", color=COLOR_PRIMARY)
