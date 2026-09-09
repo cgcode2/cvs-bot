@@ -75,17 +75,14 @@ if owner_id_env and owner_id_env.strip().isdigit():
 
 # Multi-user session storage: user_id -> {"items": [], "coupons": [], "cart_message": None}
 user_sessions: Dict[int, Dict[str, Any]] = {}
-user_test_sessions: Dict[int, Dict[str, Any]] = {}
 
-def get_session(user_id: int, test: bool = False) -> Dict[str, Any]:
-    target_dict = user_test_sessions if test else user_sessions
-    if user_id not in target_dict:
-        target_dict[user_id] = {"items": [], "coupons": [], "cart_message": None}
-    return target_dict[user_id]
+def get_session(user_id: int) -> Dict[str, Any]:
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"items": [], "coupons": [], "cart_message": None}
+    return user_sessions[user_id]
 
-def reset_session(user_id: int, test: bool = False) -> None:
-    target_dict = user_test_sessions if test else user_sessions
-    target_dict[user_id] = {"items": [], "coupons": [], "cart_message": None}
+def reset_session(user_id: int) -> None:
+    user_sessions[user_id] = {"items": [], "coupons": [], "cart_message": None}
 
 SESSION_CHANNELS_FILE = "session_channels.json"
 WARNINGS_FILE = "warnings_data.json"
@@ -953,6 +950,10 @@ class CVSAccountsPaginationView(discord.ui.View):
         embed, file = format_account_card(cvs_accounts_db[self.current_idx])
         self.update_select()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+
+    @discord.ui.button(label="Custom Barcode", style=discord.ButtonStyle.secondary, emoji="💳", row=1)
+    async def custom_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CVSAccountModal())
 
 class CVSAccountModal(discord.ui.Modal, title="💳 CVS ExtraCare® Card Formatter"):
     card_num = discord.ui.TextInput(
@@ -1889,7 +1890,7 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Staff Private Notes", value="`/note add [@member] [note]` / `/note view` / `/note clear` — staff internal records", inline=False)
             embed.add_field(name="Member Discipline", value="`/kick` or `!kick [@member] [reason]`\n`/ban` or `!ban [@member] [reason]`\n`/unban` or `!unban [user_id_or_name]`\n`/timeout` or `!timeout [@member] [duration]` (e.g. `10m`, `1h`, `1d`)\n`/untimeout` or `!untimeout [@member]`", inline=False)
             embed.add_field(name="Warnings System", value="`/warn` or `!warn [@member] [reason]` — log a warning\n`/warnings` or `!warnings [@member]` — view warning record\n`/clearwarnings` or `!clearwarnings [@member]` — wipe records", inline=False)
-            embed.add_field(name="Channel & Role Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]` / `/createchannel`\n`/blockrole` & `/unblockrole` / `/renamerole`", inline=False)
+            embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
         elif cat == "games":
             embed.title = "🎮 AIO Bot — Arcade, Casino & Economy"
             embed.description = "Interactive Discord mini-games and coin economy system powered by Discord UI Buttons! Run using either `!` or `/`."
@@ -1910,10 +1911,9 @@ class HelpCategorySelect(discord.ui.Select):
             embed.title = "👑 AIO Bot — Operator Commands"
             embed.description = "Restricted developer, diagnostic, and account management tools. Only authorized operators can run these commands."
             embed.add_field(name="Private Optimizer Channel", value="`/setup` — create private `#aio-coupon-optimizer` room\n`/permit [@member]` — grant access to user", inline=False)
-            embed.add_field(name="CVS Accounts Database", value="`/accounts` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans & pagination\n`/cvsaccount` — format account and generate scannable register barcode", inline=False)
+            embed.add_field(name="CVS Accounts Database", value="`/accounts [query]` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans, search, pagination & custom card formatter", inline=False)
             embed.add_field(name="Database Management", value="`/delete-last-trip` (or `!undotrip`) — delete last recorded trip and revert lifetime savings stats", inline=False)
             embed.add_field(name="CPU Benchmark & Stress Test", value="`/run-stress-test` (or `!stresstest`, `!benchmark`) — benchmark algorithm latency across permutation graphs", inline=False)
-            embed.add_field(name="Test Sandbox Mode", value="`/testadd`, `/testcoupons`, `/testoptimize`, `/testcart`, `/testcheckout`, `/testclear` — simulated shopping sandbox without modifying savings data", inline=False)
 
         embed.set_footer(text="Tip: You can use ! or / for any command (e.g. !help or /help).")
         await interaction.response.edit_message(embed=embed, view=self.view)
@@ -1955,21 +1955,21 @@ def build_userinfo_embed(member: discord.Member) -> discord.Embed:
 
 @bot.event
 async def on_ready():
-    print(f'🤖 AIO Bot is officially online! Logged in as {bot.user}')
+    print(f'🤖 AIO Bot is officially online! Logged in as {bot.user}', flush=True)
     try:
         if bot.user and bot.user.name != "AIO Bot":
             await bot.user.edit(username="AIO Bot")
-            print('✅ Successfully updated Discord username to AIO Bot')
+            print('✅ Successfully updated Discord username to AIO Bot', flush=True)
     except Exception as e:
-        print(f'ℹ️ Note on bot username update: {e}', file=sys.stderr)
+        print(f'ℹ️ Note on bot username update: {e}', file=sys.stderr, flush=True)
     try:
         if os.path.exists("avatar.png"):
             with open("avatar.png", "rb") as f:
                 avatar_data = f.read()
             await bot.user.edit(avatar=avatar_data)
-            print('✅ Successfully updated Discord bot profile picture (avatar.png)')
+            print('✅ Successfully updated Discord bot profile picture (avatar.png)', flush=True)
     except Exception as e:
-        print(f'ℹ️ Note on bot avatar update: {e}', file=sys.stderr)
+        print(f'ℹ️ Note on bot avatar update: {e}', file=sys.stderr, flush=True)
 
     # Automatically rename CVS Coupon Optimizer role to AIO Bot across all connected guilds
     for guild in bot.guilds:
@@ -1977,9 +1977,9 @@ async def on_ready():
             for role in guild.roles:
                 if role.name.strip().lower() in ("cvs coupon optimizer", "cvs coupon optimizer bot", "cvs optimizer", "cvs optimizer bot"):
                     await role.edit(name="AIO Bot", reason="Update role name from CVS Coupon Optimizer to AIO Bot")
-                    print(f"✅ Successfully renamed role '{role.name}' to 'AIO Bot' in guild '{guild.name}' ({guild.id})")
+                    print(f"✅ Successfully renamed role '{role.name}' to 'AIO Bot' in guild '{guild.name}' ({guild.id})", flush=True)
         except Exception as e:
-            print(f"ℹ️ Note on auto role rename in guild '{guild.name}': {e}", file=sys.stderr)
+            print(f"ℹ️ Note on auto role rename in guild '{guild.name}': {e}", file=sys.stderr, flush=True)
 
     try:
         for g in bot.guilds:
@@ -1989,9 +1989,9 @@ async def on_ready():
             except Exception:
                 pass
         synced = await bot.tree.sync()
-        print(f'✅ Synced {len(synced)} global slash command(s) (guild duplicates cleared).')
+        print(f'✅ Synced {len(synced)} global slash command(s) (guild duplicates cleared).', flush=True)
     except Exception as e:
-        print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr)
+        print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr, flush=True)
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -2185,84 +2185,6 @@ async def purge_messages(ctx, amount: int, member: Optional[discord.Member] = No
     else:
         deleted = await ctx.channel.purge(limit=limit)
         await ctx.send(f"🧹 Purged **{len(deleted)}** message(s).", delete_after=6)
-
-@bot.hybrid_command(name="createchannel", description="Create a new text channel in the server")
-@commands.guild_only()
-@commands.has_permissions(manage_channels=True)
-@app_commands.default_permissions(manage_channels=True)
-async def create_channel_cmd(ctx, name: str, private: bool = False, category: Optional[discord.CategoryChannel] = None):
-    await safely_delete_message(ctx)
-    guild = ctx.guild
-    overwrites = {}
-    if private:
-        overwrites[guild.default_role] = discord.PermissionOverwrite(read_messages=False)
-        overwrites[ctx.author] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        if guild.me:
-            overwrites[guild.me] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-
-    clean_name = name.lower().replace(" ", "-").strip("#")
-    new_ch = await guild.create_text_channel(
-        name=clean_name,
-        category=category,
-        overwrites=overwrites if private else None,
-        reason=f"Created by {ctx.author}"
-    )
-    status_str = "🔒 Private" if private else "🌐 Public"
-    await ctx.send(f"✅ Created channel {new_ch.mention} ({status_str})!", delete_after=8)
-
-@bot.hybrid_command(name="blockrole", description="Block a role from viewing or sending messages in a channel")
-@commands.guild_only()
-@commands.has_permissions(manage_channels=True)
-@app_commands.default_permissions(manage_channels=True)
-async def block_role_cmd(ctx, role: discord.Role, channel: Optional[discord.TextChannel] = None):
-    await safely_delete_message(ctx)
-    target = channel or ctx.channel
-    await target.set_permissions(role, read_messages=False, send_messages=False, reason=f"Blocked role by {ctx.author}")
-    await ctx.send(f"🚫 Blocked **{role.name}** from {target.mention}.", delete_after=8)
-
-@bot.hybrid_command(name="unblockrole", description="Restore channel permissions for a role")
-@commands.guild_only()
-@commands.has_permissions(manage_channels=True)
-@app_commands.default_permissions(manage_channels=True)
-async def unblock_role_cmd(ctx, role: discord.Role, channel: Optional[discord.TextChannel] = None):
-    await safely_delete_message(ctx)
-    target = channel or ctx.channel
-    await target.set_permissions(role, overwrite=None, reason=f"Unblocked role by {ctx.author}")
-    await ctx.send(f"✅ Restored permissions for **{role.name}** in {target.mention}.", delete_after=8)
-
-@bot.hybrid_command(name="renamerole", description="Rename an existing server role")
-@commands.guild_only()
-@commands.has_permissions(manage_roles=True)
-@app_commands.default_permissions(manage_roles=True)
-async def rename_role_cmd(ctx, role: discord.Role, *, new_name: str):
-    await safely_delete_message(ctx)
-    old_name = role.name
-
-    if role.managed:
-        embed = discord.Embed(
-            title="ℹ️ Discord Managed Role",
-            description=(
-                f"**{old_name}** is a Discord **Managed Bot Integration Role**.\n\n"
-                "Discord does not allow bots or moderators to edit managed integration role names directly via API or Discord client.\n\n"
-                "### 🔧 How to change it in 10 seconds:\n"
-                "1. Go to the **[Discord Developer Portal](https://discord.com/developers/applications)**\n"
-                "2. Select your Bot Application\n"
-                "3. In **General Information**, change the **NAME** to **`AIO Bot`** (or your desired name)\n"
-                "4. Click **Save Changes**\n\n"
-                "Discord will immediately update this integration role name across all your servers!"
-            ),
-            color=COLOR_INFO
-        )
-        await ctx.send(embed=embed)
-        return
-
-    try:
-        await role.edit(name=new_name.strip(), reason=f"Renamed by {ctx.author}")
-        await ctx.send(f"✅ Renamed role **{old_name}** to **{new_name.strip()}**!", delete_after=8)
-    except discord.Forbidden:
-        await ctx.send(f"❌ Failed to rename **{old_name}**. Ensure the bot's role is positioned above the target role in Server Settings > Roles.", delete_after=10)
-    except Exception as e:
-        await ctx.send(f"❌ Error renaming role: `{e}`", delete_after=8)
 
 @bot.hybrid_command(name="kick", description="Kick a member from the server")
 @commands.guild_only()
@@ -2883,106 +2805,6 @@ async def run_stress_test_cmd(ctx, num_items: Optional[int] = 16, num_coupons: O
     final_embed.add_field(name="⚡ Engine Health", value=status_label, inline=False)
     final_embed.set_footer(text="AIO Bot High-Performance Combinatorial Engine • Benchmark Finished")
     await msg.edit(embed=final_embed)
-
-# --- TEST MODE COMMANDS (Isolated Test Cart) ---
-
-@bot.hybrid_command(name="testadd", description="[TEST] Add items to your isolated test cart")
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def test_add_item(ctx, *, items: str):
-    await safely_delete_message(ctx)
-    session = get_session(ctx.author.id, test=True)
-    parsed = parse_items_input(items)
-    if not parsed:
-        await ctx.send("❌ Could not parse items.\n*Example:* `!testadd Fairlife 4.49, Shampoo 6.59` or `/testadd ...`", delete_after=8)
-        return
-    session["items"].extend(parsed)
-    subtotal = sum(i['price'] for i in session["items"])
-    await ctx.send(f"🧪 [TEST] Added {len(parsed)} item(s)! Test Cart Subtotal: **${subtotal:.2f}**")
-
-@bot.hybrid_command(name="testcoupons", description="[TEST] Add coupons to your isolated test cart")
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def test_set_coupons(ctx, *, values: str):
-    await safely_delete_message(ctx)
-    session = get_session(ctx.author.id, test=True)
-    parsed = parse_coupons_input(values)
-    if not parsed:
-        await ctx.send("❌ Could not parse coupons.\n*Example:* `!testcoupons 8 8 5 half` or `/testcoupons 8 8 5 half`", delete_after=8)
-        return
-    session["coupons"].extend(parsed)
-    all_str = ", ".join(coupon_label(c) for c in session["coupons"])
-    await ctx.send(f"🧪 [TEST] Loaded coupons! All Test Coupons: {all_str}")
-
-@bot.hybrid_command(name="testoptimize", description="[TEST] Calculate strategy for test cart without saving stats")
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def test_optimize(ctx):
-    await safely_delete_message(ctx)
-    session = get_session(ctx.author.id, test=True)
-    if not session["items"]:
-        await ctx.send("❌ Test cart is empty! Add items with `/testadd` or `!testadd` first.", delete_after=8)
-        return
-
-    thinking_embed = discord.Embed(
-        title="🧪 [TEST] Calculating Optimal Bundles...",
-        description=f"🔬 *Evaluating test cart (**{len(session['items'])} items**, **{len(session['coupons'])} coupons**)...*",
-        color=COLOR_TEST
-    )
-    msg = await ctx.send(embed=thinking_embed)
-    await asyncio.sleep(1.4)
-
-    embed = build_strategy_embed(session["items"], session["coupons"])
-    embed.title = "🧪 [TEST] " + embed.title
-    await msg.edit(embed=embed)
-
-@bot.hybrid_command(name="testcart", description="[TEST] View your test shopping cart")
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def test_cart(ctx):
-    await safely_delete_message(ctx)
-    session = get_session(ctx.author.id, test=True)
-    items = session["items"]
-    coupons = session["coupons"]
-    embed = discord.Embed(title="🧪 [TEST] Shopping Cart", color=COLOR_TEST)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in items]) or "No test items."
-    subtotal = sum(item['price'] for item in items)
-    coupon_str = ", ".join([coupon_label(c) for c in coupons]) or "None loaded."
-    embed.add_field(name="Scanned Items", value=item_str, inline=False)
-    embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=True)
-    embed.add_field(name="Active Coupons", value=coupon_str, inline=True)
-    await ctx.send(embed=embed)
-
-@bot.hybrid_command(name="testcheckout", description="[TEST] Preview checkout without recording lifetime savings")
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def test_checkout(ctx):
-    await safely_delete_message(ctx)
-    session = get_session(ctx.author.id, test=True)
-    items = list(session["items"])
-    coupons = list(session["coupons"])
-    if not items:
-        await ctx.send("❌ Test cart is empty!", delete_after=5)
-        return
-    subtotal = sum(i['price'] for i in items)
-    total_due, _ = calculate_best_bundles(items, coupons)
-    coupon_spend = sum(coupon_cost(c) for c in coupons)
-    net_saved = (subtotal - total_due) - coupon_spend
-    embed = discord.Embed(title="🧪 [TEST] Checkout Simulation", color=COLOR_TEST)
-    embed.add_field(name="Full Price", value=f"${subtotal:.2f}", inline=True)
-    embed.add_field(name="Register Paid", value=f"${total_due:.2f}", inline=True)
-    embed.add_field(name="Net Saved", value=f"## **${net_saved:.2f}**", inline=False)
-    embed.set_footer(text="Simulated checkout — lifetime savings untouched. Test cart cleared.")
-    reset_session(ctx.author.id, test=True)
-    await ctx.send(embed=embed)
-
-@bot.hybrid_command(name="testclear", description="[TEST] Clear test cart and coupons")
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def test_clear(ctx):
-    await safely_delete_message(ctx)
-    reset_session(ctx.author.id, test=True)
-    await ctx.send("🧪 Test cart cleared!")
 
 @bot.hybrid_command(name="savings", description="View your lifetime savings stats")
 async def view_savings(ctx):
@@ -3693,114 +3515,28 @@ async def roll_cmd(ctx, dice: Optional[str] = "1d6"):
 
 @bot.hybrid_command(
     name="accounts",
-    aliases=["cvsaccounts", "myaccounts", "cards"],
-    description="Browse all imported CVS ExtraCare accounts with barcodes & pagination"
+    aliases=["cvsaccounts", "myaccounts", "cards", "cvsaccount", "cvscard", "extracare", "barcode"],
+    description="Browse or search imported CVS ExtraCare accounts with barcodes & pagination"
 )
 @commands.is_owner()
 @app_commands.default_permissions(administrator=True)
-async def list_accounts_cmd(ctx):
+async def list_accounts_cmd(ctx, query: Optional[str] = None):
     await safely_delete_message(ctx)
     if not cvs_accounts_db:
-        await ctx.send("📭 No CVS accounts currently loaded. Use `/cvsaccount` to generate a card or import a batch.", delete_after=8)
+        await ctx.send("📭 No CVS accounts currently loaded.", delete_after=8)
         return
 
-    view = CVSAccountsPaginationView(current_idx=0)
-    embed, file = format_account_card(cvs_accounts_db[0])
+    idx = 0
+    if query:
+        matched = get_cvs_account(query.strip())
+        if matched:
+            idx = cvs_accounts_db.index(matched)
+        else:
+            await ctx.send(f"⚠️ No CVS account found matching `{query}`. Opening account list from beginning.", delete_after=6)
+
+    view = CVSAccountsPaginationView(current_idx=idx)
+    embed, file = format_account_card(cvs_accounts_db[idx])
     await ctx.send(embed=embed, file=file, view=view)
-
-
-@bot.hybrid_command(
-    name="cvsaccount",
-    aliases=["cvscard", "extracare", "account", "barcode"],
-    description="Format a CVS ExtraCare account and generate a scannable register barcode"
-)
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def cvsaccount_cmd(
-    ctx,
-    card_number: Optional[str] = None,
-    name: Optional[str] = None,
-    phone: Optional[str] = None,
-    email: Optional[str] = None,
-    password: Optional[str] = None,
-    extrabucks: Optional[str] = None,
-    *,
-    notes: Optional[str] = None
-):
-    await safely_delete_message(ctx)
-
-    # Check if card_number is actually an account query or ID (e.g. /cvsaccount 1 or /cvsaccount Bartlett)
-    if card_number:
-        matched = get_cvs_account(card_number)
-        if matched and not (name or phone or email or password or extrabucks or notes):
-            embed, file = format_account_card(matched)
-            view = CVSAccountsPaginationView(current_idx=cvs_accounts_db.index(matched))
-            await ctx.send(embed=embed, file=file, view=view)
-            return
-
-    if not card_number and ctx.interaction:
-        await ctx.interaction.response.send_modal(CVSAccountModal())
-        return
-
-    if not card_number:
-        embed = discord.Embed(
-            title="💳 CVS ExtraCare® Card Formatter",
-            description=(
-                "Generate a scannable Code 128 barcode and format your CVS account details.\n\n"
-                "**Usage:**\n"
-                "`/cvsaccount [card_number] [name] [phone] [email] [password] [extrabucks] [notes]`\n"
-                "*Example:* `/cvsaccount card_number:48443912049281 name:John Doe extrabucks:$14.00 notes:$8 off $40`\n\n"
-                "Or click the button below to open the interactive form!"
-            ),
-            color=COLOR_PRIMARY
-        )
-        modal_btn_view = discord.ui.View()
-        btn = discord.ui.Button(label="Open CVS Card Form", style=discord.ButtonStyle.primary, emoji="💳")
-        async def open_modal_cb(itx: discord.Interaction):
-            await itx.response.send_modal(CVSAccountModal())
-        btn.callback = open_modal_cb
-        modal_btn_view.add_item(btn)
-        await ctx.send(embed=embed, view=modal_btn_view)
-        return
-
-    raw_card = card_number.strip()
-    barcode_buffer = generate_code128_barcode_bytes(raw_card)
-    file = discord.File(fp=barcode_buffer, filename="cvs_barcode.png")
-
-    embed = discord.Embed(
-        title="💳 CVS ExtraCare® Account & Barcode",
-        description="Scannable barcode generated below for register & self-checkout scanners.",
-        color=COLOR_PRIMARY
-    )
-    embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
-
-    formatted_card = " ".join([raw_card[i:i+4] for i in range(0, len(raw_card), 4)])
-    embed.add_field(name="🔢 ExtraCare Number", value=f"```\n{formatted_card}\n```", inline=False)
-
-    cardholder_parts = []
-    if name:
-        cardholder_parts.append(name.strip())
-    if phone:
-        cardholder_parts.append(phone.strip())
-    if cardholder_parts:
-        embed.add_field(name="👤 Cardholder", value=" | ".join(cardholder_parts), inline=True)
-
-    if extrabucks:
-        embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{extrabucks.strip()}**", inline=True)
-
-    if email or password:
-        val = f"📧 **Email:** `{email}`" if email else ""
-        if password:
-            val += f"\n🔑 **Password:** ||`{password}`||"
-        embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
-
-    if notes:
-        embed.add_field(name="🎟️ Loaded Coupons & Notes", value=notes.strip(), inline=False)
-
-    embed.set_image(url="attachment://cvs_barcode.png")
-    embed.set_footer(text="AIO Bot CVS ExtraCare Barcode Generator • High-Resolution Scan")
-
-    await ctx.send(embed=embed, file=file)
 
 
 # --- SETUP & CHANNELS ---

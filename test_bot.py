@@ -137,14 +137,13 @@ class TestAIOBot(unittest.TestCase):
         expected_commands = [
             "panel", "modpanel", "help", "embed", "nukechannel", "purge", "kick", "ban", "unban",
             "timeout", "untimeout", "warn", "warnings", "clearwarnings", "lock", "unlock", "slowmode",
-            "createchannel", "blockrole", "unblockrole", "renamerole", "serverinfo", "userinfo", "add", "coupons",
+            "serverinfo", "userinfo", "add", "coupons",
             "optimize", "calc", "cart", "undo", "remove", "clear", "checkout", "run-stress-test",
-            "testadd", "testcoupons", "testoptimize", "testcart", "testcheckout", "testclear",
             "savings", "history", "delete-last-trip", "setup", "permit", "ping", "about",
             "lockdown", "filter", "modlogs", "case", "note",
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
             "balance", "daily", "pay", "leaderboard",
-            "cvsaccount", "accounts"
+            "accounts", "cvsaccount"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -177,10 +176,6 @@ class TestAIOBot(unittest.TestCase):
             "embed": "manage_messages",
             "nukechannel": "manage_channels",
             "purge": "manage_messages",
-            "createchannel": "manage_channels",
-            "blockrole": "manage_channels",
-            "unblockrole": "manage_channels",
-            "renamerole": "manage_roles",
             "kick": "kick_members",
             "ban": "ban_members",
             "unban": "ban_members",
@@ -200,15 +195,8 @@ class TestAIOBot(unittest.TestCase):
             "setup": "is_owner",
             "permit": "is_owner",
             "run-stress-test": "is_owner",
-            "testadd": "is_owner",
-            "testcoupons": "is_owner",
-            "testoptimize": "is_owner",
-            "testcart": "is_owner",
-            "testcheckout": "is_owner",
-            "testclear": "is_owner",
             "delete-last-trip": "is_owner",
             "accounts": "is_owner",
-            "cvsaccount": "is_owner",
         }
         
         for cmd_name, expected_check in mod_commands.items():
@@ -420,6 +408,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertEqual(view.current_idx, 0)
         self.assertTrue(any(item.label == "Previous" for item in view.children if hasattr(item, "label")))
         self.assertTrue(any(item.label == "Next" for item in view.children if hasattr(item, "label")))
+        self.assertTrue(any(item.label == "Custom Barcode" for item in view.children if hasattr(item, "label")))
         self.assertTrue(any(isinstance(item, main.AccountSelectDropdown) for item in view.children))
 
         # Check next and prev index wrap-around logic
