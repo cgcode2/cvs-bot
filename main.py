@@ -69,6 +69,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+owner_id_env = os.environ.get('OWNER_ID') or os.environ.get('BOT_OWNER_ID')
+if owner_id_env and owner_id_env.strip().isdigit():
+    bot.owner_id = int(owner_id_env.strip())
 
 # Multi-user session storage: user_id -> {"items": [], "coupons": [], "cart_message": None}
 user_sessions: Dict[int, Dict[str, Any]] = {}
@@ -925,6 +928,12 @@ class CVSAccountsPaginationView(discord.ui.View):
         self.dropdown = AccountSelectDropdown(self.current_idx)
         self.add_item(self.dropdown)
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if await bot.is_owner(interaction.user):
+            return True
+        await interaction.response.send_message("⛔ Security Error: Only the bot application owner can view CVS accounts.", ephemeral=True)
+        return False
+
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not cvs_accounts_db:
@@ -932,16 +941,17 @@ class CVSAccountsPaginationView(discord.ui.View):
             return
         self.current_idx = (self.current_idx - 1) % len(cvs_accounts_db)
         embed, file = format_account_card(cvs_accounts_db[self.current_idx])
-        self.rebuild_items()
+        self.update_select()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
-    async def next_callback(self, interaction: discord.Interaction):
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji="▶️", row=1)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not cvs_accounts_db:
             await interaction.response.send_message("No accounts found!", ephemeral=True)
             return
         self.current_idx = (self.current_idx + 1) % len(cvs_accounts_db)
         embed, file = format_account_card(cvs_accounts_db[self.current_idx])
-        self.rebuild_items()
+        self.update_select()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
 class CVSAccountModal(discord.ui.Modal, title="💳 CVS ExtraCare® Card Formatter"):
@@ -1867,10 +1877,9 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Load Coupons", value="`/coupons` or `!coupons [val1] [val2] ...` (e.g. `!coupons 8 8 5 half` or `/coupons 8 8 5 half`)", inline=False)
             embed.add_field(name="Add Items", value="`/add` or `!add [item] [price] ...` (e.g. `!add Fairlife 4.49 Shampoo 6.59` or `/add ...`)", inline=False)
             embed.add_field(name="Calculate Strategy", value="`/optimize` or `!optimize` — displays the best transaction bundles & advice", inline=False)
-            embed.add_field(name="Checkout & History", value="`/checkout` or `!checkout` — save trip & get receipt\n`/savings` or `!savings` — lifetime stats\n`/history` or `!history` — view past trips\n`/delete-last-trip` or `!delete-last-trip` — undo & remove last saved trip", inline=False)
+            embed.add_field(name="Checkout & History", value="`/checkout` or `!checkout` — save trip & get receipt\n`/savings` or `!savings` — lifetime stats\n`/history` or `!history` — view past trips", inline=False)
             embed.add_field(name="Instant Calculator", value="`/calc` or `!calc [items] | [coupons]` (e.g. `!calc Fairlife 4.49, Shampoo 6.59 | 8 5` or `/calc ...`)", inline=False)
-            embed.add_field(name="Performance Stress Test", value="`/run-stress-test` or `!stresstest` — benchmark algorithm latency & CPU execution (aliases: `!stress`, `!benchmark`)", inline=False)
-            embed.add_field(name="Test Mode (Simulated)", value="Use `!` or `/` with `test` commands (`/testadd` / `!testadd`, `/testcoupons` / `!testcoupons`, `/testoptimize` / `!testoptimize`, `/testcheckout` / `!testcheckout`, `/testclear` / `!testclear`) to practice without affecting lifetime savings.", inline=False)
+            embed.add_field(name="Cart Management", value="`/cart` — view current cart\n`/undo` — remove last item added\n`/remove [name]` — remove item by name\n`/clear` — wipe cart & coupons", inline=False)
         elif cat == "mod":
             embed.title = "🛡️ AIO Bot — Server Moderation Suite"
             embed.description = "Complete administrative security and moderation suite. Run using either `!` or `/`."
@@ -1898,8 +1907,13 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Server & Member Info", value="`/serverinfo` or `!serverinfo` — server stats, boosts, channels, and roles\n`/userinfo` or `!userinfo [@member]` — member details, account age, join date, permissions", inline=False)
             embed.add_field(name="Bot Status", value="`/ping` or `!ping` — bot latency\n`/about` or `!about` — system info", inline=False)
         elif cat == "owner":
-            embed.title = "👑 AIO Bot — Owner Commands"
-            embed.add_field(name="Private Optimizer Channel", value="`/setup` or `!setup` — create private `#aio-coupon-optimizer` room\n`/permit` or `!permit [@member]` — grant access to user", inline=False)
+            embed.title = "👑 AIO Bot — Operator Commands"
+            embed.description = "Restricted developer, diagnostic, and account management tools. Only authorized operators can run these commands."
+            embed.add_field(name="Private Optimizer Channel", value="`/setup` — create private `#aio-coupon-optimizer` room\n`/permit [@member]` — grant access to user", inline=False)
+            embed.add_field(name="CVS Accounts Database", value="`/accounts` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans & pagination\n`/cvsaccount` — format account and generate scannable register barcode", inline=False)
+            embed.add_field(name="Database Management", value="`/delete-last-trip` (or `!undotrip`) — delete last recorded trip and revert lifetime savings stats", inline=False)
+            embed.add_field(name="CPU Benchmark & Stress Test", value="`/run-stress-test` (or `!stresstest`, `!benchmark`) — benchmark algorithm latency across permutation graphs", inline=False)
+            embed.add_field(name="Test Sandbox Mode", value="`/testadd`, `/testcoupons`, `/testoptimize`, `/testcart`, `/testcheckout`, `/testclear` — simulated shopping sandbox without modifying savings data", inline=False)
 
         embed.set_footer(text="Tip: You can use ! or / for any command (e.g. !help or /help).")
         await interaction.response.edit_message(embed=embed, view=self.view)
@@ -2779,6 +2793,8 @@ async def checkout(ctx):
     aliases=["stresstest", "stress-test", "run_stress_test", "stress_test", "stress", "benchmark", "runstresstest"],
     description="Run a real-time CPU & bundling performance stress test"
 )
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def run_stress_test_cmd(ctx, num_items: Optional[int] = 16, num_coupons: Optional[int] = 5):
     """Simulates a large shopping cart to benchmark algorithm execution latency."""
     await safely_delete_message(ctx)
@@ -2871,6 +2887,8 @@ async def run_stress_test_cmd(ctx, num_items: Optional[int] = 16, num_coupons: O
 # --- TEST MODE COMMANDS (Isolated Test Cart) ---
 
 @bot.hybrid_command(name="testadd", description="[TEST] Add items to your isolated test cart")
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def test_add_item(ctx, *, items: str):
     await safely_delete_message(ctx)
     session = get_session(ctx.author.id, test=True)
@@ -2883,6 +2901,8 @@ async def test_add_item(ctx, *, items: str):
     await ctx.send(f"🧪 [TEST] Added {len(parsed)} item(s)! Test Cart Subtotal: **${subtotal:.2f}**")
 
 @bot.hybrid_command(name="testcoupons", description="[TEST] Add coupons to your isolated test cart")
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def test_set_coupons(ctx, *, values: str):
     await safely_delete_message(ctx)
     session = get_session(ctx.author.id, test=True)
@@ -2895,6 +2915,8 @@ async def test_set_coupons(ctx, *, values: str):
     await ctx.send(f"🧪 [TEST] Loaded coupons! All Test Coupons: {all_str}")
 
 @bot.hybrid_command(name="testoptimize", description="[TEST] Calculate strategy for test cart without saving stats")
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def test_optimize(ctx):
     await safely_delete_message(ctx)
     session = get_session(ctx.author.id, test=True)
@@ -2915,6 +2937,8 @@ async def test_optimize(ctx):
     await msg.edit(embed=embed)
 
 @bot.hybrid_command(name="testcart", description="[TEST] View your test shopping cart")
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def test_cart(ctx):
     await safely_delete_message(ctx)
     session = get_session(ctx.author.id, test=True)
@@ -2930,6 +2954,8 @@ async def test_cart(ctx):
     await ctx.send(embed=embed)
 
 @bot.hybrid_command(name="testcheckout", description="[TEST] Preview checkout without recording lifetime savings")
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def test_checkout(ctx):
     await safely_delete_message(ctx)
     session = get_session(ctx.author.id, test=True)
@@ -2951,6 +2977,8 @@ async def test_checkout(ctx):
     await ctx.send(embed=embed)
 
 @bot.hybrid_command(name="testclear", description="[TEST] Clear test cart and coupons")
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def test_clear(ctx):
     await safely_delete_message(ctx)
     reset_session(ctx.author.id, test=True)
@@ -3043,6 +3071,8 @@ def delete_last_trip() -> Optional[Dict[str, Any]]:
     aliases=["deletelasttrip", "delete_last_trip", "undotrip", "undo-trip", "removelasttrip", "remove-last-trip"],
     description="Delete the most recently recorded trip and reverse its savings stats"
 )
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def delete_last_trip_cmd(ctx):
     await safely_delete_message(ctx)
     removed = delete_last_trip()
@@ -3666,6 +3696,8 @@ async def roll_cmd(ctx, dice: Optional[str] = "1d6"):
     aliases=["cvsaccounts", "myaccounts", "cards"],
     description="Browse all imported CVS ExtraCare accounts with barcodes & pagination"
 )
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def list_accounts_cmd(ctx):
     await safely_delete_message(ctx)
     if not cvs_accounts_db:
@@ -3682,6 +3714,8 @@ async def list_accounts_cmd(ctx):
     aliases=["cvscard", "extracare", "account", "barcode"],
     description="Format a CVS ExtraCare account and generate a scannable register barcode"
 )
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
 async def cvsaccount_cmd(
     ctx,
     card_number: Optional[str] = None,
@@ -3855,6 +3889,30 @@ async def on_command_error(ctx, error):
             await ctx.send(f"❌ Error: `{type(error).__name__}: {error}`", delete_after=15)
         except Exception:
             pass
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        msg = "⛔ Security Error: Only the bot application owner can run this operator command."
+    elif isinstance(error, app_commands.MissingPermissions):
+        missing = ", ".join(p.replace('_', ' ').title() for p in error.missing_permissions)
+        msg = f"⛔ You need the **{missing}** permission to run that."
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        missing = ", ".join(p.replace('_', ' ').title() for p in error.missing_permissions)
+        msg = f"❌ The bot needs the **{missing}** permission to execute this."
+    elif isinstance(error, app_commands.NoPrivateMessage):
+        msg = "⛔ This command can only be used inside a server channel."
+    else:
+        print(f"❌ App Command Error in '/{interaction.command.name if interaction.command else 'unknown'}': {type(error).__name__} | Details: {error}", file=sys.stderr)
+        msg = f"❌ Error: `{type(error).__name__}: {error}`"
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
 
 def main():
     keep_alive()

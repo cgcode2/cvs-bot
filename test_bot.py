@@ -2,6 +2,7 @@ import unittest
 import os
 import json
 import time
+import copy
 from datetime import datetime, timedelta
 
 import main
@@ -198,12 +199,38 @@ class TestAIOBot(unittest.TestCase):
             "note": "manage_messages",
             "setup": "is_owner",
             "permit": "is_owner",
+            "run-stress-test": "is_owner",
+            "testadd": "is_owner",
+            "testcoupons": "is_owner",
+            "testoptimize": "is_owner",
+            "testcart": "is_owner",
+            "testcheckout": "is_owner",
+            "testclear": "is_owner",
+            "delete-last-trip": "is_owner",
+            "accounts": "is_owner",
+            "cvsaccount": "is_owner",
         }
         
         for cmd_name, expected_check in mod_commands.items():
             cmd = main.bot.get_command(cmd_name)
             self.assertIsNotNone(cmd, f"Command '{cmd_name}' not found!")
             self.assertTrue(len(cmd.checks) > 0, f"Command '{cmd_name}' has no permission checks!")
+            if expected_check == "is_owner":
+                # Verify slash command is hidden from non-admins in autocomplete dropdown
+                self.assertIsNotNone(cmd.app_command.default_permissions, f"Command '{cmd_name}' missing default_permissions!")
+                self.assertTrue(cmd.app_command.default_permissions.administrator, f"Command '{cmd_name}' default_permissions.administrator must be True!")
+
+        # Ensure public shopping, games, and utility commands are accessible without is_owner
+        public_commands = [
+            "add", "coupons", "optimize", "calc", "cart", "undo", "remove", "clear",
+            "checkout", "savings", "history", "panel", "balance", "daily", "pay",
+            "leaderboard", "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll"
+        ]
+        for p_cmd in public_commands:
+            cmd = main.bot.get_command(p_cmd)
+            self.assertIsNotNone(cmd, f"Public command '{p_cmd}' not found!")
+            check_names = [getattr(c, '__qualname__', str(c)) for c in cmd.checks]
+            self.assertFalse(any("is_owner" in c for c in check_names), f"Public command '{p_cmd}' should NOT have is_owner check!")
 
     def test_blackjack_hand_calculations(self):
         self.assertEqual(main.calculate_hand_value(["10♠", "K♥"]), 20)
@@ -234,15 +261,21 @@ class TestAIOBot(unittest.TestCase):
         self.assertNotIn("badword", main.get_filter_words(test_gid))
 
     def test_mod_cases_and_notes(self):
-        case_id = main.log_mod_case(1234, "Warn", "User1", "Mod1", "Test Reason")
-        self.assertIsInstance(case_id, int)
-        
-        main.add_mod_note(1234, 5678, "Mod1", "Suspicious account")
-        notes = main.get_mod_notes(1234, 5678)
-        self.assertEqual(len(notes), 1)
-        self.assertEqual(notes[0]["note"], "Suspicious account")
-        cleared = main.clear_mod_notes(1234, 5678)
-        self.assertEqual(cleared, 1)
+        original_cases = copy.deepcopy(main.mod_cases_db)
+        try:
+            case_id = main.log_mod_case(1234, "Warn", "User1", "Mod1", "Test Reason")
+            self.assertIsInstance(case_id, int)
+            
+            main.add_mod_note(1234, 5678, "Mod1", "Suspicious account")
+            notes = main.get_mod_notes(1234, 5678)
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(notes[0]["note"], "Suspicious account")
+            cleared = main.clear_mod_notes(1234, 5678)
+            self.assertEqual(cleared, 1)
+        finally:
+            main.mod_cases_db.clear()
+            main.mod_cases_db.update(original_cases)
+            main.save_mod_cases(main.mod_cases_db)
 
     def test_barcode_generation(self):
         buf = main.generate_code128_barcode_bytes("48443912049281")
@@ -381,6 +414,24 @@ class TestAIOBot(unittest.TestCase):
         fmt_done = main.format_3x3_grid(grid_jackpot, active_cols=3)
         self.assertNotIn("🌀", fmt_done)
         self.assertIn("7️⃣", fmt_done)
+
+    def test_cvs_pagination_view(self):
+        view = main.CVSAccountsPaginationView(current_idx=0)
+        self.assertEqual(view.current_idx, 0)
+        self.assertTrue(any(item.label == "Previous" for item in view.children if hasattr(item, "label")))
+        self.assertTrue(any(item.label == "Next" for item in view.children if hasattr(item, "label")))
+        self.assertTrue(any(isinstance(item, main.AccountSelectDropdown) for item in view.children))
+
+        # Check next and prev index wrap-around logic
+        view.current_idx = (view.current_idx + 1) % len(main.cvs_accounts_db)
+        self.assertEqual(view.current_idx, 1)
+        view.update_select()
+        self.assertEqual(view.current_idx, 1)
+
+        view.current_idx = (view.current_idx - 1) % len(main.cvs_accounts_db)
+        self.assertEqual(view.current_idx, 0)
+        view.update_select()
+        self.assertEqual(view.current_idx, 0)
 
 
 if __name__ == '__main__':
