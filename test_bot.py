@@ -112,6 +112,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertIsNotNone(main.TicketControlView())
         self.assertIsNotNone(main.TicketCloseConfirmView())
         self.assertIsNotNone(main.FormatServerConfirmView(12345))
+        self.assertIsNotNone(main.DeleteChannelsConfirmView(12345))
         self.assertIsNotNone(main.FoodAccountPurchaseView())
         food_embed = main.build_food_accounts_embed()
         self.assertIn("Taco Bell", food_embed.fields[0].name)
@@ -155,7 +156,7 @@ class TestAIOBot(unittest.TestCase):
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
             "balance", "daily", "pay", "leaderboard",
             "accounts", "cvsaccount",
-            "formatserver", "ticketpanel", "say", "foodpanel"
+            "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -542,6 +543,99 @@ class TestAIOBot(unittest.TestCase):
         modal = main.FoodAccountOrderModal(brand="Taco Bell", price=10.0)
         self.assertEqual(modal.brand, "Taco Bell")
         self.assertEqual(modal.price, 10.0)
+
+    def test_blueprint_preservation_helpers(self):
+        cat_names = main.get_blueprint_category_names()
+        ch_names = main.get_blueprint_channel_names()
+
+        self.assertIn("📌 INFORMATION", cat_names)
+        self.assertIn("📁 TICKETS", cat_names)
+        self.assertIn("📢-announcements", ch_names)
+        self.assertIn("🛒-coupon-optimizer", ch_names)
+        self.assertIn("🌮🍕-food-rewards", ch_names)
+
+        class MockCategory:
+            def __init__(self, name):
+                self.name = name
+
+        class MockChannel:
+            def __init__(self, name, category=None):
+                self.name = name
+                self.category = category
+
+        # Protected channel is preserved in all modes
+        protected_ch = MockChannel("form-automation")
+        self.assertTrue(main.is_preserved_channel(protected_ch, mode="clean_old"))
+        self.assertTrue(main.is_preserved_channel(protected_ch, mode="wipe_all"))
+
+        # Channel inside protected category is preserved in all modes
+        protected_nested = MockChannel("submission-logs", category=MockCategory("Form Automation"))
+        self.assertTrue(main.is_preserved_channel(protected_nested, mode="clean_old"))
+        self.assertTrue(main.is_preserved_channel(protected_nested, mode="wipe_all"))
+
+        # Default/old channel is NOT preserved
+        old_ch = MockChannel("general")
+        self.assertFalse(main.is_preserved_channel(old_ch, mode="clean_old"))
+        self.assertFalse(main.is_preserved_channel(old_ch, mode="wipe_all"))
+
+        # Blueprint channel is preserved in clean_old, but not in wipe_all
+        bp_ch = MockChannel("📢-announcements")
+        self.assertTrue(main.is_preserved_channel(bp_ch, mode="clean_old"))
+        self.assertFalse(main.is_preserved_channel(bp_ch, mode="wipe_all"))
+
+        # Ticket channel is preserved in clean_old
+        ticket_ch = MockChannel("ticket-0001-cody")
+        self.assertTrue(main.is_preserved_channel(ticket_ch, mode="clean_old"))
+        self.assertFalse(main.is_preserved_channel(ticket_ch, mode="wipe_all"))
+
+    def test_channel_delete_interactive_view(self):
+        class MockGuild:
+            def __init__(self, channels):
+                self.channels = channels
+            def get_channel(self, cid):
+                for c in self.channels:
+                    if getattr(c, 'id', None) == cid:
+                        return c
+                return None
+
+        class MockChannel:
+            def __init__(self, cid, name, is_cat=False, is_vc=False):
+                self.id = cid
+                self.name = name
+                self.position = 0
+                self.is_cat = is_cat
+                self.is_vc = is_vc
+                self.category = None
+
+        channels = [
+            MockChannel(101, "form-automation"),  # strictly protected
+            MockChannel(102, "general"),          # old/unformatted
+            MockChannel(103, "General Voice", is_vc=True), # old voice
+            MockChannel(104, "📢-announcements"), # blueprint
+        ]
+        mock_guild = MockGuild(channels)
+
+        view = main.ChannelDeleteInteractiveView(author_id=12345, guild=mock_guild, page=0)
+        self.assertEqual(view.author_id, 12345)
+        deletable = view._get_deletable_channels()
+        deletable_names = [c.name for c in deletable]
+        self.assertNotIn("form-automation", deletable_names)
+        self.assertIn("general", deletable_names)
+        self.assertIn("General Voice", deletable_names)
+        self.assertIn("📢-announcements", deletable_names)
+
+        # Check embed output
+        embed = view.build_embed()
+        self.assertIn("Channel Deletion & Management Suite", embed.title)
+        self.assertIn("#form-automation", embed.description)
+        self.assertIn("Leftover/Old Channels Detected", embed.description)
+
+        # Check buttons presence
+        button_labels = [item.label for item in view.children if isinstance(item, main.discord.ui.Button)]
+        self.assertTrue(any("Delete Selected" in l for l in button_labels))
+        self.assertIn("Delete All Old Channels", button_labels)
+        self.assertIn("Wipe All Channels", button_labels)
+        self.assertIn("Cancel", button_labels)
 
 
 if __name__ == '__main__':

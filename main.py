@@ -2018,8 +2018,14 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Bot Status", value="`/ping` or `!ping` — bot latency\n`/about` or `!about` — system info", inline=False)
         elif cat == "owner":
             embed.title = "👑 AIO Bot — Operator Commands"
-            embed.description = "Restricted developer, diagnostic, and account management tools. Only authorized operators can run these commands."
-            embed.add_field(name="Server Architecture", value="`/formatserver` (or `!setupserver`) — organize full server layout with categories, channels, and roles (shields `#form-automation`)", inline=False)
+            embed.add_field(
+                name="Server Architecture & Channel Cleanup",
+                value=(
+                    "`/formatserver` (or `!setupserver`) — organize full server layout with categories, channels, and roles (shields `#form-automation`)\n"
+                    "`/deletechannels` (or `!clearchannels`) — delete previous or leftover unformatted channels (shields `#form-automation`)"
+                ),
+                inline=False
+            )
             embed.add_field(name="Private Optimizer Channel", value="`/setup` — create private `#aio-coupon-optimizer` room\n`/permit [@member]` — grant access to user", inline=False)
             embed.add_field(name="CVS Accounts Database", value="`/accounts [query]` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans, search, pagination & custom card formatter", inline=False)
             embed.add_field(name="Database Management", value="`/delete-last-trip` (or `!undotrip`) — delete last recorded trip and revert lifetime savings stats", inline=False)
@@ -2394,6 +2400,268 @@ class FoodAccountPurchaseView(discord.ui.View):
         await interaction.response.send_modal(FoodAccountOrderModal(brand="Pizza Hut", price=15.0))
 
 
+FORMAT_SERVER_BLUEPRINT = [
+    {
+        "category": "📌 INFORMATION",
+        "read_only": True,
+        "channels": [
+            {"name": "📢-announcements", "type": "text", "topic": "Official server announcements and updates."},
+            {"name": "📜-rules", "type": "text", "topic": "Server guidelines and community rules."},
+            {"name": "👋-welcome", "type": "text", "topic": "Welcome new members to the server!"}
+        ]
+    },
+    {
+        "category": "💬 COMMUNITY",
+        "channels": [
+            {"name": "💬-general-chat", "type": "text", "topic": "Main hangout and general conversation."},
+            {"name": "🤖-bot-commands", "type": "text", "topic": "Run bot commands and mini-games here!"},
+            {"name": "💡-suggestions", "type": "text", "topic": "Share ideas and feedback for the server."}
+        ]
+    },
+    {
+        "category": "🛍️ CVS & SAVINGS",
+        "channels": [
+            {"name": "🛒-coupon-optimizer", "type": "text", "topic": "CVS & retail coupon optimizer center. Use /panel or /add!"},
+            {"name": "🌮🍕-food-rewards", "type": "text", "topic": "Preloaded Taco Bell & Pizza Hut rewards accounts store. Order below!"},
+            {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."},
+            {"name": "🧾-receipt-brags", "type": "text", "topic": "Post your receipt savings and coupon hauls!"}
+        ]
+    },
+    {
+        "category": "🎫 SUPPORT",
+        "channels": [
+            {"name": "📩-open-a-ticket", "type": "text", "topic": "Need help? Click the button below to open a private ticket!"}
+        ]
+    },
+    {
+        "category": "🔊 VOICE CHANNELS",
+        "channels": [
+            {"name": "🔊 General Voice", "type": "voice"},
+            {"name": "🔊 Lounge 1", "type": "voice"}
+        ]
+    },
+    {
+        "category": "🛡️ STAFF ZONE",
+        "staff_only": True,
+        "channels": [
+            {"name": "🛡️-staff-chat", "type": "text", "topic": "Private discussions for server staff and admins."},
+            {"name": "📜-mod-logs", "type": "text", "topic": "Audit logs, moderation actions, and security alerts."}
+        ]
+    }
+]
+
+def get_blueprint_category_names() -> set[str]:
+    cats = {sec["category"] for sec in FORMAT_SERVER_BLUEPRINT}
+    cats.add("📁 TICKETS")
+    return cats
+
+def get_blueprint_channel_names() -> set[str]:
+    names = set()
+    for sec in FORMAT_SERVER_BLUEPRINT:
+        for ch in sec["channels"]:
+            names.add(ch["name"])
+    return names
+
+def is_preserved_channel(channel: Any, mode: str = "clean_old") -> bool:
+    """Returns True if the channel or category must NOT be deleted during cleanup."""
+    if channel is None:
+        return True
+    # CRITICAL SAFEGUARD: Never touch #form-automation under any circumstance
+    if is_protected_channel(channel):
+        return True
+
+    if mode == "clean_old":
+        ch_name = getattr(channel, "name", "")
+        if isinstance(channel, discord.CategoryChannel):
+            if ch_name in get_blueprint_category_names():
+                return True
+        if ch_name in get_blueprint_channel_names():
+            return True
+        if ch_name.startswith(("ticket-", "order-")):
+            return True
+        parent = getattr(channel, "category", None)
+        if parent and getattr(parent, "name", "") == "📁 TICKETS":
+            return True
+
+    return False
+
+async def purge_channels_helper(
+    guild: discord.Guild,
+    mode: str = "clean_old",
+    invoking_channel_id: Optional[int] = None,
+    progress_callback: Optional[Any] = None
+) -> int:
+    """Safely deletes non-preserved channels in guild according to mode.
+    Guarantees #form-automation is NEVER deleted.
+    Deletes the invoking channel last (if targeted).
+    Returns total count of deleted channels & categories.
+    """
+    to_delete_channels = []
+    to_delete_categories = []
+
+    for ch in guild.channels:
+        if isinstance(ch, discord.CategoryChannel):
+            if not is_preserved_channel(ch, mode=mode):
+                to_delete_categories.append(ch)
+        else:
+            if not is_preserved_channel(ch, mode=mode):
+                to_delete_channels.append(ch)
+
+    invoking_channel = None
+    if invoking_channel_id:
+        for i, ch in enumerate(to_delete_channels):
+            if ch.id == invoking_channel_id:
+                invoking_channel = to_delete_channels.pop(i)
+                break
+
+    total_to_delete = len(to_delete_channels) + (1 if invoking_channel else 0) + len(to_delete_categories)
+    deleted_count = 0
+
+    # 1. Delete standard channels first
+    for ch in to_delete_channels:
+        try:
+            if not is_protected_channel(ch):
+                await ch.delete(reason="Channel cleanup: removing previous unformatted channel")
+                deleted_count += 1
+                if progress_callback:
+                    await progress_callback(deleted_count, total_to_delete, ch.name)
+                await asyncio.sleep(0.35)
+        except Exception as e:
+            print(f"⚠️ Could not delete channel #{getattr(ch, 'name', '')}: {e}", file=sys.stderr)
+
+    # 2. Delete empty non-preserved categories next
+    for cat in to_delete_categories:
+        try:
+            if not is_protected_channel(cat):
+                # Never delete category if it holds a protected channel
+                if any(is_protected_channel(c) for c in cat.channels):
+                    continue
+                await cat.delete(reason="Channel cleanup: removing previous category")
+                deleted_count += 1
+                if progress_callback:
+                    await progress_callback(deleted_count, total_to_delete, cat.name)
+                await asyncio.sleep(0.35)
+        except Exception as e:
+            print(f"⚠️ Could not delete category {getattr(cat, 'name', '')}: {e}", file=sys.stderr)
+
+    # 3. Delete invoking channel last if targeted
+    if invoking_channel:
+        try:
+            if not is_protected_channel(invoking_channel):
+                await invoking_channel.delete(reason="Channel cleanup: removing previous channel (invoker)")
+                deleted_count += 1
+        except Exception as e:
+            print(f"⚠️ Could not delete invoking channel #{getattr(invoking_channel, 'name', '')}: {e}", file=sys.stderr)
+
+    return deleted_count
+
+async def execute_format_server(guild: discord.Guild, author: discord.Member, clean_old: bool = False) -> discord.Embed:
+    created_cats = 0
+    created_channels = 0
+
+    for section in FORMAT_SERVER_BLUEPRINT:
+        cat_name = section["category"]
+        cat = discord.utils.get(guild.categories, name=cat_name)
+
+        cat_overwrites = {}
+        if section.get("staff_only"):
+            cat_overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+            cat_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, manage_channels=True)
+            for role in guild.roles:
+                if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+                    cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        elif section.get("read_only"):
+            cat_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
+            cat_overwrites[guild.me] = discord.PermissionOverwrite(send_messages=True, manage_channels=True)
+
+        if not cat:
+            cat = await guild.create_category(cat_name, overwrites=cat_overwrites)
+            created_cats += 1
+
+        for ch_def in section["channels"]:
+            ch_name = ch_def["name"]
+            ch_type = ch_def["type"]
+
+            if ch_type == "text":
+                existing = discord.utils.get(guild.text_channels, name=ch_name)
+                # CRITICAL SAFEGUARD: Never touch #form-automation under any circumstance
+                if existing and is_protected_channel(existing):
+                    continue
+
+                if existing:
+                    if existing.category_id != cat.id and not is_protected_channel(existing.category):
+                        try:
+                            await existing.edit(category=cat)
+                        except Exception:
+                            pass
+                else:
+                    ch_overwrites = {}
+                    if section.get("read_only"):
+                        ch_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
+                    new_ch = await guild.create_text_channel(
+                        name=ch_name,
+                        category=cat,
+                        topic=ch_def.get("topic", ""),
+                        overwrites=ch_overwrites
+                    )
+                    created_channels += 1
+
+                    if ch_name == "📩-open-a-ticket":
+                        panel_embed = discord.Embed(
+                            title="🎫 Support & Inquiries",
+                            description=(
+                                "Need assistance, have questions, or need to contact staff?\n\n"
+                                "Click the **Open Ticket** button below to create a private support channel with our team.\n\n"
+                                "• 🔒 Private 1-on-1 text channel\n"
+                                "• 👥 Only you and server staff have access\n"
+                                "• ⚡ Fast response from operators"
+                            ),
+                            color=COLOR_PRIMARY
+                        )
+                        panel_embed.set_footer(text="AIO Bot Custom Ticket Center • Click below to open")
+                        await new_ch.send(embed=panel_embed, view=TicketLaunchView())
+
+                    elif ch_name == "🛒-coupon-optimizer":
+                        cart_embed = build_cart_embed(author.id)
+                        await new_ch.send(embed=cart_embed, view=QuickCartActionView(author.id))
+
+                    elif ch_name == "🌮🍕-food-rewards":
+                        food_embed = build_food_accounts_embed()
+                        await new_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
+
+            elif ch_type == "voice":
+                existing_vc = discord.utils.get(guild.voice_channels, name=ch_name)
+                if not existing_vc:
+                    await guild.create_voice_channel(name=ch_name, category=cat)
+                    created_channels += 1
+
+    deleted_count = 0
+    if clean_old:
+        deleted_count = await purge_channels_helper(guild, mode="clean_old")
+
+    desc = (
+        f"Your server layout has been organized with clean categories and channels!\n\n"
+        f"• 📁 **Categories Created/Organized:** {created_cats}\n"
+        f"• 💬 **Channels Created/Positioned:** {created_channels}\n"
+    )
+    if clean_old:
+        desc += f"• 🧹 **Previous Channels Cleaned:** {deleted_count} old channel(s) removed\n"
+    desc += (
+        f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` was completely preserved and untouched.\n"
+        f"• 🎫 **Tickets Deployed:** Active in `#📩-open-a-ticket`\n"
+        f"• 🛒 **Shopping Optimizer Deployed:** Active in `#🛒-coupon-optimizer`\n"
+        f"• 🌮🍕 **Food Accounts Store Deployed:** Active in `#🌮🍕-food-rewards`"
+    )
+
+    summary_embed = discord.Embed(
+        title="🏗️ Server Layout Formatted Successfully",
+        description=desc,
+        color=COLOR_SUCCESS
+    )
+    summary_embed.set_footer(text="AIO Bot Server Architecture Suite")
+    return summary_embed
+
+
 class FormatServerConfirmView(discord.ui.View):
     def __init__(self, author_id: int):
         super().__init__(timeout=120)
@@ -2405,7 +2673,33 @@ class FormatServerConfirmView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Confirm Format Server", style=discord.ButtonStyle.success, emoji="✅")
+    @discord.ui.button(label="Format & Clean Old Channels", style=discord.ButtonStyle.primary, emoji="🧹")
+    async def btn_format_and_clean(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        status_msg = await interaction.followup.send("⏳ **Formatting server & cleaning previous channels...** Please wait.", ephemeral=False)
+
+        invoking_id = interaction.channel_id
+        summary_embed = await execute_format_server(guild, interaction.user, clean_old=True)
+
+        # If current channel was purged, post to #bot-commands or announcements
+        channel_still_exists = any(c.id == invoking_id for c in guild.channels)
+        if channel_still_exists:
+            try:
+                await status_msg.edit(content=None, embed=summary_embed)
+            except Exception:
+                pass
+        else:
+            bot_ch = discord.utils.get(guild.text_channels, name="🤖-bot-commands") or discord.utils.get(guild.text_channels, name="📢-announcements")
+            if bot_ch:
+                await bot_ch.send(embed=summary_embed)
+
+    @discord.ui.button(label="Format (Keep Old)", style=discord.ButtonStyle.success, emoji="✅")
     async def btn_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         if not guild:
@@ -2414,158 +2708,501 @@ class FormatServerConfirmView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(view=self)
-        status_msg = await interaction.followup.send("⏳ **Formatting server layout...** Setting up categories and channels.", ephemeral=True)
+        status_msg = await interaction.followup.send("⏳ **Formatting server layout...** Setting up categories and channels.", ephemeral=False)
 
-        blueprint = [
-            {
-                "category": "📌 INFORMATION",
-                "read_only": True,
-                "channels": [
-                    {"name": "📢-announcements", "type": "text", "topic": "Official server announcements and updates."},
-                    {"name": "📜-rules", "type": "text", "topic": "Server guidelines and community rules."},
-                    {"name": "👋-welcome", "type": "text", "topic": "Welcome new members to the server!"}
-                ]
-            },
-            {
-                "category": "💬 COMMUNITY",
-                "channels": [
-                    {"name": "💬-general-chat", "type": "text", "topic": "Main hangout and general conversation."},
-                    {"name": "🤖-bot-commands", "type": "text", "topic": "Run bot commands and mini-games here!"},
-                    {"name": "💡-suggestions", "type": "text", "topic": "Share ideas and feedback for the server."}
-                ]
-            },
-            {
-                "category": "🛍️ CVS & SAVINGS",
-                "channels": [
-                    {"name": "🛒-coupon-optimizer", "type": "text", "topic": "CVS & retail coupon optimizer center. Use /panel or /add!"},
-                    {"name": "🌮🍕-food-rewards", "type": "text", "topic": "Preloaded Taco Bell & Pizza Hut rewards accounts store. Order below!"},
-                    {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."},
-                    {"name": "🧾-receipt-brags", "type": "text", "topic": "Post your receipt savings and coupon hauls!"}
-                ]
-            },
-            {
-                "category": "🎫 SUPPORT",
-                "channels": [
-                    {"name": "📩-open-a-ticket", "type": "text", "topic": "Need help? Click the button below to open a private ticket!"}
-                ]
-            },
-            {
-                "category": "🔊 VOICE CHANNELS",
-                "channels": [
-                    {"name": "🔊 General Voice", "type": "voice"},
-                    {"name": "🔊 Lounge 1", "type": "voice"}
-                ]
-            },
-            {
-                "category": "🛡️ STAFF ZONE",
-                "staff_only": True,
-                "channels": [
-                    {"name": "🛡️-staff-chat", "type": "text", "topic": "Private discussions for server staff and admins."},
-                    {"name": "📜-mod-logs", "type": "text", "topic": "Audit logs, moderation actions, and security alerts."}
-                ]
-            }
-        ]
-
-        created_cats = 0
-        created_channels = 0
-
-        for section in blueprint:
-            cat_name = section["category"]
-            cat = discord.utils.get(guild.categories, name=cat_name)
-
-            cat_overwrites = {}
-            if section.get("staff_only"):
-                cat_overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-                cat_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, manage_channels=True)
-                for role in guild.roles:
-                    if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
-                        cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-            elif section.get("read_only"):
-                cat_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
-                cat_overwrites[guild.me] = discord.PermissionOverwrite(send_messages=True, manage_channels=True)
-
-            if not cat:
-                cat = await guild.create_category(cat_name, overwrites=cat_overwrites)
-                created_cats += 1
-
-            for ch_def in section["channels"]:
-                ch_name = ch_def["name"]
-                ch_type = ch_def["type"]
-
-                if ch_type == "text":
-                    existing = discord.utils.get(guild.text_channels, name=ch_name)
-                    # CRITICAL SAFEGUARD: Never touch #form-automation under any circumstance
-                    if existing and is_protected_channel(existing):
-                        continue
-
-                    if existing:
-                        if existing.category_id != cat.id and not is_protected_channel(existing.category):
-                            try:
-                                await existing.edit(category=cat)
-                            except Exception:
-                                pass
-                    else:
-                        ch_overwrites = {}
-                        if section.get("read_only"):
-                            ch_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
-                        new_ch = await guild.create_text_channel(
-                            name=ch_name,
-                            category=cat,
-                            topic=ch_def.get("topic", ""),
-                            overwrites=ch_overwrites
-                        )
-                        created_channels += 1
-
-                        if ch_name == "📩-open-a-ticket":
-                            panel_embed = discord.Embed(
-                                title="🎫 Support & Inquiries",
-                                description=(
-                                    "Need assistance, have questions, or need to contact staff?\n\n"
-                                    "Click the **Open Ticket** button below to create a private support channel with our team.\n\n"
-                                    "• 🔒 Private 1-on-1 text channel\n"
-                                    "• 👥 Only you and server staff have access\n"
-                                    "• ⚡ Fast response from operators"
-                                ),
-                                color=COLOR_PRIMARY
-                            )
-                            panel_embed.set_footer(text="AIO Bot Custom Ticket Center • Click below to open")
-                            await new_ch.send(embed=panel_embed, view=TicketLaunchView())
-
-                        elif ch_name == "🛒-coupon-optimizer":
-                            cart_embed = build_cart_embed(interaction.user.id)
-                            await new_ch.send(embed=cart_embed, view=QuickCartActionView(interaction.user.id))
-
-                        elif ch_name == "🌮🍕-food-rewards":
-                            food_embed = build_food_accounts_embed()
-                            await new_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
-
-                elif ch_type == "voice":
-                    existing_vc = discord.utils.get(guild.voice_channels, name=ch_name)
-                    if not existing_vc:
-                        await guild.create_voice_channel(name=ch_name, category=cat)
-                        created_channels += 1
-
-        summary_embed = discord.Embed(
-            title="🏗️ Server Layout Formatted Successfully",
-            description=(
-                f"Your server layout has been organized with clean categories and channels!\n\n"
-                f"• 📁 **Categories Created/Organized:** {created_cats}\n"
-                f"• 💬 **Channels Created/Positioned:** {created_channels}\n"
-                f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` was completely preserved and untouched.\n"
-                f"• 🎫 **Tickets Deployed:** Active in `#📩-open-a-ticket`\n"
-                f"• 🛒 **Shopping Optimizer Deployed:** Active in `#🛒-coupon-optimizer`\n"
-                f"• 🌮🍕 **Food Accounts Store Deployed:** Active in `#🌮🍕-food-rewards`"
-            ),
-            color=COLOR_SUCCESS
-        )
-        summary_embed.set_footer(text="AIO Bot Server Architecture Suite")
-        await status_msg.edit(content=None, embed=summary_embed)
+        summary_embed = await execute_format_server(guild, interaction.user, clean_old=False)
+        try:
+            await status_msg.edit(content=None, embed=summary_embed)
+        except Exception:
+            pass
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
     async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(content="❌ Server formatting cancelled.", embed=None, view=None)
+
+
+async def purge_specific_channels_helper(
+    guild: discord.Guild,
+    channel_ids: List[int],
+    invoking_channel_id: Optional[int] = None,
+    progress_callback: Optional[Any] = None
+) -> int:
+    """Safely deletes specifically targeted channels in guild.
+    Guarantees #form-automation is NEVER deleted.
+    Deletes the invoking channel last (if targeted).
+    Returns total count of deleted channels & categories.
+    """
+    to_delete_channels = []
+    to_delete_categories = []
+
+    target_set = set(channel_ids)
+    for ch in guild.channels:
+        if ch.id in target_set:
+            if is_protected_channel(ch):
+                continue
+            if isinstance(ch, discord.CategoryChannel):
+                to_delete_categories.append(ch)
+            else:
+                to_delete_channels.append(ch)
+
+    invoking_channel = None
+    if invoking_channel_id:
+        for i, ch in enumerate(to_delete_channels):
+            if ch.id == invoking_channel_id:
+                invoking_channel = to_delete_channels.pop(i)
+                break
+
+    total_to_delete = len(to_delete_channels) + (1 if invoking_channel else 0) + len(to_delete_categories)
+    deleted_count = 0
+
+    # 1. Delete text and voice channels first
+    for ch in to_delete_channels:
+        try:
+            if not is_protected_channel(ch):
+                await ch.delete(reason="Channel cleanup: user selected channel deletion")
+                deleted_count += 1
+                if progress_callback:
+                    await progress_callback(deleted_count, total_to_delete, getattr(ch, "name", "channel"))
+                await asyncio.sleep(0.35)
+        except Exception as e:
+            print(f"⚠️ Could not delete channel #{getattr(ch, 'name', '')}: {e}", file=sys.stderr)
+
+    # 2. Delete categories next
+    for cat in to_delete_categories:
+        try:
+            if not is_protected_channel(cat):
+                # Never delete category if it holds a protected channel
+                if any(is_protected_channel(c) for c in cat.channels):
+                    continue
+                await cat.delete(reason="Channel cleanup: user selected category deletion")
+                deleted_count += 1
+                if progress_callback:
+                    await progress_callback(deleted_count, total_to_delete, getattr(cat, "name", "category"))
+                await asyncio.sleep(0.35)
+        except Exception as e:
+            print(f"⚠️ Could not delete category {getattr(cat, 'name', '')}: {e}", file=sys.stderr)
+
+    # 3. Delete invoking channel last
+    if invoking_channel:
+        try:
+            if not is_protected_channel(invoking_channel):
+                await invoking_channel.delete(reason="Channel cleanup: user selected channel deletion (invoker)")
+                deleted_count += 1
+        except Exception as e:
+            print(f"⚠️ Could not delete invoking channel #{getattr(invoking_channel, 'name', '')}: {e}", file=sys.stderr)
+
+    return deleted_count
+
+
+class ChannelDeleteInteractiveView(discord.ui.View):
+    def __init__(self, author_id: int, guild: discord.Guild, page: int = 0):
+        super().__init__(timeout=180)
+        self.author_id = author_id
+        self.guild = guild
+        self.page = page
+        self.selected_ids: List[int] = []
+        self._build_components()
+
+    def _get_deletable_channels(self) -> List[discord.abc.GuildChannel]:
+        channels = [ch for ch in self.guild.channels if not is_protected_channel(ch)]
+        blueprint_channels = get_blueprint_channel_names()
+        blueprint_cats = get_blueprint_category_names()
+
+        def sort_key(c):
+            is_cat = isinstance(c, discord.CategoryChannel)
+            c_name = getattr(c, "name", "")
+            is_bp = (c_name in blueprint_cats) if is_cat else (c_name in blueprint_channels)
+            is_ticket = c_name.startswith(("ticket-", "order-"))
+            if is_cat:
+                return (2, getattr(c, "position", 0))
+            if not is_bp and not is_ticket:
+                return (0, getattr(c, "position", 0))
+            if is_bp:
+                return (1, getattr(c, "position", 0))
+            return (3, getattr(c, "position", 0))
+
+        channels.sort(key=sort_key)
+        return channels
+
+    def _build_components(self):
+        self.clear_items()
+        all_channels = self._get_deletable_channels()
+        total_channels = len(all_channels)
+        max_pages = max(1, (total_channels + 24) // 25)
+        if self.page >= max_pages:
+            self.page = max_pages - 1
+        if self.page < 0:
+            self.page = 0
+
+        start_idx = self.page * 25
+        page_channels = all_channels[start_idx : start_idx + 25]
+
+        # Row 0: Multi-Select Menu
+        if page_channels:
+            options = []
+            blueprint_channels = get_blueprint_channel_names()
+            blueprint_cats = get_blueprint_category_names()
+
+            for ch in page_channels:
+                is_cat = isinstance(ch, discord.CategoryChannel)
+                is_vc = isinstance(ch, discord.VoiceChannel)
+                ch_name = getattr(ch, "name", "")
+
+                if is_cat:
+                    label = f"📁 {ch_name}"[:100]
+                    desc = "Category"
+                    emoji = "📁"
+                elif is_vc:
+                    label = f"🔊 {ch_name}"[:100]
+                    desc = "Voice Channel"
+                    emoji = "🔊"
+                else:
+                    label = f"#{ch_name}"[:100]
+                    desc = "Text Channel"
+                    emoji = "💬"
+
+                is_bp = (ch_name in blueprint_cats) if is_cat else (ch_name in blueprint_channels)
+                is_ticket = ch_name.startswith(("ticket-", "order-"))
+                if is_ticket:
+                    desc += " • Ticket Channel"
+                elif is_bp:
+                    desc += " • Formatted Blueprint"
+                else:
+                    desc += " • Leftover / Previous"
+
+                is_default = ch.id in self.selected_ids
+                options.append(discord.SelectOption(
+                    label=label,
+                    value=str(ch.id),
+                    description=desc[:100],
+                    emoji=emoji,
+                    default=is_default
+                ))
+
+            select = discord.ui.Select(
+                placeholder=f"Select channels to delete (Page {self.page+1}/{max_pages})...",
+                min_values=1,
+                max_values=max(1, min(len(options), 25)),
+                options=options,
+                row=0
+            )
+            select.callback = self._select_callback
+            self.add_item(select)
+
+        # Row 1: Action Buttons
+        del_btn = discord.ui.Button(
+            label=f"Delete Selected ({len(self.selected_ids)})" if self.selected_ids else "Delete Selected",
+            style=discord.ButtonStyle.danger,
+            emoji="🗑️",
+            disabled=(len(self.selected_ids) == 0),
+            row=1
+        )
+        del_btn.callback = self._btn_delete_selected_callback
+        self.add_item(del_btn)
+
+        clean_old_btn = discord.ui.Button(
+            label="Delete All Old Channels",
+            style=discord.ButtonStyle.primary,
+            emoji="🧹",
+            row=1
+        )
+        clean_old_btn.callback = self._btn_clean_old_callback
+        self.add_item(clean_old_btn)
+
+        wipe_all_btn = discord.ui.Button(
+            label="Wipe All Channels",
+            style=discord.ButtonStyle.secondary,
+            emoji="💥",
+            row=1
+        )
+        wipe_all_btn.callback = self._btn_wipe_all_callback
+        self.add_item(wipe_all_btn)
+
+        # Row 2: Navigation & Cancel
+        if max_pages > 1:
+            prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=(self.page == 0), row=2)
+            prev_btn.callback = self._btn_prev_callback
+            self.add_item(prev_btn)
+
+            page_indicator = discord.ui.Button(label=f"Page {self.page+1}/{max_pages}", style=discord.ButtonStyle.secondary, disabled=True, row=2)
+            self.add_item(page_indicator)
+
+            next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= max_pages - 1), row=2)
+            next_btn.callback = self._btn_next_callback
+            self.add_item(next_btn)
+
+        cancel_btn = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌", row=2 if max_pages > 1 else 1)
+        cancel_btn.callback = self._btn_cancel_callback
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("⛔ Only the command author can use this channel deletion panel.", ephemeral=True)
+            return False
+        return True
+
+    def build_embed(self) -> discord.Embed:
+        all_channels = self._get_deletable_channels()
+        old_channels = [c for c in all_channels if not is_preserved_channel(c, mode="clean_old")]
+        total_channels = len(all_channels)
+        max_pages = max(1, (total_channels + 24) // 25)
+
+        embed = discord.Embed(
+            title="🗑️ Channel Deletion & Management Suite",
+            description=(
+                "Use the multi-selection dropdown below to choose which channels to delete.\n\n"
+                f"• 🧹 **Leftover/Old Channels Detected:** {len(old_channels)}\n"
+                f"• 📋 **Total Deletable Channels:** {total_channels} (Page {self.page+1} of {max_pages})\n"
+                "• 🛡️ **SAFEGUARD ACTIVE:** `#form-automation` is strictly protected and hidden from this list.\n\n"
+                "**How to use:**\n"
+                "1. Check the channels you wish to delete in the dropdown menu.\n"
+                "2. Click **Delete Selected** to delete your choices.\n"
+                "*(Or click **Delete All Old Channels** to instantly purge all non-blueprint leftovers in 1 click!)*"
+            ),
+            color=COLOR_WARN
+        )
+
+        if self.selected_ids:
+            selected_names = []
+            for sid in self.selected_ids:
+                ch = self.guild.get_channel(sid)
+                if ch:
+                    selected_names.append(f"`#{ch.name}`" if not isinstance(ch, discord.CategoryChannel) else f"`📁 {ch.name}`")
+            sample = ", ".join(selected_names[:8])
+            if len(selected_names) > 8:
+                sample += f" ...and {len(selected_names)-8} more"
+            embed.add_field(name=f"Selected Channels ({len(self.selected_ids)})", value=sample, inline=False)
+
+        embed.set_footer(text="AIO Bot Server Purge Suite • Multi-Select Enabled")
+        return embed
+
+    async def _select_callback(self, interaction: discord.Interaction):
+        select_values = interaction.data.get("values", [])
+        self.selected_ids = [int(v) for v in select_values]
+        self._build_components()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _btn_delete_selected_callback(self, interaction: discord.Interaction):
+        if not self.selected_ids:
+            await interaction.response.send_message("❌ Please select at least one channel first!", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        invoking_id = interaction.channel_id
+        count = len(self.selected_ids)
+        status_msg = await interaction.followup.send(f"⏳ **Deleting {count} selected channel(s)...** Please wait.", ephemeral=False)
+
+        async def on_progress(done, total, name):
+            try:
+                await status_msg.edit(content=f"⏳ **Deleting channel(s)...** ({done}/{total}) `#{name}`")
+            except Exception:
+                pass
+
+        deleted = await purge_specific_channels_helper(
+            self.guild,
+            self.selected_ids,
+            invoking_channel_id=invoking_id,
+            progress_callback=on_progress
+        )
+
+        embed = discord.Embed(
+            title="🧹 Selected Channels Successfully Deleted",
+            description=(
+                f"Successfully deleted **{deleted}** channel(s) & categories.\n\n"
+                f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` is untouched.\n"
+                f"• ✨ Your server channels are updated!"
+            ),
+            color=COLOR_SUCCESS
+        )
+        embed.set_footer(text="AIO Bot Server Purge Suite")
+
+        channel_still_exists = any(c.id == invoking_id for c in self.guild.channels)
+        if channel_still_exists:
+            try:
+                await status_msg.edit(content=None, embed=embed)
+            except Exception:
+                pass
+        else:
+            bot_ch = discord.utils.get(self.guild.text_channels, name="🤖-bot-commands") or discord.utils.get(self.guild.text_channels, name="📢-announcements")
+            if bot_ch:
+                await bot_ch.send(embed=embed)
+
+    async def _btn_clean_old_callback(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        invoking_id = interaction.channel_id
+        status_msg = await interaction.followup.send("⏳ **Deleting all leftover/old channels...** Please wait.", ephemeral=False)
+
+        async def on_progress(done, total, name):
+            try:
+                await status_msg.edit(content=f"⏳ **Deleting old channel(s)...** ({done}/{total}) `#{name}`")
+            except Exception:
+                pass
+
+        deleted = await purge_channels_helper(
+            self.guild,
+            mode="clean_old",
+            invoking_channel_id=invoking_id,
+            progress_callback=on_progress
+        )
+
+        embed = discord.Embed(
+            title="🧹 Leftover Channels Successfully Purged",
+            description=(
+                f"Purged **{deleted}** old channel(s) & categories.\n\n"
+                f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` and formatted channels are untouched.\n"
+                f"• ✨ Your server is now clean and organized!"
+            ),
+            color=COLOR_SUCCESS
+        )
+        embed.set_footer(text="AIO Bot Server Purge Suite")
+
+        channel_still_exists = any(c.id == invoking_id for c in self.guild.channels)
+        if channel_still_exists:
+            try:
+                await status_msg.edit(content=None, embed=embed)
+            except Exception:
+                pass
+        else:
+            bot_ch = discord.utils.get(self.guild.text_channels, name="🤖-bot-commands") or discord.utils.get(self.guild.text_channels, name="📢-announcements")
+            if bot_ch:
+                await bot_ch.send(embed=embed)
+
+    async def _btn_wipe_all_callback(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        invoking_id = interaction.channel_id
+        status_msg = await interaction.followup.send("⏳ **Wiping all server channels...** Please wait.", ephemeral=False)
+
+        async def on_progress(done, total, name):
+            try:
+                await status_msg.edit(content=f"⏳ **Wiping channel(s)...** ({done}/{total}) `#{name}`")
+            except Exception:
+                pass
+
+        deleted = await purge_channels_helper(
+            self.guild,
+            mode="wipe_all",
+            invoking_channel_id=invoking_id,
+            progress_callback=on_progress
+        )
+
+        embed = discord.Embed(
+            title="💥 Server Wiped Clean",
+            description=(
+                f"Successfully wiped **{deleted}** channel(s) & categories.\n\n"
+                f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` remains 100% protected and safe.\n"
+                f"• 🏗️ Run `/formatserver` anytime to deploy the official layout!"
+            ),
+            color=COLOR_SUCCESS
+        )
+        embed.set_footer(text="AIO Bot Server Purge Suite")
+
+        channel_still_exists = any(c.id == invoking_id for c in self.guild.channels)
+        if channel_still_exists:
+            try:
+                await status_msg.edit(content=None, embed=embed)
+            except Exception:
+                pass
+        else:
+            bot_ch = discord.utils.get(self.guild.text_channels, name="form-automation")
+            if bot_ch:
+                try:
+                    await bot_ch.send(embed=embed)
+                except Exception:
+                    pass
+
+    async def _btn_prev_callback(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._build_components()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _btn_next_callback(self, interaction: discord.Interaction):
+        self.page += 1
+        self._build_components()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _btn_cancel_callback(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Channel deletion cancelled.", embed=None, view=None)
+
+
+class DeleteChannelsConfirmView(discord.ui.View):
+    def __init__(self, author_id: int, mode: str = "clean_old", count: int = 0):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.mode = mode
+        self.count = count
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("⛔ Only the command author can confirm this channel deletion.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm Delete Channels", style=discord.ButtonStyle.danger, emoji="🧹")
+    async def btn_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        invoking_id = interaction.channel_id
+        status_msg = await interaction.followup.send(f"⏳ **Deleting {self.count} channel(s)...** Please wait.", ephemeral=False)
+
+        async def on_progress(done, total, name):
+            try:
+                await status_msg.edit(content=f"⏳ **Deleting channel(s)...** ({done}/{total}) `#{name}`")
+            except Exception:
+                pass
+
+        deleted = await purge_channels_helper(
+            guild,
+            mode=self.mode,
+            invoking_channel_id=invoking_id,
+            progress_callback=on_progress
+        )
+
+        embed = discord.Embed(
+            title="🧹 Channels Successfully Deleted",
+            description=(
+                f"Cleaned up **{deleted}** previous channel(s) & categories.\n\n"
+                f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` is untouched.\n"
+                f"• ✨ Your server channels are now clean and organized!"
+            ),
+            color=COLOR_SUCCESS
+        )
+        embed.set_footer(text="AIO Bot Server Purge Suite")
+
+        channel_still_exists = any(c.id == invoking_id for c in guild.channels)
+        if channel_still_exists:
+            try:
+                await status_msg.edit(content=None, embed=embed)
+            except Exception:
+                pass
+        else:
+            bot_ch = discord.utils.get(guild.text_channels, name="🤖-bot-commands") or discord.utils.get(guild.text_channels, name="📢-announcements")
+            if bot_ch:
+                await bot_ch.send(embed=embed)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Channel deletion cancelled.", embed=None, view=None)
 
 def build_serverinfo_embed(guild: discord.Guild) -> discord.Embed:
     embed = discord.Embed(title=f"📊 {guild.name}", color=COLOR_INFO)
@@ -4217,7 +4854,7 @@ async def permit_user(ctx, member: discord.Member):
     description="Format and organize server channels into a clean professional layout"
 )
 @commands.guild_only()
-@commands.is_owner()
+@commands.has_permissions(administrator=True)
 @app_commands.default_permissions(administrator=True)
 async def format_server(ctx):
     await safely_delete_message(ctx)
@@ -4229,16 +4866,86 @@ async def format_server(ctx):
             "**Blueprint Structure:**\n"
             "• 📌 **INFORMATION**: `#📢-announcements`, `#📜-rules`, `#👋-welcome`\n"
             "• 💬 **COMMUNITY**: `#💬-general-chat`, `#🤖-bot-commands`, `#💡-suggestions`\n"
-            "• 🛍️ **CVS & SAVINGS**: `#🛒-coupon-optimizer`, `#🏷️-deals-and-savings`, `#🧾-receipt-brags`\n"
+            "• 🛍️ **CVS & SAVINGS**: `#🛒-coupon-optimizer`, `#🌮🍕-food-rewards`, `#🏷️-deals-and-savings`, `#🧾-receipt-brags`\n"
             "• 🎫 **SUPPORT**: `#📩-open-a-ticket` *(with Ticket Panel!)*\n"
             "• 🔊 **VOICE CHANNELS**: `🔊 General Voice`, `🔊 Lounge 1`\n"
             "• 🛡️ **STAFF ZONE**: `#🛡️-staff-chat`, `#📜-mod-logs` *(staff-only)*\n\n"
-            "Click **Confirm Format Server** below to begin."
+            "**Options Below:**\n"
+            "• **Format & Clean Old Channels**: Sets up the blueprint AND wipes leftover/unformatted channels\n"
+            "• **Format (Keep Old)**: Sets up the blueprint alongside existing channels"
         ),
         color=COLOR_PRIMARY
     )
-    embed.set_footer(text="Operator Command • Requires confirmation")
+    embed.set_footer(text="Admin Command • Choose an option below")
     view = FormatServerConfirmView(author_id=ctx.author.id)
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
+    name="deletechannels",
+    aliases=["clearchannels", "cleanupchannels", "prunechannels", "wipeoldchannels"],
+    description="Interactive menu or purge to delete previous or leftover server channels (protects #form-automation)"
+)
+@commands.guild_only()
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(mode="Choose interactive multi-select menu, or directly clean old channels / wipe all")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Interactive Multi-Selection Panel (Dropdown with checkboxes & quick buttons)", value="menu"),
+    app_commands.Choice(name="Quick Action: Clean Old / Unformatted Channels (Keeps Formatted Blueprint)", value="clean_old"),
+    app_commands.Choice(name="Quick Action: Wipe All Server Channels (Keeps ONLY #form-automation)", value="wipe_all")
+])
+async def delete_channels_cmd(ctx, mode: str = "menu"):
+    await safely_delete_message(ctx)
+    guild = ctx.guild
+    if not guild:
+        return
+
+    if mode == "menu":
+        view = ChannelDeleteInteractiveView(author_id=ctx.author.id, guild=guild)
+        embed = view.build_embed()
+        await ctx.send(embed=embed, view=view)
+        return
+
+    target_channels = []
+    target_categories = []
+    for ch in guild.channels:
+        if isinstance(ch, discord.CategoryChannel):
+            if not is_preserved_channel(ch, mode=mode):
+                target_categories.append(ch)
+        else:
+            if not is_preserved_channel(ch, mode=mode):
+                target_channels.append(ch)
+
+    total_count = len(target_channels) + len(target_categories)
+    if total_count == 0:
+        await ctx.send(
+            "✅ **No leftover channels found!**\nAll channels either match the formatted layout, active tickets, or are protected `#form-automation`.",
+            delete_after=10
+        )
+        return
+
+    preview_items = [f"`#{c.name}`" for c in target_channels[:8]]
+    if len(target_channels) > 8:
+        preview_items.append(f"...and {len(target_channels) - 8} more channels")
+    if target_categories:
+        preview_items.append(f"📁 Categories: {', '.join(f'`{c.name}`' for c in target_categories[:4])}")
+
+    preview_str = "\n• ".join(preview_items) if preview_items else "None"
+
+    embed = discord.Embed(
+        title="🗑️ Confirm Channel Deletion",
+        description=(
+            f"Are you sure you want to delete **{total_count}** previous channel(s) / categories?\n\n"
+            f"• **Mode:** `{'Clean Old / Unformatted Channels' if mode == 'clean_old' else 'Wipe All Server Channels'}`\n"
+            f"• 🛡️ **SAFEGUARD:** `#form-automation` is permanently protected and will NOT be touched.\n\n"
+            f"**Target Channels Preview ({total_count} total):**\n• {preview_str}\n\n"
+            f"⚠️ *This action is permanent and cannot be undone.* Click **Confirm Delete Channels** to proceed."
+        ),
+        color=COLOR_ERROR if mode == "wipe_all" else COLOR_WARN
+    )
+    embed.set_footer(text="AIO Bot Server Purge Suite • Requires confirmation")
+    view = DeleteChannelsConfirmView(author_id=ctx.author.id, mode=mode, count=total_count)
     await ctx.send(embed=embed, view=view)
 
 @bot.hybrid_command(
