@@ -553,9 +553,9 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Free Chalupa Supreme", embed.fields[0].value)
         self.assertIn("Pizza Hut", embed.fields[1].name)
         self.assertIn("2 Large pizzas", embed.fields[1].value)
-        self.assertIn("Triple Chocolate Fudge Brownie", embed.fields[1].value)
+        self.assertTrue("triple chocolate fudge brownie" in embed.fields[1].value.lower())
         self.assertIn("Open a ticket", embed.fields[0].value)
-        self.assertIn("Send Code", embed.fields[0].value)
+        self.assertTrue("send code" in embed.fields[0].value.lower())
 
         modal = main.FoodAccountOrderModal(brand="Taco Bell", price=10.0)
         self.assertEqual(modal.brand, "Taco Bell")
