@@ -2419,9 +2419,15 @@ FORMAT_SERVER_BLUEPRINT = [
         ]
     },
     {
-        "category": "🛍️ CVS & SAVINGS",
+        "category": "🔒 PRIVATE CVS",
+        "private": True,
         "channels": [
-            {"name": "🛒-coupon-optimizer", "type": "text", "topic": "CVS & retail coupon optimizer center. Use /panel or /add!"},
+            {"name": "🛒-coupon-optimizer", "type": "text", "topic": "Private CVS & retail coupon optimizer center. Staff can grant access via /permit!"}
+        ]
+    },
+    {
+        "category": "🛍️ SAVINGS & REWARDS",
+        "channels": [
             {"name": "🌮🍕-food-rewards", "type": "text", "topic": "Preloaded Taco Bell & Pizza Hut rewards accounts store. Order below!"},
             {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."},
             {"name": "🧾-receipt-brags", "type": "text", "topic": "Post your receipt savings and coupon hauls!"}
@@ -2453,6 +2459,8 @@ FORMAT_SERVER_BLUEPRINT = [
 def get_blueprint_category_names() -> set[str]:
     cats = {sec["category"] for sec in FORMAT_SERVER_BLUEPRINT}
     cats.add("📁 TICKETS")
+    cats.add("🛍️ CVS & SAVINGS")
+    cats.add("🔒 PRIVATE CVS")
     return cats
 
 def get_blueprint_channel_names() -> set[str]:
@@ -2564,9 +2572,9 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
         cat = discord.utils.get(guild.categories, name=cat_name)
 
         cat_overwrites = {}
-        if section.get("staff_only"):
+        if section.get("staff_only") or section.get("private"):
             cat_overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-            cat_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, manage_channels=True)
+            cat_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
             for role in guild.roles:
                 if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
                     cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
@@ -2596,7 +2604,9 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                             pass
                 else:
                     ch_overwrites = {}
-                    if section.get("read_only"):
+                    if section.get("private") or section.get("staff_only"):
+                        ch_overwrites = dict(cat_overwrites)
+                    elif section.get("read_only"):
                         ch_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
                     new_ch = await guild.create_text_channel(
                         name=ch_name,
@@ -2623,6 +2633,13 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
 
                     elif ch_name == "🛒-coupon-optimizer":
                         cart_embed = build_cart_embed(author.id)
+                        cart_embed.title = "🔒 Private CVS Coupon Optimizer"
+                        cart_embed.description = (
+                            "Welcome to the **Private CVS Coupon Optimizer**!\n\n"
+                            "• 🔒 **Private Access:** Only staff and permitted members can view this channel.\n"
+                            "• 👥 **Staff Controls:** Staff can grant member access with `/permit @member` or revoke with `/revoke @member`.\n"
+                            "• 🛒 **Shopping Tools:** Click the buttons below or run `/panel` / `/add` to optimize your shopping trips!"
+                        )
                         await new_ch.send(embed=cart_embed, view=QuickCartActionView(author.id))
 
                     elif ch_name == "🌮🍕-food-rewards":
@@ -2648,8 +2665,8 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
         desc += f"• 🧹 **Previous Channels Cleaned:** {deleted_count} old channel(s) removed\n"
     desc += (
         f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` was completely preserved and untouched.\n"
+        f"• 🔒 **Private CVS Optimizer:** Active in `#🛒-coupon-optimizer` under `🔒 PRIVATE CVS` (Staff grant access with `/permit @user`)\n"
         f"• 🎫 **Tickets Deployed:** Active in `#📩-open-a-ticket`\n"
-        f"• 🛒 **Shopping Optimizer Deployed:** Active in `#🛒-coupon-optimizer`\n"
         f"• 🌮🍕 **Food Accounts Store Deployed:** Active in `#🌮🍕-food-rewards`"
     )
 
@@ -4805,48 +4822,159 @@ async def list_accounts_cmd(ctx, query: Optional[str] = None):
 
 # --- SETUP & CHANNELS ---
 
-@bot.hybrid_command(name="setup", description="Create the private AIO coupon optimizer channel")
+def find_cvs_optimizer_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    candidates = [
+        "🛒-coupon-optimizer", "🔒-cvs-optimizer", "cvs-coupon-optimizer",
+        "aio-coupon-optimizer", "coupon-optimizer"
+    ]
+    for name in candidates:
+        ch = discord.utils.get(guild.text_channels, name=name)
+        if ch and not is_protected_channel(ch):
+            return ch
+    for cat in guild.categories:
+        if "cvs" in cat.name.lower():
+            for ch in cat.text_channels:
+                if not is_protected_channel(ch):
+                    return ch
+    return None
+
+def is_staff_or_admin(member: discord.Member) -> bool:
+    if member.guild_permissions.manage_channels or member.guild_permissions.administrator:
+        return True
+    staff_roles = {"staff", "moderator", "admin", "operator"}
+    return any(r.name.lower() in staff_roles for r in member.roles)
+
+@bot.hybrid_command(name="setup", aliases=["setupcvs", "setup-optimizer"], description="Create the private CVS coupon optimizer category & channel")
 @commands.guild_only()
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
 async def setup_channel(ctx):
     await safely_delete_message(ctx)
     guild = ctx.guild
-    owner = guild.owner or (await guild.fetch_member(guild.owner_id) if guild.owner_id else None)
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True, manage_messages=True)
-    }
-    if owner:
-        overwrites[owner] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
+    if not guild:
+        return
 
-    channel_name = "aio-coupon-optimizer"
+    cat_name = "🔒 PRIVATE CVS"
+    cat = discord.utils.get(guild.categories, name=cat_name)
+    cat_overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
+    }
+    for role in guild.roles:
+        if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+            cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+    if not cat:
+        cat = await guild.create_category(cat_name, overwrites=cat_overwrites)
+
+    channel_name = "🛒-coupon-optimizer"
     existing = discord.utils.get(guild.text_channels, name=channel_name)
     if existing:
-        await ctx.send(f"⚠️ Channel {existing.mention} already exists!", delete_after=5)
+        if existing.category_id != cat.id:
+            await existing.edit(category=cat)
+        await ctx.send(f"⚠️ Private CVS Optimizer channel already exists at {existing.mention}!", delete_after=6)
         return
 
-    new_channel = await guild.create_text_channel(channel_name, overwrites=overwrites)
-    welcome = discord.Embed(
-        title="🎯 AIO Coupon Optimizer Room",
-        description="Private command base for shopping bundles! Run `/panel` or `!panel` (or `/help` / `!help`) to get started.",
+    new_channel = await guild.create_text_channel(
+        channel_name,
+        category=cat,
+        topic="Private CVS & retail coupon optimizer center. Staff can grant access via /permit!",
+        overwrites=cat_overwrites
+    )
+    cart_embed = build_cart_embed(ctx.author.id)
+    cart_embed.title = "🔒 Private CVS Coupon Optimizer"
+    cart_embed.description = (
+        "Welcome to the **Private CVS Coupon Optimizer**!\n\n"
+        "• 🔒 **Private Access:** Only staff and permitted members can view this channel.\n"
+        "• 👥 **Staff Controls:** Staff can grant member access with `/permit @member` or revoke with `/revoke @member`.\n"
+        "• 🛒 **Shopping Tools:** Click the buttons below or run `/panel` / `/add` to optimize your shopping trips!"
+    )
+    await new_channel.send(embed=cart_embed, view=QuickCartActionView(ctx.author.id))
+    await ctx.send(f"✅ Secure private CVS channel {new_channel.mention} created under `{cat_name}`!", delete_after=6)
+
+@bot.hybrid_command(
+    name="permit",
+    aliases=["grant", "giveaccess", "cvsaccess", "allow"],
+    description="Staff command: Grant a member private access to the CVS coupon optimizer"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.describe(member="The member to grant private access to", channel="Optional specific channel (defaults to CVS optimizer)")
+async def permit_user(ctx, member: discord.Member, channel: Optional[discord.TextChannel] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to grant access.", delete_after=6)
+        return
+
+    target_channel = channel or find_cvs_optimizer_channel(ctx.guild)
+    if not target_channel:
+        await ctx.send("❌ CVS coupon optimizer channel not found! Run `/formatserver` or `/setup` first.", delete_after=6)
+        return
+
+    await target_channel.set_permissions(
+        member,
+        view_channel=True,
+        send_messages=True,
+        read_messages=True,
+        read_message_history=True,
+        attach_files=True,
+        embed_links=True,
+        reason=f"Granted access by staff: {ctx.author}"
+    )
+
+    embed = discord.Embed(
+        title="🔓 Access Granted",
+        description=f"✅ Successfully granted {member.mention} access to {target_channel.mention}!",
+        color=COLOR_SUCCESS
+    )
+    embed.set_footer(text=f"Authorized by {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+    welcome_embed = discord.Embed(
+        title="👋 Welcome to Private CVS Optimizer!",
+        description=(
+            f"Welcome {member.mention}! You have been granted access to the private CVS optimizer.\n\n"
+            "• Use `/panel` or `!panel` to open the interactive shopping cart.\n"
+            "• Use `/add` to add items and store coupons.\n"
+            "• Use `/optimize` to compute the lowest out-of-pocket trip total!"
+        ),
         color=COLOR_PRIMARY
     )
-    await new_channel.send(embed=welcome)
-    await ctx.send(f"✅ Secure channel {new_channel.mention} created!", delete_after=5)
+    welcome_embed.set_footer(text="Private CVS Optimizer Access")
+    try:
+        await target_channel.send(content=member.mention, embed=welcome_embed)
+    except Exception:
+        pass
 
-@bot.hybrid_command(name="permit", description="Grant a member access to the coupon optimizer channel")
+@bot.hybrid_command(
+    name="revoke",
+    aliases=["removeaccess", "deny", "unpermit"],
+    description="Staff command: Revoke a member's access from the private CVS coupon optimizer"
+)
 @commands.guild_only()
-@commands.is_owner()
-@app_commands.default_permissions(administrator=True)
-async def permit_user(ctx, member: discord.Member):
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.describe(member="The member to remove access from", channel="Optional specific channel (defaults to CVS optimizer)")
+async def revoke_user(ctx, member: discord.Member, channel: Optional[discord.TextChannel] = None):
     await safely_delete_message(ctx)
-    channel = discord.utils.get(ctx.guild.text_channels, name="aio-coupon-optimizer")
-    if not channel:
-        await ctx.send("❌ `#aio-coupon-optimizer` doesn't exist yet. Run `/setup` or `!setup` first!", delete_after=5)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to revoke access.", delete_after=6)
         return
-    await channel.set_permissions(member, view_channel=True, send_messages=True, read_messages=True)
-    await ctx.send(f"✅ Granted access to {member.mention}!", delete_after=5)
+
+    target_channel = channel or find_cvs_optimizer_channel(ctx.guild)
+    if not target_channel:
+        await ctx.send("❌ CVS coupon optimizer channel not found!", delete_after=6)
+        return
+
+    await target_channel.set_permissions(member, overwrite=None, reason=f"Revoked access by staff: {ctx.author}")
+    embed = discord.Embed(
+        title="🔒 Access Revoked",
+        description=f"🔒 Revoked access for {member.mention} from {target_channel.mention}.",
+        color=COLOR_WARN
+    )
+    embed.set_footer(text=f"Action by {ctx.author.display_name}")
+    await ctx.send(embed=embed)
 
 @bot.hybrid_command(
     name="formatserver",
@@ -4866,7 +4994,8 @@ async def format_server(ctx):
             "**Blueprint Structure:**\n"
             "• 📌 **INFORMATION**: `#📢-announcements`, `#📜-rules`, `#👋-welcome`\n"
             "• 💬 **COMMUNITY**: `#💬-general-chat`, `#🤖-bot-commands`, `#💡-suggestions`\n"
-            "• 🛍️ **CVS & SAVINGS**: `#🛒-coupon-optimizer`, `#🌮🍕-food-rewards`, `#🏷️-deals-and-savings`, `#🧾-receipt-brags`\n"
+            "• 🔒 **PRIVATE CVS**: `#🛒-coupon-optimizer` *(private channel! Staff grant access with `/permit @user`)*\n"
+            "• 🛍️ **SAVINGS & REWARDS**: `#🌮🍕-food-rewards`, `#🏷️-deals-and-savings`, `#🧾-receipt-brags`\n"
             "• 🎫 **SUPPORT**: `#📩-open-a-ticket` *(with Ticket Panel!)*\n"
             "• 🔊 **VOICE CHANNELS**: `🔊 General Voice`, `🔊 Lounge 1`\n"
             "• 🛡️ **STAFF ZONE**: `#🛡️-staff-chat`, `#📜-mod-logs` *(staff-only)*\n\n"

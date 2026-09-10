@@ -156,7 +156,8 @@ class TestAIOBot(unittest.TestCase):
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
             "balance", "daily", "pay", "leaderboard",
             "accounts", "cvsaccount",
-            "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel"
+            "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel",
+            "revoke"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -205,8 +206,9 @@ class TestAIOBot(unittest.TestCase):
             "modlogs": "manage_messages",
             "case": "manage_messages",
             "note": "manage_messages",
-            "setup": "is_owner",
-            "permit": "is_owner",
+            "setup": "manage_channels",
+            "permit": "manage_channels",
+            "revoke": "manage_channels",
             "run-stress-test": "is_owner",
             "delete-last-trip": "is_owner",
             "accounts": "is_owner",
@@ -636,6 +638,53 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Delete All Old Channels", button_labels)
         self.assertIn("Wipe All Channels", button_labels)
         self.assertIn("Cancel", button_labels)
+
+    def test_private_cvs_and_permit_helpers(self):
+        cat_names = main.get_blueprint_category_names()
+        self.assertIn("🔒 PRIVATE CVS", cat_names)
+        self.assertIn("🛍️ SAVINGS & REWARDS", cat_names)
+
+        class MockRole:
+            def __init__(self, name):
+                self.name = name
+
+        class MockMember:
+            def __init__(self, roles=None, manage_channels=False, admin=False):
+                self.roles = roles or []
+                self.guild_permissions = main.discord.Permissions(administrator=admin, manage_channels=manage_channels)
+
+        staff_member = MockMember(roles=[MockRole("Staff")])
+        self.assertTrue(main.is_staff_or_admin(staff_member))
+
+        mod_member = MockMember(roles=[MockRole("Moderator")])
+        self.assertTrue(main.is_staff_or_admin(mod_member))
+
+        admin_perm_member = MockMember(admin=True)
+        self.assertTrue(main.is_staff_or_admin(admin_perm_member))
+
+        regular_member = MockMember(roles=[MockRole("Member")])
+        self.assertFalse(main.is_staff_or_admin(regular_member))
+
+        # Test find_cvs_optimizer_channel
+        class MockTextChannel:
+            def __init__(self, name):
+                self.name = name
+                self.category = None
+
+        class MockGuildWithChannels:
+            def __init__(self, text_channels):
+                self.text_channels = text_channels
+                self.categories = []
+
+        guild1 = MockGuildWithChannels([MockTextChannel("🛒-coupon-optimizer")])
+        found = main.find_cvs_optimizer_channel(guild1)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.name, "🛒-coupon-optimizer")
+
+        guild2 = MockGuildWithChannels([MockTextChannel("aio-coupon-optimizer")])
+        found2 = main.find_cvs_optimizer_channel(guild2)
+        self.assertIsNotNone(found2)
+        self.assertEqual(found2.name, "aio-coupon-optimizer")
 
 
 if __name__ == '__main__':
