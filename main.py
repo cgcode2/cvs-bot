@@ -1,9 +1,10 @@
+from __future__ import annotations
 import io
 import urllib.parse
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Literal, Optional, Dict, Any, List, Tuple
+from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Set, Callable
 import asyncio
 import itertools
 import copy
