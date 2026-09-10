@@ -2844,6 +2844,68 @@ async def purge_channels_helper(
 
     return deleted_count
 
+async def refresh_channel_content(channel: discord.TextChannel, author_id: int, clear_history: bool = True) -> str:
+    """
+    Clears channel messages (if clear_history=True) and posts the latest
+    updated embed/buttons for recognized blueprint channels (Food Rewards, Ticket Panel, Coupon Optimizer).
+    """
+    if is_protected_channel(channel):
+        raise ValueError("Protected channel (#form-automation) cannot be reset or cleared.")
+
+    if clear_history:
+        try:
+            await channel.purge(limit=100)
+        except Exception as e:
+            print(f"⚠️ Notice on channel purge #{channel.name}: {e}", file=sys.stderr)
+
+    ch_name = channel.name.lower()
+
+    if "food" in ch_name or "rewards" in ch_name:
+        food_embed = build_food_accounts_embed()
+        await channel.send(embed=food_embed, view=FoodAccountPurchaseView())
+        return "🌮🍕 Fast Food Rewards Store"
+
+    elif "ticket" in ch_name or "open" in ch_name:
+        panel_embed = discord.Embed(
+            title="🎫 Support & Order Help",
+            description=(
+                "Need assistance, have a question, or want to contact staff?\n\n"
+                "**How it works:**\n"
+                "▸ 🔒 A **private channel** is created just for you and staff\n"
+                "▸ 👥 Only you and server staff can see it\n"
+                "▸ ⚡ Staff will respond as soon as possible\n\n"
+                "Click the button below to open your ticket."
+            ),
+            color=COLOR_PRIMARY
+        )
+        panel_embed.set_footer(text="AIO Bot Custom Ticket Center • One ticket per user")
+        await channel.send(embed=panel_embed, view=TicketLaunchView())
+        return "🎫 Support & Order Ticket Panel"
+
+    elif "coupon" in ch_name or "optimizer" in ch_name:
+        cart_embed = build_cart_embed(author_id)
+        cart_embed.title = "🔒 Private CVS Coupon Optimizer"
+        cart_embed.description = (
+            "Welcome to the **Private CVS Coupon Optimizer**!\n\n"
+            "• 🔒 **Private Access:** Only staff and permitted members can view this channel.\n"
+            "• 👥 **Staff Controls:** Staff can grant member access with `/permit @member` or revoke with `/revoke @member`.\n"
+            "• 🛒 **Shopping Tools:** Click the buttons below or run `/panel` / `/add` to optimize your shopping trips!"
+        )
+        await channel.send(embed=cart_embed, view=QuickCartActionView(author_id))
+        return "🔒 Private CVS Coupon Optimizer"
+
+    else:
+        for sec in FORMAT_SERVER_BLUEPRINT:
+            for c_def in sec.get("channels", []):
+                if c_def["name"].lower() == channel.name.lower() or channel.name.lower() in c_def["name"].lower():
+                    if c_def.get("topic"):
+                        try:
+                            await channel.edit(topic=c_def["topic"])
+                        except Exception:
+                            pass
+                    return f"Channel #{channel.name}"
+        return f"Channel #{channel.name}"
+
 async def execute_format_server(guild: discord.Guild, author: discord.Member, clean_old: bool = False) -> discord.Embed:
     created_cats = 0
     created_channels = 0
@@ -2934,6 +2996,12 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                             await existing.edit(category=cat)
                         except Exception:
                             pass
+                    # Refresh existing blueprint panel channels with latest info
+                    if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮🍕-food-rewards"):
+                        try:
+                            await refresh_channel_content(existing, author.id, clear_history=clean_old)
+                        except Exception as e:
+                            print(f"⚠️ Error refreshing existing channel {ch_name}: {e}", file=sys.stderr)
                 else:
                     ch_overwrites = {}
                     if section.get("private") or section.get("staff_only"):
@@ -2948,36 +3016,11 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                     )
                     created_channels += 1
 
-                    if ch_name == "📩-open-a-ticket":
-                        panel_embed = discord.Embed(
-                            title="🎫 Support & Order Help",
-                            description=(
-                                "Need assistance, have a question, or want to contact staff?\n\n"
-                                "**How it works:**\n"
-                                "▸ 🔒 A **private channel** is created just for you and staff\n"
-                                "▸ 👥 Only you and server staff can see it\n"
-                                "▸ ⚡ Staff will respond as soon as possible\n\n"
-                                "Click the button below to open your ticket."
-                            ),
-                            color=COLOR_PRIMARY
-                        )
-                        panel_embed.set_footer(text="AIO Bot Custom Ticket Center • One ticket per user")
-                        await new_ch.send(embed=panel_embed, view=TicketLaunchView())
-
-                    elif ch_name == "🛒-coupon-optimizer":
-                        cart_embed = build_cart_embed(author.id)
-                        cart_embed.title = "🔒 Private CVS Coupon Optimizer"
-                        cart_embed.description = (
-                            "Welcome to the **Private CVS Coupon Optimizer**!\n\n"
-                            "• 🔒 **Private Access:** Only staff and permitted members can view this channel.\n"
-                            "• 👥 **Staff Controls:** Staff can grant member access with `/permit @member` or revoke with `/revoke @member`.\n"
-                            "• 🛒 **Shopping Tools:** Click the buttons below or run `/panel` / `/add` to optimize your shopping trips!"
-                        )
-                        await new_ch.send(embed=cart_embed, view=QuickCartActionView(author.id))
-
-                    elif ch_name == "🌮🍕-food-rewards":
-                        food_embed = build_food_accounts_embed()
-                        await new_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
+                    if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮🍕-food-rewards"):
+                        try:
+                            await refresh_channel_content(new_ch, author.id, clear_history=False)
+                        except Exception as e:
+                            print(f"⚠️ Error deploying panel to new channel {ch_name}: {e}", file=sys.stderr)
 
             elif ch_type == "voice":
                 existing_vc = discord.utils.get(guild.voice_channels, name=ch_name)
@@ -5465,6 +5508,67 @@ async def post_ticket_panel(ctx, channel: Optional[discord.TextChannel] = None):
     await target_channel.send(embed=embed, view=view)
     if target_channel.id != ctx.channel.id:
         await ctx.send(f"✅ Ticket panel deployed to {target_channel.mention}!", delete_after=5)
+
+
+@bot.hybrid_command(
+    name="resetchannel",
+    aliases=["refreshchannel", "updatechannel", "channelreset"],
+    description="Staff command: Clear and refresh an individual channel with its latest updated bot panel and info"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.describe(
+    channel="Channel to reset/refresh (optional, defaults to current channel)",
+    clear_history="Whether to purge previous messages in the channel (default True)"
+)
+async def resetchannel_cmd(
+    ctx: commands.Context,
+    channel: Optional[discord.TextChannel] = None,
+    clear_history: bool = True
+):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not ctx.author.guild_permissions.manage_channels and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ You need Manage Channels permission or Staff role to reset channels.", delete_after=6)
+        return
+
+    target_ch = channel or ctx.channel
+    if not isinstance(target_ch, discord.TextChannel):
+        await ctx.send("❌ This command must be run in a text channel.", delete_after=6)
+        return
+
+    if is_protected_channel(target_ch):
+        await ctx.send("🛡️ **Protected Channel:** `#form-automation` is permanently protected and CANNOT be reset, cleared, or modified!", delete_after=8)
+        return
+
+    is_same_ch = (target_ch.id == ctx.channel.id)
+    status_msg = None
+    if not is_same_ch:
+        status_msg = await ctx.send(f"⏳ **Refreshing channel {target_ch.mention}...**")
+
+    try:
+        deployed_name = await refresh_channel_content(target_ch, ctx.author.id, clear_history=clear_history)
+        embed = discord.Embed(
+            title="✨ Channel Successfully Refreshed",
+            description=(
+                f"Successfully reset and refreshed **{target_ch.mention}**!\n\n"
+                f"• 📋 **Panel Deployed:** {deployed_name}\n"
+                f"• 🧹 **Messages Purged:** {'Yes (Previous messages cleaned)' if clear_history else 'No (Previous messages kept)'}\n"
+                "• 🔄 Now displaying the most up-to-date info and interactive buttons."
+            ),
+            color=COLOR_SUCCESS
+        )
+        embed.set_footer(text="AIO Channel Management Suite")
+        if is_same_ch:
+            await target_ch.send(embed=embed, delete_after=10)
+        else:
+            await status_msg.edit(content=None, embed=embed)
+    except Exception as e:
+        err_text = f"❌ Error resetting channel {target_ch.mention}: {e}"
+        if is_same_ch:
+            await target_ch.send(err_text, delete_after=8)
+        else:
+            await status_msg.edit(content=err_text)
 
 async def _do_say(channel: discord.TextChannel, text: Optional[str], attachments: List[discord.Attachment]) -> bool:
     files = []

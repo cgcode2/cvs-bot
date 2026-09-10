@@ -155,9 +155,9 @@ class TestAIOBot(unittest.TestCase):
             "lockdown", "filter", "modlogs", "case", "note",
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
             "balance", "daily", "pay", "leaderboard",
-            "accounts", "cvsaccount",
+            "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel",
             "revoke", "paid", "complete", "otp", "deliver", "claim", "close",
-            "invoice", "orderstats", "clearorder", "fixroles"
+            "invoice", "orderstats", "clearorder", "fixroles", "resetchannel"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -911,6 +911,55 @@ class TestAIOBot(unittest.TestCase):
         finally:
             main.staff_payment_db.clear()
             main.staff_payment_db.update(saved_db)
+
+    def test_refresh_channel_content_and_protection(self):
+        import asyncio
+
+        class MockChannel:
+            def __init__(self, name: str):
+                self.name = name
+                self.messages_sent = []
+                self.purged = False
+
+            async def purge(self, limit=100):
+                self.purged = True
+
+            async def send(self, content=None, embed=None, view=None, **kwargs):
+                self.messages_sent.append({"content": content, "embed": embed, "view": view})
+
+            async def edit(self, **kwargs):
+                pass
+
+        # 1. Protected channel form-automation cannot be reset (raises ValueError)
+        protected_ch = MockChannel("form-automation")
+        with self.assertRaises(ValueError):
+            asyncio.run(main.refresh_channel_content(protected_ch, author_id=123, clear_history=True))
+        self.assertFalse(protected_ch.purged)
+
+        # 2. Food rewards channel deploys food accounts embed and FoodAccountPurchaseView
+        food_ch = MockChannel("🌮🍕-food-rewards")
+        res_food = asyncio.run(main.refresh_channel_content(food_ch, author_id=123, clear_history=True))
+        self.assertTrue(food_ch.purged)
+        self.assertIn("Fast Food Rewards", res_food)
+        self.assertEqual(len(food_ch.messages_sent), 1)
+        self.assertIsInstance(food_ch.messages_sent[0]["view"], main.FoodAccountPurchaseView)
+        self.assertIn("Fast Food Preloaded", food_ch.messages_sent[0]["embed"].title)
+
+        # 3. Ticket channel deploys TicketLaunchView
+        ticket_ch = MockChannel("📩-open-a-ticket")
+        res_ticket = asyncio.run(main.refresh_channel_content(ticket_ch, author_id=123, clear_history=True))
+        self.assertTrue(ticket_ch.purged)
+        self.assertIn("Support", res_ticket)
+        self.assertEqual(len(ticket_ch.messages_sent), 1)
+        self.assertIsInstance(ticket_ch.messages_sent[0]["view"], main.TicketLaunchView)
+
+        # 4. Coupon optimizer channel deploys QuickCartActionView
+        opt_ch = MockChannel("🛒-coupon-optimizer")
+        res_opt = asyncio.run(main.refresh_channel_content(opt_ch, author_id=123, clear_history=True))
+        self.assertTrue(opt_ch.purged)
+        self.assertIn("Coupon Optimizer", res_opt)
+        self.assertEqual(len(opt_ch.messages_sent), 1)
+        self.assertIsInstance(opt_ch.messages_sent[0]["view"], main.QuickCartActionView)
 
 
 if __name__ == '__main__':
