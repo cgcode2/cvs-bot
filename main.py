@@ -263,7 +263,7 @@ def is_staff_member(member: Optional[Any]) -> bool:
     if member is None:
         return False
     guild = getattr(member, "guild", None)
-    if guild and getattr(guild, "owner_id", None) == member.id:
+    if guild and getattr(guild, "owner_id", None) == getattr(member, "id", None):
         return True
     perms = getattr(member, "guild_permissions", None)
     if perms:
@@ -272,6 +272,27 @@ def is_staff_member(member: Optional[Any]) -> bool:
     staff_roles = {"staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "operator", "founder", "founders", "owner", "co-founder"}
     roles = getattr(member, "roles", [])
     return any(getattr(r, "name", "").lower() in staff_roles for r in roles)
+
+def is_admin_member(member: Optional[Any]) -> bool:
+    """Checks if a user is server owner, bot owner, guild administrator,
+    or holds a role designated as Founder, Owner, or Admin."""
+    if member is None:
+        return False
+    guild = getattr(member, "guild", None)
+    if guild and getattr(guild, "owner_id", None) == getattr(member, "id", None):
+        return True
+    if getattr(bot, "owner_id", None) and getattr(bot, "owner_id", None) == getattr(member, "id", None):
+        return True
+    perms = getattr(member, "guild_permissions", None)
+    if perms and getattr(perms, "administrator", False):
+        return True
+    admin_roles = {"admin", "administrator", "founder", "founders", "owner", "co-founder", "co founder", "head admin", "lead admin"}
+    roles = getattr(member, "roles", [])
+    for r in roles:
+        r_name = getattr(r, "name", "").lower()
+        if r_name in admin_roles or "founder" in r_name or "admin" in r_name:
+            return True
+    return False
 
 def resolve_member_from_input(guild: Optional[discord.Guild], query: str) -> Optional[discord.Member]:
     """Resolves a guild member from mention (<@123>), user ID (123), or username / nickname."""
@@ -3133,6 +3154,9 @@ class ModKickModal(discord.ui.Modal, title="👢 Kick Member"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can kick members.", ephemeral=True)
+            return
         guild = interaction.guild
         member = resolve_member_from_input(guild, self.member_query.value)
         if not member:
@@ -3176,6 +3200,9 @@ class ModBanModal(discord.ui.Modal, title="🔨 Ban Member"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can ban members.", ephemeral=True)
+            return
         guild = interaction.guild
         member = resolve_member_from_input(guild, self.member_query.value)
         if not member:
@@ -3512,26 +3539,26 @@ def build_staff_modpanel_embed() -> discord.Embed:
             "**🛡️ Member Discipline:**\n"
             "• **⚠️ Warn:** Issue an official logged warning to a member\n"
             "• **⏱️ Timeout:** Temporarily mute/timeout a member\n"
-            "• **👢 Kick:** Remove a member from the server\n"
-            "• **🔨 Ban:** Ban a member and optionally purge messages\n"
+            "• **👢 Kick:** *(Admin Only)* Remove a member from the server\n"
+            "• **🔨 Ban:** *(Admin Only)* Ban a member and optionally purge messages\n"
             "• **🧹 Purge:** Clean up recent messages in this channel\n\n"
             "**🔒 Channel & Server Security:**\n"
             "• **🔒 Lock / 🔓 Unlock:** Restrict or restore messaging in this channel\n"
             "• **⏳ Slowmode:** Configure channel message cooldown\n"
-            "• **🚨 Server Lockdown:** Emergency freeze across text channels\n\n"
+            "• **🚨 Server Lockdown:** *(Admin Only)* Emergency freeze across text channels\n\n"
             "**💵 Store, Billing & Hierarchy:**\n"
             "• **💵 Create Invoice:** Generate official bill with CashApp / Venmo links\n"
             "• **📈 Order Stats:** View completed sales, revenue & order log\n"
-            "• **👥 Fix Roles:** Consolidate Moderator roles & remove redundant Staff\n"
-            "• **🌮 Refresh Store:** Update `#🌮🍕-food-rewards` with latest stock\n\n"
+            "• **👥 Fix Roles:** *(Admin Only)* Consolidate Moderator roles & remove redundant Staff\n"
+            "• **🌮 Refresh Store:** *(Admin Only)* Update `#🌮🍕-food-rewards` with latest stock\n\n"
             "**🎟️ Panels & Server Info:**\n"
-            "• **🎟️ Refresh Tickets:** Refresh the ticket deployment panel\n"
-            "• **🛒 Refresh Hub:** Refresh the Coupon Optimizer Hub\n"
+            "• **🎟️ Refresh Tickets:** *(Admin Only)* Refresh the ticket deployment panel\n"
+            "• **🛒 Refresh Hub:** *(Admin Only)* Refresh the Coupon Optimizer Hub\n"
             "• **ℹ️ Server Info:** View guild statistics and diagnostics"
         ),
         color=COLOR_PRIMARY
     )
-    embed.set_footer(text="AIO Bot Staff Control Center • Staff & Admin Only")
+    embed.set_footer(text="AIO Bot Staff Control Center • Admin Only actions marked accordingly")
     return embed
 
 
@@ -3560,10 +3587,16 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Kick", style=discord.ButtonStyle.danger, emoji="👢", custom_id="modpanel_kick", row=0)
     async def btn_kick(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can kick members.", ephemeral=True)
+            return
         await interaction.response.send_modal(ModKickModal())
 
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="🔨", custom_id="modpanel_ban", row=0)
     async def btn_ban(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can ban members.", ephemeral=True)
+            return
         await interaction.response.send_modal(ModBanModal())
 
     @discord.ui.button(label="Purge", style=discord.ButtonStyle.secondary, emoji="🧹", custom_id="modpanel_purge", row=0)
@@ -3590,6 +3623,9 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Server Lockdown", style=discord.ButtonStyle.danger, emoji="🚨", custom_id="modpanel_lockdown", row=1)
     async def btn_lockdown(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can activate a server lockdown.", ephemeral=True)
+            return
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("❌ Server not found.", ephemeral=True)
@@ -3651,6 +3687,9 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Fix Roles", style=discord.ButtonStyle.primary, emoji="👥", custom_id="modpanel_fixroles", row=2)
     async def btn_fixroles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can audit and fix server roles.", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         summary = await fix_server_roles(interaction.guild)
         deleted_mods = len(summary.get("deleted_moderator_roles", []))
@@ -3667,6 +3706,9 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Refresh Store", style=discord.ButtonStyle.success, emoji="🌮", custom_id="modpanel_refresh_food", row=2)
     async def btn_refresh_food(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can refresh the store channel.", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         ch = None
@@ -3683,6 +3725,9 @@ class StaffModPanelButtonView(discord.ui.View):
     # --- ROW 3: PANELS & INFO ---
     @discord.ui.button(label="Refresh Tickets", style=discord.ButtonStyle.primary, emoji="🎟️", custom_id="modpanel_refresh_tickets", row=3)
     async def btn_refresh_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can refresh the ticket channel.", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         ch = None
@@ -3698,6 +3743,9 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Refresh Hub", style=discord.ButtonStyle.primary, emoji="🛒", custom_id="modpanel_refresh_coupon", row=3)
     async def btn_refresh_coupon(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can refresh the coupon hub.", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         ch = None
@@ -7065,8 +7113,8 @@ async def clearorder_cmd(ctx: commands.Context, order_id: str):
 @app_commands.default_permissions(manage_roles=True)
 async def fixroles_cmd(ctx: commands.Context):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
-        await ctx.send("⛔ Only server staff or founders can fix server roles.", delete_after=6)
+    if not is_admin_member(ctx.author):
+        await ctx.send("⛔ Only server administrators or founders can fix server roles.", delete_after=6)
         return
 
     status_msg = await ctx.send("⏳ **Auditing and fixing server roles...** Please wait.")

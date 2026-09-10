@@ -1106,6 +1106,63 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("setupfeatures", all_feat_cmd.aliases)
 
 
+    def test_is_admin_member_and_modpanel_restrictions(self):
+        class MockRole:
+            def __init__(self, name: str):
+                self.name = name
+
+        class MockGuild:
+            def __init__(self, owner_id=999):
+                self.owner_id = owner_id
+
+        class MockMember:
+            def __init__(self, mid, roles=None, is_admin=False, guild=None):
+                self.id = mid
+                self.roles = roles or []
+                self.guild = guild or MockGuild(owner_id=999)
+                self.guild_permissions = main.discord.Permissions(administrator=is_admin)
+
+        g = MockGuild(owner_id=999)
+
+        # 1. Server owner is admin
+        owner_mem = MockMember(999, roles=[], is_admin=False, guild=g)
+        self.assertTrue(main.is_admin_member(owner_mem))
+
+        # 2. Discord Administrator permission
+        admin_perm_mem = MockMember(101, roles=[], is_admin=True, guild=g)
+        self.assertTrue(main.is_admin_member(admin_perm_mem))
+
+        # 3. Founder role
+        founder_mem = MockMember(102, roles=[MockRole("Founder")], is_admin=False, guild=g)
+        self.assertTrue(main.is_admin_member(founder_mem))
+
+        # 4. Admin role
+        admin_role_mem = MockMember(103, roles=[MockRole("Admin")], is_admin=False, guild=g)
+        self.assertTrue(main.is_admin_member(admin_role_mem))
+
+        # 5. Regular Moderator: is_staff=True, but is_admin=False
+        mod_mem = MockMember(104, roles=[MockRole("Moderator")], is_admin=False, guild=g)
+        self.assertTrue(main.is_staff_member(mod_mem))
+        self.assertFalse(main.is_admin_member(mod_mem))
+
+        # 6. Regular Staff: is_staff=True, but is_admin=False
+        staff_mem = MockMember(105, roles=[MockRole("Staff")], is_admin=False, guild=g)
+        self.assertTrue(main.is_staff_member(staff_mem))
+        self.assertFalse(main.is_admin_member(staff_mem))
+
+        # 7. Regular Member: both False
+        reg_mem = MockMember(106, roles=[MockRole("Member")], is_admin=False, guild=g)
+        self.assertFalse(main.is_staff_member(reg_mem))
+        self.assertFalse(main.is_admin_member(reg_mem))
+
+        # 8. Mod Panel embed mentions Admin Only
+        embed = main.build_staff_modpanel_embed()
+        self.assertIn("Admin Only", embed.description)
+        self.assertIn("Kick", embed.description)
+        self.assertIn("Ban", embed.description)
+        self.assertIn("Server Lockdown", embed.description)
+
+
 if __name__ == '__main__':
     unittest.main()
 
