@@ -2144,11 +2144,13 @@ class TicketControlView(discord.ui.View):
 
         update_ticket_status(interaction.channel.id, "paid")
         embed = discord.Embed(
-            title="💰 Payment Verified & Received",
+            title="💰 Payment Confirmed!",
             description=(
-                f"Payment has been confirmed by {interaction.user.mention}!\n\n"
-                "• **Status:** `PAID / PROCESSING`\n"
-                "• Staff is preparing your account credentials or fulfillment now."
+                f"✅ Payment has been verified by {interaction.user.mention}.\n\n"
+                "**📦 What happens next:**\n"
+                "▸ Staff is now preparing your account credentials\n"
+                "▸ You will receive your order details shortly\n"
+                "▸ Ping staff if you have any questions"
             ),
             color=0x2ecc71
         )
@@ -2166,15 +2168,17 @@ class TicketControlView(discord.ui.View):
 
         update_ticket_status(interaction.channel.id, "completed")
         embed = discord.Embed(
-            title="🎉 Order Fulfilled & Completed!",
+            title="🎉 Order Complete!",
             description=(
-                f"Your order has been completed by {interaction.user.mention}!\n\n"
-                "Thank you for shopping with us! If you loved the service, drop a shoutout in **#receipt-brags**.\n\n"
-                "You may click **Close Ticket** below when finished."
+                f"Your order has been fulfilled by {interaction.user.mention}!\n\n"
+                "**🙏 Thank you for your purchase!**\n"
+                "▸ We hope you enjoy your rewards!\n"
+                "▸ Feel free to drop a shoutout in **#receipt-brags** 🎉\n"
+                "▸ When you're done here, click **Close Ticket** below."
             ),
             color=0x9b59b6
         )
-        embed.set_footer(text=f"Fulfilled by {interaction.user.display_name} • AIO Fulfillment Suite")
+        embed.set_footer(text=f"Fulfilled by {interaction.user.display_name} • AIO Order Suite")
         await interaction.channel.send(embed=embed)
         await interaction.response.send_message("✅ Order marked as completed!", ephemeral=True)
 
@@ -2285,15 +2289,18 @@ class TicketLaunchView(discord.ui.View):
         embed = discord.Embed(
             title=f"🎫 Support Ticket #{ticket_num:04d}",
             description=(
-                f"Welcome {interaction.user.mention}! Support staff has been notified.\n\n"
-                "Please describe your issue or inquiry in detail below. An operator will be with you shortly."
+                f"Hey {interaction.user.mention}, your ticket has been opened!\n\n"
+                "**💬 What to do next**\n"
+                "▸ Describe your issue or question in detail below.\n"
+                "▸ A staff member will be with you shortly.\n"
+                "▸ Please be patient — do **not** ping staff repeatedly."
             ),
             color=COLOR_PRIMARY
         )
-        embed.add_field(name="👤 Opened By", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+        embed.add_field(name="👤 Opened By", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
         embed.add_field(name="⏰ Opened", value=f"<t:{int(time.time())}:R>", inline=True)
-        embed.add_field(name="📌 Status", value="🟢 Open (Unclaimed)", inline=True)
-        embed.set_footer(text="Use the control buttons below to manage this ticket")
+        embed.add_field(name="📌 Status", value="🟢 Open · Unclaimed", inline=True)
+        embed.set_footer(text="AIO Support Suite • Use the buttons below to manage this ticket")
 
         mention_targets = [interaction.user.mention]
         if founder_role:
@@ -2421,32 +2428,37 @@ class FoodAccountOrderModal(discord.ui.Modal):
         total_est = qty * self.price
         notes_val = self.notes_input.value.strip() or "Standard Payment"
 
+        if brand_slug == "tacobell":
+            instructions = (
+                "1️⃣  Staff will provide the account email and payment address.\n"
+                "2️⃣  Enter the email into the **Taco Bell app** and tap **Send Code**.\n"
+                "3️⃣  Ping staff here — they will immediately retrieve your OTP code!"
+            )
+        else:
+            instructions = (
+                "1️⃣  Staff will provide payment details and your Hut Rewards credentials.\n"
+                "2️⃣  Log in on the **Pizza Hut app** or website (delivery recommended).\n"
+                "3️⃣  Stack **2–3 rewards per order** for maximum savings!"
+            )
+
         embed = discord.Embed(
             title=f"{'🌮' if brand_slug == 'tacobell' else '🍕'} {self.brand} Order #{ticket_num:04d}",
             description=(
                 f"Welcome {interaction.user.mention}! Support staff has been notified of your order.\n\n"
-                f"**Order Details:**\n"
-                f"• Item: **{self.brand} Preloaded Account(s)**\n"
-                f"• Quantity: **{qty} account(s)** (${self.price:.2f} each)\n"
-                f"• Estimated Total: **${total_est:.2f}**\n"
-                f"• Payment Note: `{notes_val}`\n\n"
-                f"**Instructions:**\n"
-                + (
-                    "1. Staff will provide the account email and payment address.\n"
-                    "2. Enter the email into the **Taco Bell app** and tap **Send code**.\n"
-                    "3. Ping staff here and they will immediately retrieve your OTP code!"
-                    if brand_slug == "tacobell" else
-                    "1. Staff will provide payment details and your Hut Rewards credentials.\n"
-                    "2. Log in directly on Pizza Hut app / web (delivery recommended, pickup works too)!\n"
-                    "3. Recommended to stack 2–3 rewards per order for maximum savings."
-                )
+                f"**📋 Order Details**\n"
+                f"▸ Item: **{self.brand} Preloaded Account(s)**\n"
+                f"▸ Quantity: **{qty} account(s)** — \${self.price:.2f} each\n"
+                f"▸ Estimated Total: **\${total_est:.2f}**\n"
+                f"▸ Payment Note: `{notes_val}`\n\n"
+                f"**📌 How This Works**\n"
+                f"{instructions}"
             ),
             color=0x2ecc71
         )
-        embed.add_field(name="👤 Customer", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
-        embed.add_field(name="⏰ Time", value=f"<t:{int(time.time())}:R>", inline=True)
+        embed.add_field(name="👤 Customer", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="⏰ Opened", value=f"<t:{int(time.time())}:R>", inline=True)
         embed.add_field(name="📌 Status", value="🟢 Awaiting Staff", inline=True)
-        embed.set_footer(text="Staff: Click Claim Ticket below to handle this order")
+        embed.set_footer(text="AIO Order Suite • Staff: use Claim Ticket to handle this order")
 
         mention_targets = [interaction.user.mention]
         if founder_role:
@@ -2468,54 +2480,49 @@ def build_food_accounts_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🌮🍕 Fast Food Preloaded Rewards Accounts",
         description=(
-            "Get preloaded **Taco Bell** & **Pizza Hut** rewards accounts with dozens of free items and discounts already claimed!\n\n"
-            "Click **Buy Taco Bell** or **Buy Pizza Hut** below to open a ticket."
+            "Get preloaded **Taco Bell** & **Pizza Hut** rewards accounts with dozens of free items and discounts already loaded!\n\n"
+            "Click **Buy Taco Bell** or **Buy Pizza Hut** below to open an order ticket with staff."
         ),
         color=0xff7b00
     )
 
     tb_value = (
-        "**Price:** **$10.00 each** · *15 rewards already claimed on every account*\n\n"
-        "**How to order:** Open a ticket for Taco Bell → specify how many you want (1–10). After staff provides account email, enter that into Taco Bell app, tap Send code in the app, then ping staff and they will retrieve the OTP code.\n\n"
-        "**What's on every account:**\n"
-        "• $15 off your entire order\n"
-        "• $10 off your entire order\n"
-        "• $5 off your entire order\n"
-        "• extra $5 off\n"
-        "• 1 free individual item\n"
-        "• Free Chalupa Supreme (two of these)\n"
-        "• Free quesadilla\n"
-        "• Fire tier + Hot tier free rewards\n"
-        "• Welcome + Referral free rewards\n"
-        "• Birthday Baja Blast Freeze\n"
-        "• Free large fountain drink\n\n"
+        "💵 **\$10.00 per account** · 15 rewards pre-loaded on every account\n\n"
+        "**How to order:**\n"
+        "1️⃣  Open a ticket → tell staff how many you want (1–10)\n"
+        "2️⃣  Staff sends you an account email → enter it in the Taco Bell app\n"
+        "3️⃣  Tap **Send Code** in the app, then ping staff for the OTP\n\n"
+        "**Rewards on every account:**\n"
+        "▸ \$15 off your entire order\n"
+        "▸ \$10 off your entire order\n"
+        "▸ \$5 off your entire order + extra \$5 off\n"
+        "▸ 1 free individual item\n"
+        "▸ Free Chalupa Supreme ×2\n"
+        "▸ Free Quesadilla\n"
+        "▸ Fire & Hot tier free rewards\n"
+        "▸ Welcome & Referral free rewards\n"
+        "▸ Birthday Baja Blast Freeze\n"
+        "▸ Free large fountain drink\n\n"
         "🔥 **Loyalty is ACTIVE.** These are free / off-the-order rewards — not spend coupons."
     )
     embed.add_field(name="🌮 Taco Bell Rewards", value=tb_value, inline=False)
 
     ph_value = (
-        "**Price:** **$15.00 each** · *rewards stackable, recommended 2–3 at a time*\n\n"
-        "**Description:** Every account is a Hut Rewards login with these free rewards already claimed:\n\n"
-        "**Pizzas:**\n"
-        "• 2 Large pizzas\n"
-        "• 1 Medium pizza\n"
-        "• 1 Personal Pan pizza\n"
-        "• 1 Melt\n\n"
-        "**Sides:**\n"
-        "• 1 order of breadsticks\n"
-        "• 1 order of cheesy breadsticks\n"
-        "• 8 pc boneless wings\n"
-        "• Triple cheese mac\n"
-        "• Cinnamon sticks\n"
-        "• S'mores sticks\n"
-        "• Cinnabon cinnamon rolls\n"
-        "• 1 free dip cup (ranch / marinara / etc.)\n\n"
-        "**Drinks & dessert:**\n"
-        "• 1× 2-liter drink\n"
-        "• 1× 20oz drink\n"
-        "• Triple chocolate fudge brownie\n"
-        "• Huge ultimate cookie\n\n"
-        "🚗 *Delivery is recommended if you're shy lol — pickup works too.*"
+        "💵 **\$15.00 per account** · stack 2–3 at a time for maximum savings\n\n"
+        "Every account is a **Hut Rewards** login with these free rewards pre-loaded:\n\n"
+        "**🍕 Pizzas**\n"
+        "▸ 2 Large pizzas · 1 Medium pizza\n"
+        "▸ 1 Personal Pan pizza · 1 Melt\n\n"
+        "**🍞 Sides**\n"
+        "▸ Breadsticks · Cheesy breadsticks\n"
+        "▸ 8 pc Boneless wings · Triple Cheese Mac\n"
+        "▸ Cinnamon Sticks · S'mores Sticks · Cinnabon Rolls\n"
+        "▸ 1 free dip cup (ranch / marinara / etc.)\n\n"
+        "**🥤 Drinks & Dessert**\n"
+        "▸ 1× 2-liter drink · 1× 20oz drink\n"
+        "▸ Triple Chocolate Fudge Brownie\n"
+        "▸ Huge Ultimate Cookie\n\n"
+        "🚗 *Delivery is recommended — pickup works too.*"
     )
     embed.add_field(name="🍕 Pizza Hut Preloaded Accounts", value=ph_value, inline=False)
 
@@ -2823,17 +2830,18 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
 
                     if ch_name == "📩-open-a-ticket":
                         panel_embed = discord.Embed(
-                            title="🎫 Support & Inquiries",
+                            title="🎫 Support & Order Help",
                             description=(
-                                "Need assistance, have questions, or need to contact staff?\n\n"
-                                "Click the **Open Ticket** button below to create a private support channel with our team.\n\n"
-                                "• 🔒 Private 1-on-1 text channel\n"
-                                "• 👥 Only you and server staff have access\n"
-                                "• ⚡ Fast response from operators"
+                                "Need assistance, have a question, or want to contact staff?\n\n"
+                                "**How it works:**\n"
+                                "▸ 🔒 A **private channel** is created just for you and staff\n"
+                                "▸ 👥 Only you and server staff can see it\n"
+                                "▸ ⚡ Staff will respond as soon as possible\n\n"
+                                "Click the button below to open your ticket."
                             ),
                             color=COLOR_PRIMARY
                         )
-                        panel_embed.set_footer(text="AIO Bot Custom Ticket Center • Click below to open")
+                        panel_embed.set_footer(text="AIO Bot Custom Ticket Center • One ticket per user")
                         await new_ch.send(embed=panel_embed, view=TicketLaunchView())
 
                     elif ch_name == "🛒-coupon-optimizer":

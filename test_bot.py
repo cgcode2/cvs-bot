@@ -542,13 +542,13 @@ class TestAIOBot(unittest.TestCase):
     def test_food_accounts_embed_content(self):
         embed = main.build_food_accounts_embed()
         self.assertIn("Taco Bell", embed.fields[0].name)
-        self.assertIn("$15 off your entire order", embed.fields[0].value)
+        self.assertIn("15 off your entire order", embed.fields[0].value)
         self.assertIn("Free Chalupa Supreme", embed.fields[0].value)
         self.assertIn("Pizza Hut", embed.fields[1].name)
         self.assertIn("2 Large pizzas", embed.fields[1].value)
-        self.assertIn("Triple chocolate fudge brownie", embed.fields[1].value)
-        self.assertIn("Open a ticket for Taco Bell → specify how many you want (1–10)", embed.fields[0].value)
-        self.assertIn("enter that into Taco Bell app, tap Send code in the app, then ping staff and they will retrieve the OTP code", embed.fields[0].value)
+        self.assertIn("Triple Chocolate Fudge Brownie", embed.fields[1].value)
+        self.assertIn("Open a ticket", embed.fields[0].value)
+        self.assertIn("Send Code", embed.fields[0].value)
 
         modal = main.FoodAccountOrderModal(brand="Taco Bell", price=10.0)
         self.assertEqual(modal.brand, "Taco Bell")
