@@ -2340,7 +2340,7 @@ def build_food_accounts_embed() -> discord.Embed:
 
     tb_value = (
         "**Price:** **$10.00 each** · *15 rewards already claimed on every account*\n\n"
-        "**How to order:** Open a ticket → for Taco Bell → how many you want (1–10). After staff provides account email, enter that into taco bell app, tap Send code in the Taco Bell app, then ping staff and they will retrieve the OTP code.\n\n"
+        "**How to order:** Open a ticket for Taco Bell → specify how many you want (1–10). After staff provides account email, enter that into Taco Bell app, tap Send code in the app, then ping staff and they will retrieve the OTP code.\n\n"
         "**What's on every account:**\n"
         "• $15 off your entire order\n"
         "• $10 off your entire order\n"
