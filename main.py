@@ -57,8 +57,11 @@ def health():
     return jsonify({"status": "ok", "bot": "AIO Bot", "timestamp": datetime.now(timezone.utc).isoformat()})
 
 def run_server():
-    port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port)
+    try:
+        port = int(os.environ.get('PORT', 8000))
+        app.run(host='0.0.0.0', port=port)
+    except Exception as e:
+        print(f"⚠️ Web server encountered an error: {e}", file=sys.stderr)
 
 def keep_alive():
     server_thread = Thread(target=run_server, daemon=True)
@@ -6952,20 +6955,48 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 def main():
     keep_alive()
+    port = os.environ.get('PORT', 8000)
     token = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
     if not token or token.strip() in ("", "YOUR_BOT_TOKEN_HERE"):
-        print("=" * 60)
-        print("⚠️ NOTICE: DISCORD_BOT_TOKEN environment variable is not set.")
-        print("The background web server is running on port 8000.")
-        print("=" * 60)
+        print("=" * 60, flush=True)
+        print("⚠️ NOTICE: DISCORD_BOT_TOKEN environment variable is not set.", flush=True)
+        print(f"The background web server is running on port {port}.", flush=True)
+        print("Please configure DISCORD_BOT_TOKEN in your Railway / hosting service Variables tab.", flush=True)
+        print("=" * 60, flush=True)
         try:
             import time
             while True:
                 time.sleep(3600)
         except (KeyboardInterrupt, SystemExit):
-            print("Bot shutdown.")
+            print("Bot shutdown.", flush=True)
     else:
-        bot.run(token)
+        try:
+            bot.run(token.strip())
+        except discord.errors.PrivilegedIntentsRequired:
+            print("=" * 60, file=sys.stderr, flush=True)
+            print("❌ CRITICAL ERROR: Privileged Gateway Intents are not enabled in Discord Developer Portal!", file=sys.stderr, flush=True)
+            print("1. Go to https://discord.com/developers/applications", file=sys.stderr, flush=True)
+            print("2. Click your bot application -> 'Bot' tab.", file=sys.stderr, flush=True)
+            print("3. Scroll down to 'Privileged Gateway Intents'.", file=sys.stderr, flush=True)
+            print("4. Turn ON: 'MESSAGE CONTENT INTENT' and 'SERVER MEMBERS INTENT'.", file=sys.stderr, flush=True)
+            print("5. Click 'Save Changes' at the bottom and redeploy on Railway.", file=sys.stderr, flush=True)
+            print("=" * 60, file=sys.stderr, flush=True)
+            import time
+            while True:
+                time.sleep(3600)
+        except discord.errors.LoginFailure:
+            print("=" * 60, file=sys.stderr, flush=True)
+            print("❌ CRITICAL ERROR: Invalid DISCORD_BOT_TOKEN provided!", file=sys.stderr, flush=True)
+            print("Please check your Railway Variables and paste your valid Discord Bot Token.", file=sys.stderr, flush=True)
+            print("=" * 60, file=sys.stderr, flush=True)
+            import time
+            while True:
+                time.sleep(3600)
+        except Exception as e:
+            print(f"❌ Fatal error starting Discord bot: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            import time
+            while True:
+                time.sleep(3600)
 
 if __name__ == '__main__':
     main()
