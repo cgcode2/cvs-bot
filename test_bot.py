@@ -107,6 +107,10 @@ class TestAIOBot(unittest.TestCase):
         self.assertIsNotNone(mod_panel)
         quick_view = main.QuickCartActionView(12345)
         self.assertIsNotNone(quick_view)
+        self.assertIsNotNone(main.TicketLaunchView())
+        self.assertIsNotNone(main.TicketControlView())
+        self.assertIsNotNone(main.TicketCloseConfirmView())
+        self.assertIsNotNone(main.FormatServerConfirmView(12345))
 
     def test_smart_items_parser(self):
         # Multi-word items with commas
@@ -143,7 +147,8 @@ class TestAIOBot(unittest.TestCase):
             "lockdown", "filter", "modlogs", "case", "note",
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
             "balance", "daily", "pay", "leaderboard",
-            "accounts", "cvsaccount"
+            "accounts", "cvsaccount",
+            "formatserver", "ticketpanel"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -421,6 +426,84 @@ class TestAIOBot(unittest.TestCase):
         self.assertEqual(view.current_idx, 0)
         view.update_select()
         self.assertEqual(view.current_idx, 0)
+
+    def test_is_protected_channel(self):
+        class MockChannel:
+            def __init__(self, name, category=None):
+                self.name = name
+                self.category = category
+
+        # Direct name checks
+        self.assertTrue(main.is_protected_channel("form-automation"))
+        self.assertTrue(main.is_protected_channel("#form-automation"))
+        self.assertTrue(main.is_protected_channel("form_automation"))
+        self.assertTrue(main.is_protected_channel("FORM-AUTOMATION"))
+        self.assertTrue(main.is_protected_channel("Form Automation"))
+        self.assertTrue(main.is_protected_channel(MockChannel("form-automation")))
+        self.assertTrue(main.is_protected_channel(MockChannel("form_automation")))
+
+        # Category inheritance check
+        cat = MockChannel("form-automation")
+        child_ch = MockChannel("random-subchannel", category=cat)
+        self.assertTrue(main.is_protected_channel(child_ch))
+
+        # Unprotected checks
+        self.assertFalse(main.is_protected_channel("general-chat"))
+        self.assertFalse(main.is_protected_channel("aio-coupon-optimizer"))
+        self.assertFalse(main.is_protected_channel(MockChannel("general-chat")))
+        self.assertFalse(main.is_protected_channel(None))
+
+    def test_ticket_system_operations(self):
+        original_tickets = copy.deepcopy(main.tickets_db)
+        try:
+            main.tickets_db.clear()
+            main.tickets_db.update({"counter": 0, "tickets": {}})
+
+            # Create ticket record
+            rec = main.create_ticket_record(guild_id=123, channel_id=999, owner_id=456, channel_name="ticket-0001-test")
+            self.assertEqual(rec["id"], 1)
+            self.assertEqual(rec["status"], "open")
+            self.assertIsNone(rec["claimed_by"])
+
+            # Check active ticket
+            active_id = main.get_user_active_ticket(guild_id=123, user_id=456)
+            self.assertEqual(active_id, 999)
+            self.assertIsNone(main.get_user_active_ticket(guild_id=123, user_id=789))
+
+            # Claim ticket
+            claimed = main.claim_ticket_record(channel_id=999, staff_id=888)
+            self.assertTrue(claimed)
+            self.assertEqual(main.tickets_db["tickets"]["999"]["claimed_by"], 888)
+
+            # Close ticket
+            closed = main.close_ticket_record(channel_id=999)
+            self.assertTrue(closed)
+            self.assertEqual(main.tickets_db["tickets"]["999"]["status"], "closed")
+            self.assertIsNone(main.get_user_active_ticket(guild_id=123, user_id=456))
+
+            # Test transcript formatting
+            class MockMessage:
+                def __init__(self, author_name, content, created_at):
+                    self.author = author_name
+                    self.display_name = author_name
+                    self.clean_content = content
+                    self.created_at = created_at
+                    self.attachments = []
+
+            now = datetime(2026, 9, 10, 14, 0, 0)
+            msgs = [
+                MockMessage("Alice", "Hello I need help with my coupons!", now),
+                MockMessage("BobStaff", "Sure! I can help you with that.", now)
+            ]
+            transcript = main.format_ticket_transcript(msgs, ticket_id=1, owner_id=456)
+            self.assertIn("AIO BOT TICKET TRANSCRIPT", transcript)
+            self.assertIn("Ticket Number: #0001", transcript)
+            self.assertIn("Hello I need help with my coupons!", transcript)
+            self.assertIn("Sure! I can help you with that.", transcript)
+        finally:
+            main.tickets_db.clear()
+            main.tickets_db.update(original_tickets)
+            main.save_tickets()
 
 
 if __name__ == '__main__':

@@ -135,6 +135,105 @@ filters_db: Dict[str, List[str]] = load_json_file(FILTERS_FILE, {})
 mod_cases_db: Dict[str, Any] = load_json_file(MOD_CASES_FILE, {"next_id": 1, "cases": []})
 mod_notes_db: Dict[str, Dict[str, List[Dict[str, Any]]]] = load_json_file(MOD_NOTES_FILE, {})
 
+# --- STRICT CHANNEL PROTECTION GUARDRAIL ---
+def is_protected_channel(channel: Any) -> bool:
+    """Returns True if the channel or its category is strictly protected (#form-automation)
+    and must NEVER be touched, edited, nuked, moved, or deleted under any circumstance.
+    """
+    if channel is None:
+        return False
+    if isinstance(channel, str):
+        name = channel
+    else:
+        name = getattr(channel, "name", "")
+        # Also check parent category if applicable
+        parent_cat = getattr(channel, "category", None)
+        if parent_cat is not None and is_protected_channel(parent_cat):
+            return True
+    if not isinstance(name, str):
+        return False
+    clean_name = name.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
+    return "formautomation" in clean_name
+
+# --- TICKETS PERSISTENCE ---
+TICKETS_FILE = "tickets_data.json"
+tickets_db: Dict[str, Any] = load_json_file(TICKETS_FILE, {"counter": 0, "tickets": {}})
+
+def save_tickets(data: Optional[Dict[str, Any]] = None) -> None:
+    global tickets_db
+    if data is not None:
+        tickets_db = data
+    save_json_file(TICKETS_FILE, tickets_db)
+
+def get_user_active_ticket(guild_id: int, user_id: int) -> Optional[int]:
+    """Returns channel_id if user has an active open ticket in guild, else None."""
+    for ch_id_str, info in tickets_db.get("tickets", {}).items():
+        if info.get("guild_id") == guild_id and info.get("owner_id") == user_id and info.get("status") == "open":
+            try:
+                return int(ch_id_str)
+            except (ValueError, TypeError):
+                continue
+    return None
+
+def create_ticket_record(guild_id: int, channel_id: int, owner_id: int, channel_name: str) -> Dict[str, Any]:
+    tickets_db["counter"] = tickets_db.get("counter", 0) + 1
+    num = tickets_db["counter"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    record = {
+        "id": num,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "owner_id": owner_id,
+        "channel_name": channel_name,
+        "status": "open",
+        "claimed_by": None,
+        "created_at": now_iso
+    }
+    if "tickets" not in tickets_db:
+        tickets_db["tickets"] = {}
+    tickets_db["tickets"][str(channel_id)] = record
+    save_tickets()
+    return record
+
+def claim_ticket_record(channel_id: int, staff_id: int) -> bool:
+    ch_str = str(channel_id)
+    if ch_str in tickets_db.get("tickets", {}):
+        tickets_db["tickets"][ch_str]["claimed_by"] = staff_id
+        save_tickets()
+        return True
+    return False
+
+def close_ticket_record(channel_id: int) -> bool:
+    ch_str = str(channel_id)
+    if ch_str in tickets_db.get("tickets", {}):
+        tickets_db["tickets"][ch_str]["status"] = "closed"
+        tickets_db["tickets"][ch_str]["closed_at"] = datetime.now(timezone.utc).isoformat()
+        save_tickets()
+        return True
+    return False
+
+def format_ticket_transcript(messages: List[discord.Message], ticket_id: int, owner_id: int) -> str:
+    lines = [
+        "============================================================",
+        "               AIO BOT TICKET TRANSCRIPT",
+        f"Ticket Number: #{ticket_id:04d}",
+        f"Author ID:     {owner_id}",
+        f"Exported:      {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        "============================================================",
+        ""
+    ]
+    for msg in messages:
+        ts = msg.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        author_display = getattr(msg.author, "display_name", str(msg.author))
+        author_name = f"{author_display} ({msg.author})" if author_display != str(msg.author) else str(msg.author)
+        content = getattr(msg, "clean_content", getattr(msg, "content", "")) or "(No text content)"
+        lines.append(f"[{ts}] {author_name}: {content}")
+        if getattr(msg, "attachments", None):
+            for att in msg.attachments:
+                lines.append(f"    [Attachment: {att.filename} ({att.url})]")
+    lines.append("\n=== END OF TRANSCRIPT ===")
+    return "\n".join(lines)
+
 def save_session_channels(data: Dict[str, int]) -> None:
     save_json_file(SESSION_CHANNELS_FILE, data)
 
@@ -1899,7 +1998,7 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Staff Private Notes", value="`/note add [@member] [note]` / `/note view` / `/note clear` — staff internal records", inline=False)
             embed.add_field(name="Member Discipline", value="`/kick` or `!kick [@member] [reason]`\n`/ban` or `!ban [@member] [reason]`\n`/unban` or `!unban [user_id_or_name]`\n`/timeout` or `!timeout [@member] [duration]` (e.g. `10m`, `1h`, `1d`)\n`/untimeout` or `!untimeout [@member]`", inline=False)
             embed.add_field(name="Warnings System", value="`/warn` or `!warn [@member] [reason]` — log a warning\n`/warnings` or `!warnings [@member]` — view warning record\n`/clearwarnings` or `!clearwarnings [@member]` — wipe records", inline=False)
-            embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
+            embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/ticketpanel` or `!tickets` — deploy interactive support ticket panel\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
         elif cat == "games":
             embed.title = "🎮 AIO Bot — Arcade, Casino & Economy"
             embed.description = "Interactive Discord mini-games and coin economy system powered by Discord UI Buttons! Run using either `!` or `/`."
@@ -1919,6 +2018,7 @@ class HelpCategorySelect(discord.ui.Select):
         elif cat == "owner":
             embed.title = "👑 AIO Bot — Operator Commands"
             embed.description = "Restricted developer, diagnostic, and account management tools. Only authorized operators can run these commands."
+            embed.add_field(name="Server Architecture", value="`/formatserver` (or `!setupserver`) — organize full server layout with categories, channels, and roles (shields `#form-automation`)", inline=False)
             embed.add_field(name="Private Optimizer Channel", value="`/setup` — create private `#aio-coupon-optimizer` room\n`/permit [@member]` — grant access to user", inline=False)
             embed.add_field(name="CVS Accounts Database", value="`/accounts [query]` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans, search, pagination & custom card formatter", inline=False)
             embed.add_field(name="Database Management", value="`/delete-last-trip` (or `!undotrip`) — delete last recorded trip and revert lifetime savings stats", inline=False)
@@ -1932,6 +2032,336 @@ class HelpMenuView(discord.ui.View):
     def __init__(self, author_perms: discord.Permissions, is_owner: bool):
         super().__init__(timeout=None)
         self.add_item(HelpCategorySelect(author_perms, is_owner))
+
+
+class TicketCloseConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="Confirm Close & Delete", style=discord.ButtonStyle.danger, emoji="✅")
+    async def btn_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("❌ This action can only be performed in a text channel.", ephemeral=True)
+            return
+
+        if is_protected_channel(channel):
+            await interaction.response.send_message("🛡️ **Protected Channel:** `#form-automation` CANNOT be closed or deleted!", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        close_ticket_record(channel.id)
+        await interaction.followup.send(f"🔒 **Ticket closed by {interaction.user.mention}.** This channel will be deleted in 5 seconds...")
+        await asyncio.sleep(5)
+        if not is_protected_channel(channel):
+            try:
+                await channel.delete(reason=f"Support ticket closed by {interaction.user}")
+            except Exception as e:
+                print(f"⚠️ Error deleting ticket channel {channel.id}: {e}", file=sys.stderr)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Ticket closure cancelled.", view=None)
+
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.primary, emoji="📋", custom_id="aio_ticket_claim_btn")
+    async def btn_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild:
+            return
+        is_staff = (
+            interaction.user.guild_permissions.manage_channels
+            or interaction.user.guild_permissions.administrator
+            or any(r.name.lower() in ("staff", "moderator", "admin") for r in interaction.user.roles)
+        )
+        if not is_staff:
+            await interaction.response.send_message("⛔ Only server staff or moderators can claim tickets.", ephemeral=True)
+            return
+
+        claim_ticket_record(interaction.channel.id, interaction.user.id)
+        await interaction.response.send_message(
+            f"📌 **Ticket Claimed:** {interaction.user.mention} has claimed this ticket and will be assisting you!"
+        )
+
+    @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="aio_ticket_transcript_btn")
+    async def btn_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            messages = [m async for m in interaction.channel.history(limit=500, oldest_first=True)]
+            info = tickets_db.get("tickets", {}).get(str(interaction.channel.id), {})
+            t_id = info.get("id", 0)
+            owner_id = info.get("owner_id", interaction.user.id)
+            txt = format_ticket_transcript(messages, t_id, owner_id)
+            file = discord.File(io.BytesIO(txt.encode("utf-8")), filename=f"transcript-ticket-{t_id:04d}.txt")
+            await interaction.followup.send("📜 **Here is the transcript for this ticket:**", file=file)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to generate transcript: {e}", ephemeral=True)
+
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="aio_ticket_close_btn")
+    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if is_protected_channel(interaction.channel):
+            await interaction.response.send_message("🛡️ **Protected Channel:** This channel cannot be closed or deleted!", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "⚠️ **Close Ticket Confirmation**\nAre you sure you want to close this ticket? This will delete the channel.",
+            view=TicketCloseConfirmView(),
+            ephemeral=True
+        )
+
+
+class TicketLaunchView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, emoji="📩", custom_id="aio_ticket_launch_btn")
+    async def btn_open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            return
+
+        active_id = get_user_active_ticket(guild.id, interaction.user.id)
+        if active_id:
+            existing_ch = guild.get_channel(active_id)
+            if existing_ch:
+                await interaction.response.send_message(
+                    f"⚠️ You already have an open ticket in {existing_ch.mention}! Please use your existing ticket.",
+                    ephemeral=True
+                )
+                return
+
+        await interaction.response.defer(ephemeral=True)
+
+        cat = discord.utils.get(guild.categories, name="📁 TICKETS")
+        if not cat:
+            cat = discord.utils.get(guild.categories, name="TICKETS")
+        if not cat:
+            cat_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True)
+            }
+            cat = await guild.create_category("📁 TICKETS", overwrites=cat_overwrites)
+
+        ticket_num = tickets_db.get("counter", 0) + 1
+        safe_name = re.sub(r'[^a-zA-Z0-9]', '', interaction.user.name).lower()[:12] or "user"
+        channel_name = f"ticket-{ticket_num:04d}-{safe_name}"
+
+        ch_overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                attach_files=True, embed_links=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                manage_channels=True, manage_messages=True
+            )
+        }
+        for role in guild.roles:
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+                ch_overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        new_ch = await guild.create_text_channel(
+            name=channel_name,
+            category=cat,
+            overwrites=ch_overwrites,
+            topic=f"AIO Support Ticket #{ticket_num:04d} | Author: {interaction.user} ({interaction.user.id})"
+        )
+
+        create_ticket_record(guild.id, new_ch.id, interaction.user.id, channel_name)
+
+        embed = discord.Embed(
+            title=f"🎫 Support Ticket #{ticket_num:04d}",
+            description=(
+                f"Welcome {interaction.user.mention}! Support staff has been notified.\n\n"
+                "Please describe your issue or inquiry in detail below. An operator will be with you shortly."
+            ),
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(name="👤 Opened By", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+        embed.add_field(name="⏰ Opened", value=f"<t:{int(time.time())}:R>", inline=True)
+        embed.add_field(name="📌 Status", value="🟢 Open (Unclaimed)", inline=True)
+        embed.set_footer(text="Use the control buttons below to manage this ticket")
+
+        await new_ch.send(content=interaction.user.mention, embed=embed, view=TicketControlView())
+        await interaction.followup.send(f"✅ Your support ticket has been created: {new_ch.mention}", ephemeral=True)
+
+
+class FormatServerConfirmView(discord.ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("⛔ Only the command author can confirm this action.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm Format Server", style=discord.ButtonStyle.success, emoji="✅")
+    async def btn_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        status_msg = await interaction.followup.send("⏳ **Formatting server layout...** Setting up categories and channels.", ephemeral=True)
+
+        blueprint = [
+            {
+                "category": "📌 INFORMATION",
+                "read_only": True,
+                "channels": [
+                    {"name": "📢-announcements", "type": "text", "topic": "Official server announcements and updates."},
+                    {"name": "📜-rules", "type": "text", "topic": "Server guidelines and community rules."},
+                    {"name": "👋-welcome", "type": "text", "topic": "Welcome new members to the server!"}
+                ]
+            },
+            {
+                "category": "💬 COMMUNITY",
+                "channels": [
+                    {"name": "💬-general-chat", "type": "text", "topic": "Main hangout and general conversation."},
+                    {"name": "🤖-bot-commands", "type": "text", "topic": "Run bot commands and mini-games here!"},
+                    {"name": "💡-suggestions", "type": "text", "topic": "Share ideas and feedback for the server."}
+                ]
+            },
+            {
+                "category": "🛍️ CVS & SAVINGS",
+                "channels": [
+                    {"name": "🛒-coupon-optimizer", "type": "text", "topic": "CVS & retail coupon optimizer center. Use /panel or /add!"},
+                    {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."},
+                    {"name": "🧾-receipt-brags", "type": "text", "topic": "Post your receipt savings and coupon hauls!"}
+                ]
+            },
+            {
+                "category": "🎫 SUPPORT",
+                "channels": [
+                    {"name": "📩-open-a-ticket", "type": "text", "topic": "Need help? Click the button below to open a private ticket!"}
+                ]
+            },
+            {
+                "category": "🔊 VOICE CHANNELS",
+                "channels": [
+                    {"name": "🔊 General Voice", "type": "voice"},
+                    {"name": "🔊 Lounge 1", "type": "voice"}
+                ]
+            },
+            {
+                "category": "🛡️ STAFF ZONE",
+                "staff_only": True,
+                "channels": [
+                    {"name": "🛡️-staff-chat", "type": "text", "topic": "Private discussions for server staff and admins."},
+                    {"name": "📜-mod-logs", "type": "text", "topic": "Audit logs, moderation actions, and security alerts."}
+                ]
+            }
+        ]
+
+        created_cats = 0
+        created_channels = 0
+
+        for section in blueprint:
+            cat_name = section["category"]
+            cat = discord.utils.get(guild.categories, name=cat_name)
+
+            cat_overwrites = {}
+            if section.get("staff_only"):
+                cat_overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+                cat_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, manage_channels=True)
+                for role in guild.roles:
+                    if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+                        cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            elif section.get("read_only"):
+                cat_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
+                cat_overwrites[guild.me] = discord.PermissionOverwrite(send_messages=True, manage_channels=True)
+
+            if not cat:
+                cat = await guild.create_category(cat_name, overwrites=cat_overwrites)
+                created_cats += 1
+
+            for ch_def in section["channels"]:
+                ch_name = ch_def["name"]
+                ch_type = ch_def["type"]
+
+                if ch_type == "text":
+                    existing = discord.utils.get(guild.text_channels, name=ch_name)
+                    # CRITICAL SAFEGUARD: Never touch #form-automation under any circumstance
+                    if existing and is_protected_channel(existing):
+                        continue
+
+                    if existing:
+                        if existing.category_id != cat.id and not is_protected_channel(existing.category):
+                            try:
+                                await existing.edit(category=cat)
+                            except Exception:
+                                pass
+                    else:
+                        ch_overwrites = {}
+                        if section.get("read_only"):
+                            ch_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
+                        new_ch = await guild.create_text_channel(
+                            name=ch_name,
+                            category=cat,
+                            topic=ch_def.get("topic", ""),
+                            overwrites=ch_overwrites
+                        )
+                        created_channels += 1
+
+                        if ch_name == "📩-open-a-ticket":
+                            panel_embed = discord.Embed(
+                                title="🎫 Support & Inquiries",
+                                description=(
+                                    "Need assistance, have questions, or need to contact staff?\n\n"
+                                    "Click the **Open Ticket** button below to create a private support channel with our team.\n\n"
+                                    "• 🔒 Private 1-on-1 text channel\n"
+                                    "• 👥 Only you and server staff have access\n"
+                                    "• ⚡ Fast response from operators"
+                                ),
+                                color=COLOR_PRIMARY
+                            )
+                            panel_embed.set_footer(text="AIO Bot Custom Ticket Center • Click below to open")
+                            await new_ch.send(embed=panel_embed, view=TicketLaunchView())
+
+                        elif ch_name == "🛒-coupon-optimizer":
+                            cart_embed = build_cart_embed(interaction.user.id)
+                            await new_ch.send(embed=cart_embed, view=QuickCartActionView(interaction.user.id))
+
+                elif ch_type == "voice":
+                    existing_vc = discord.utils.get(guild.voice_channels, name=ch_name)
+                    if not existing_vc:
+                        await guild.create_voice_channel(name=ch_name, category=cat)
+                        created_channels += 1
+
+        summary_embed = discord.Embed(
+            title="🏗️ Server Layout Formatted Successfully",
+            description=(
+                f"Your server layout has been organized with clean categories and channels!\n\n"
+                f"• 📁 **Categories Created/Organized:** {created_cats}\n"
+                f"• 💬 **Channels Created/Positioned:** {created_channels}\n"
+                f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` was completely preserved and untouched.\n"
+                f"• 🎫 **Tickets Deployed:** Active in `#📩-open-a-ticket`\n"
+                f"• 🛒 **Shopping Optimizer Deployed:** Active in `#🛒-coupon-optimizer`"
+            ),
+            color=COLOR_SUCCESS
+        )
+        summary_embed.set_footer(text="AIO Bot Server Architecture Suite")
+        await status_msg.edit(content=None, embed=summary_embed)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Server formatting cancelled.", embed=None, view=None)
 
 def build_serverinfo_embed(guild: discord.Guild) -> discord.Embed:
     embed = discord.Embed(title=f"📊 {guild.name}", color=COLOR_INFO)
@@ -1985,9 +2415,14 @@ async def on_ready():
             for role in guild.roles:
                 if role.name.strip().lower() in ("cvs coupon optimizer", "cvs coupon optimizer bot", "cvs optimizer", "cvs optimizer bot"):
                     await role.edit(name="AIO Bot", reason="Update role name from CVS Coupon Optimizer to AIO Bot")
-                    print(f"✅ Successfully renamed role '{role.name}' to 'AIO Bot' in guild '{guild.name}' ({guild.id})", flush=True)
         except Exception as e:
             print(f"ℹ️ Note on auto role rename in guild '{guild.name}': {e}", file=sys.stderr, flush=True)
+
+    try:
+        bot.add_view(TicketLaunchView())
+        bot.add_view(TicketControlView())
+    except Exception as e:
+        print(f"ℹ️ Note on ticket view persistence: {e}", file=sys.stderr, flush=True)
 
     try:
         for g in bot.guilds:
@@ -2137,6 +2572,9 @@ async def create_embed_cmd(ctx, channel: Optional[discord.TextChannel] = None):
 async def nuke_channel(ctx, channel: Optional[discord.TextChannel] = None):
     await safely_delete_message(ctx)
     target = channel or ctx.channel
+    if is_protected_channel(target):
+        await ctx.send("🛡️ **Protected Channel:** `#form-automation` is strictly protected and CANNOT be nuked or deleted!", delete_after=8)
+        return
     if not isinstance(target, discord.TextChannel):
         await ctx.send("❌ Can only nuke standard text channels.", delete_after=6)
         return
@@ -3567,6 +4005,64 @@ async def permit_user(ctx, member: discord.Member):
         return
     await channel.set_permissions(member, view_channel=True, send_messages=True, read_messages=True)
     await ctx.send(f"✅ Granted access to {member.mention}!", delete_after=5)
+
+@bot.hybrid_command(
+    name="formatserver",
+    aliases=["setupserver", "buildserver", "templateserver"],
+    description="Format and organize server channels into a clean professional layout"
+)
+@commands.guild_only()
+@commands.is_owner()
+@app_commands.default_permissions(administrator=True)
+async def format_server(ctx):
+    await safely_delete_message(ctx)
+    embed = discord.Embed(
+        title="🏗️ Server Layout Formatter & Architect",
+        description=(
+            "This command will organize and build a clean, professional server layout with organized categories, topic channels, and proper permissions.\n\n"
+            "🛡️ **SAFEGUARD ACTIVE:** `#form-automation` is permanently protected and will NEVER be touched, modified, or moved.\n\n"
+            "**Blueprint Structure:**\n"
+            "• 📌 **INFORMATION**: `#📢-announcements`, `#📜-rules`, `#👋-welcome`\n"
+            "• 💬 **COMMUNITY**: `#💬-general-chat`, `#🤖-bot-commands`, `#💡-suggestions`\n"
+            "• 🛍️ **CVS & SAVINGS**: `#🛒-coupon-optimizer`, `#🏷️-deals-and-savings`, `#🧾-receipt-brags`\n"
+            "• 🎫 **SUPPORT**: `#📩-open-a-ticket` *(with Ticket Panel!)*\n"
+            "• 🔊 **VOICE CHANNELS**: `🔊 General Voice`, `🔊 Lounge 1`\n"
+            "• 🛡️ **STAFF ZONE**: `#🛡️-staff-chat`, `#📜-mod-logs` *(staff-only)*\n\n"
+            "Click **Confirm Format Server** below to begin."
+        ),
+        color=COLOR_PRIMARY
+    )
+    embed.set_footer(text="Operator Command • Requires confirmation")
+    view = FormatServerConfirmView(author_id=ctx.author.id)
+    await ctx.send(embed=embed, view=view)
+
+@bot.hybrid_command(
+    name="ticketpanel",
+    aliases=["tickets", "ticket-panel", "ticketsetup"],
+    description="Post the interactive support ticket panel in this channel"
+)
+@commands.guild_only()
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
+async def post_ticket_panel(ctx, channel: Optional[discord.TextChannel] = None):
+    await safely_delete_message(ctx)
+    target_channel = channel or ctx.channel
+    embed = discord.Embed(
+        title="🎫 Support & Inquiries",
+        description=(
+            "Need assistance, have questions, or need to contact staff?\n\n"
+            "Click the **Open Ticket** button below to create a private support channel with our team.\n\n"
+            "• 🔒 Private 1-on-1 text channel\n"
+            "• 👥 Only you and server staff have access\n"
+            "• ⚡ Fast response from operators"
+        ),
+        color=COLOR_PRIMARY
+    )
+    embed.set_footer(text="AIO Bot Custom Ticket Center • Click below to open")
+    view = TicketLaunchView()
+    await target_channel.send(embed=embed, view=view)
+    if target_channel.id != ctx.channel.id:
+        await ctx.send(f"✅ Ticket panel deployed to {target_channel.mention}!", delete_after=5)
 
 @bot.hybrid_command(name="ping", description="Check the bot's latency")
 async def ping(ctx):
