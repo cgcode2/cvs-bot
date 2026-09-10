@@ -157,7 +157,7 @@ class TestAIOBot(unittest.TestCase):
             "balance", "daily", "pay", "leaderboard",
             "accounts", "cvsaccount",
             "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel",
-            "revoke"
+            "revoke", "paid", "complete", "otp", "deliver", "claim", "close"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -209,6 +209,12 @@ class TestAIOBot(unittest.TestCase):
             "setup": "manage_channels",
             "permit": "manage_channels",
             "revoke": "manage_channels",
+            "paid": "manage_messages",
+            "complete": "manage_messages",
+            "otp": "manage_messages",
+            "deliver": "manage_messages",
+            "claim": "manage_messages",
+            "close": "manage_messages",
             "run-stress-test": "is_owner",
             "delete-last-trip": "is_owner",
             "accounts": "is_owner",
@@ -687,6 +693,83 @@ class TestAIOBot(unittest.TestCase):
         found2 = main.find_cvs_optimizer_channel(guild2)
         self.assertIsNotNone(found2)
         self.assertEqual(found2.name, "aio-coupon-optimizer")
+
+    def test_founder_role_detection(self):
+        class MockRole:
+            def __init__(self, name: str):
+                self.name = name
+
+        class MockGuild:
+            def __init__(self, roles):
+                self.roles = roles
+
+        # Guild with "Founder" role
+        g1 = MockGuild([MockRole("Member"), MockRole("Founder")])
+        f1 = main.get_founder_role(g1)
+        self.assertIsNotNone(f1)
+        self.assertEqual(f1.name, "Founder")
+
+        # Guild with "Founders" role
+        g2 = MockGuild([MockRole("Staff"), MockRole("Founders")])
+        f2 = main.get_founder_role(g2)
+        self.assertIsNotNone(f2)
+        self.assertEqual(f2.name, "Founders")
+
+        # Guild with "Owner" role
+        g3 = MockGuild([MockRole("Admin"), MockRole("Owner")])
+        f3 = main.get_founder_role(g3)
+        self.assertIsNotNone(f3)
+        self.assertEqual(f3.name, "Owner")
+
+        # Guild with role containing "founder"
+        g4 = MockGuild([MockRole("Co-Founder & CEO")])
+        f4 = main.get_founder_role(g4)
+        self.assertIsNotNone(f4)
+        self.assertEqual(f4.name, "Co-Founder & CEO")
+
+        # Guild without founder role
+        g5 = MockGuild([MockRole("Member"), MockRole("VIP")])
+        f5 = main.get_founder_role(g5)
+        self.assertIsNone(f5)
+
+        # None guild
+        self.assertIsNone(main.get_founder_role(None))
+
+    def test_order_fulfillment_flow_and_ticket_status(self):
+        saved_db = copy.deepcopy(main.tickets_db)
+        try:
+            # Create a test ticket
+            record = main.create_ticket_record(guild_id=123, channel_id=98765, owner_id=456, channel_name="order-tacobell-0001")
+            self.assertEqual(record["status"], "open")
+            self.assertEqual(main.tickets_db["tickets"]["98765"]["status"], "open")
+
+            # Mark Paid
+            res_paid = main.update_ticket_status(98765, "paid")
+            self.assertTrue(res_paid)
+            self.assertEqual(main.tickets_db["tickets"]["98765"]["status"], "paid")
+
+            # Mark Completed
+            res_complete = main.update_ticket_status(98765, "completed")
+            self.assertTrue(res_complete)
+            self.assertEqual(main.tickets_db["tickets"]["98765"]["status"], "completed")
+
+            # Non-existent ticket returns False
+            self.assertFalse(main.update_ticket_status(99999999, "paid"))
+        finally:
+            main.tickets_db.clear()
+            main.tickets_db.update(saved_db)
+            main.save_tickets()
+
+    def test_ticket_control_view_fulfillment_buttons(self):
+        view = main.TicketControlView()
+        custom_ids = [getattr(child, "custom_id", None) for child in view.children]
+        
+        # Verify all persistent buttons exist
+        self.assertIn("aio_ticket_claim_btn", custom_ids)
+        self.assertIn("aio_ticket_mark_paid_btn", custom_ids)
+        self.assertIn("aio_ticket_mark_complete_btn", custom_ids)
+        self.assertIn("aio_ticket_transcript_btn", custom_ids)
+        self.assertIn("aio_ticket_close_btn", custom_ids)
 
 
 if __name__ == '__main__':

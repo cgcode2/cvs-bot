@@ -212,6 +212,25 @@ def close_ticket_record(channel_id: int) -> bool:
         return True
     return False
 
+def update_ticket_status(channel_id: int, status: str) -> bool:
+    ch_str = str(channel_id)
+    if ch_str in tickets_db.get("tickets", {}):
+        tickets_db["tickets"][ch_str]["status"] = status
+        save_tickets()
+        return True
+    return False
+
+def get_founder_role(guild: Optional[discord.Guild]) -> Optional[discord.Role]:
+    if not guild:
+        return None
+    for r in guild.roles:
+        if r.name.lower() in ("founder", "founders", "owner", "co-founder"):
+            return r
+    for r in guild.roles:
+        if "founder" in r.name.lower():
+            return r
+    return None
+
 def format_ticket_transcript(messages: List[discord.Message], ticket_id: int, owner_id: int) -> str:
     lines = [
         "============================================================",
@@ -2080,16 +2099,11 @@ class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.primary, emoji="📋", custom_id="aio_ticket_claim_btn")
+    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.primary, emoji="📋", custom_id="aio_ticket_claim_btn", row=0)
     async def btn_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.guild:
             return
-        is_staff = (
-            interaction.user.guild_permissions.manage_channels
-            or interaction.user.guild_permissions.administrator
-            or any(r.name.lower() in ("staff", "moderator", "admin") for r in interaction.user.roles)
-        )
-        if not is_staff:
+        if not is_staff_or_admin(interaction.user):
             await interaction.response.send_message("⛔ Only server staff or moderators can claim tickets.", ephemeral=True)
             return
 
@@ -2098,7 +2112,51 @@ class TicketControlView(discord.ui.View):
             f"📌 **Ticket Claimed:** {interaction.user.mention} has claimed this ticket and will be assisting you!"
         )
 
-    @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="aio_ticket_transcript_btn")
+    @discord.ui.button(label="Mark Paid", style=discord.ButtonStyle.success, emoji="💰", custom_id="aio_ticket_mark_paid_btn", row=0)
+    async def btn_paid(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            return
+        if not is_staff_or_admin(interaction.user):
+            await interaction.response.send_message("⛔ Only server staff or founders can mark tickets as paid.", ephemeral=True)
+            return
+
+        update_ticket_status(interaction.channel.id, "paid")
+        embed = discord.Embed(
+            title="💰 Payment Verified & Received",
+            description=(
+                f"Payment has been confirmed by {interaction.user.mention}!\n\n"
+                "• **Status:** `PAID / PROCESSING`\n"
+                "• Staff is preparing your account credentials or fulfillment now."
+            ),
+            color=0x2ecc71
+        )
+        embed.set_footer(text=f"Confirmed by {interaction.user.display_name} • AIO Order Suite")
+        await interaction.channel.send(embed=embed)
+        await interaction.response.send_message("✅ Order marked as paid!", ephemeral=True)
+
+    @discord.ui.button(label="Complete Order", style=discord.ButtonStyle.primary, emoji="✅", custom_id="aio_ticket_mark_complete_btn", row=0)
+    async def btn_complete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            return
+        if not is_staff_or_admin(interaction.user):
+            await interaction.response.send_message("⛔ Only server staff or founders can complete orders.", ephemeral=True)
+            return
+
+        update_ticket_status(interaction.channel.id, "completed")
+        embed = discord.Embed(
+            title="🎉 Order Fulfilled & Completed!",
+            description=(
+                f"Your order has been completed by {interaction.user.mention}!\n\n"
+                "Thank you for shopping with us! If you loved the service, drop a shoutout in **#receipt-brags**.\n\n"
+                "You may click **Close Ticket** below when finished."
+            ),
+            color=0x9b59b6
+        )
+        embed.set_footer(text=f"Fulfilled by {interaction.user.display_name} • AIO Fulfillment Suite")
+        await interaction.channel.send(embed=embed)
+        await interaction.response.send_message("✅ Order marked as completed!", ephemeral=True)
+
+    @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="aio_ticket_transcript_btn", row=1)
     async def btn_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
@@ -2112,7 +2170,7 @@ class TicketControlView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to generate transcript: {e}", ephemeral=True)
 
-    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="aio_ticket_close_btn")
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="aio_ticket_close_btn", row=1)
     async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
         if is_protected_channel(interaction.channel):
             await interaction.response.send_message("🛡️ **Protected Channel:** This channel cannot be closed or deleted!", ephemeral=True)
@@ -2160,6 +2218,8 @@ class TicketLaunchView(discord.ui.View):
         safe_name = re.sub(r'[^a-zA-Z0-9]', '', interaction.user.name).lower()[:12] or "user"
         channel_name = f"ticket-{ticket_num:04d}-{safe_name}"
 
+        founder_role = get_founder_role(guild)
+
         ch_overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(
@@ -2171,8 +2231,12 @@ class TicketLaunchView(discord.ui.View):
                 manage_channels=True, manage_messages=True
             )
         }
+        if founder_role:
+            ch_overwrites[founder_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+            )
         for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin", "founder"):
                 ch_overwrites[role] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, read_message_history=True
                 )
@@ -2199,7 +2263,17 @@ class TicketLaunchView(discord.ui.View):
         embed.add_field(name="📌 Status", value="🟢 Open (Unclaimed)", inline=True)
         embed.set_footer(text="Use the control buttons below to manage this ticket")
 
-        await new_ch.send(content=interaction.user.mention, embed=embed, view=TicketControlView())
+        mention_targets = [interaction.user.mention]
+        if founder_role:
+            mention_targets.append(founder_role.mention)
+        ping_str = " ".join(mention_targets)
+
+        await new_ch.send(
+            content=f"{ping_str} Support ticket opened! Staff & Founders have been alerted.",
+            embed=embed,
+            view=TicketControlView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
+        )
         await interaction.followup.send(f"✅ Your support ticket has been created: {new_ch.mention}", ephemeral=True)
 
 
@@ -2268,6 +2342,8 @@ class FoodAccountOrderModal(discord.ui.Modal):
         safe_user = re.sub(r'[^a-zA-Z0-9]', '', interaction.user.name).lower()[:10] or "user"
         channel_name = f"order-{brand_slug}-{ticket_num:04d}-{safe_user}"
 
+        founder_role = get_founder_role(guild)
+
         ch_overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(
@@ -2279,8 +2355,12 @@ class FoodAccountOrderModal(discord.ui.Modal):
                 manage_channels=True, manage_messages=True
             )
         }
+        if founder_role:
+            ch_overwrites[founder_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+            )
         for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin", "founder"):
                 ch_overwrites[role] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, read_message_history=True
                 )
@@ -2324,7 +2404,17 @@ class FoodAccountOrderModal(discord.ui.Modal):
         embed.add_field(name="📌 Status", value="🟢 Awaiting Staff", inline=True)
         embed.set_footer(text="Staff: Click Claim Ticket below to handle this order")
 
-        await new_ch.send(content=f"{interaction.user.mention} Thank you for your order! Staff has been alerted.", embed=embed, view=TicketControlView())
+        mention_targets = [interaction.user.mention]
+        if founder_role:
+            mention_targets.append(founder_role.mention)
+        ping_str = " ".join(mention_targets)
+
+        await new_ch.send(
+            content=f"{ping_str} Thank you for your order! Staff & Founders have been alerted.",
+            embed=embed,
+            view=TicketControlView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
+        )
         await interaction.followup.send(f"✅ Your purchase ticket has been created: {new_ch.mention}", ephemeral=True)
 
 
@@ -2567,6 +2657,31 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
     created_cats = 0
     created_channels = 0
 
+    # Ensure Founder role exists and is mentionable for notifications
+    founder_role = get_founder_role(guild)
+    if not founder_role and guild.me.guild_permissions.manage_roles:
+        try:
+            founder_role = await guild.create_role(
+                name="Founder",
+                color=discord.Color.gold(),
+                hoist=True,
+                mentionable=True,
+                reason="Created Founder role during server formatting"
+            )
+            if guild.owner and guild.me.top_role > founder_role:
+                try:
+                    await guild.owner.add_roles(founder_role, reason="Assigned Founder role to server owner")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"⚠️ Could not auto-create Founder role: {e}", file=sys.stderr)
+    elif founder_role and not founder_role.mentionable and guild.me.guild_permissions.manage_roles:
+        try:
+            if guild.me.top_role > founder_role:
+                await founder_role.edit(mentionable=True, reason="Made Founder role mentionable for ticket pings")
+        except Exception:
+            pass
+
     for section in FORMAT_SERVER_BLUEPRINT:
         cat_name = section["category"]
         cat = discord.utils.get(guild.categories, name=cat_name)
@@ -2576,7 +2691,7 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
             cat_overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
             cat_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
             for role in guild.roles:
-                if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+                if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin", "founder"):
                     cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
         elif section.get("read_only"):
             cat_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
@@ -4838,11 +4953,16 @@ def find_cvs_optimizer_channel(guild: discord.Guild) -> Optional[discord.TextCha
                     return ch
     return None
 
-def is_staff_or_admin(member: discord.Member) -> bool:
-    if member.guild_permissions.manage_channels or member.guild_permissions.administrator:
-        return True
-    staff_roles = {"staff", "moderator", "admin", "operator"}
-    return any(r.name.lower() in staff_roles for r in member.roles)
+def is_staff_or_admin(member: Any) -> bool:
+    if member is None:
+        return False
+    perms = getattr(member, "guild_permissions", None)
+    if perms:
+        if getattr(perms, "manage_channels", False) or getattr(perms, "administrator", False) or getattr(perms, "manage_messages", False):
+            return True
+    staff_roles = {"staff", "moderator", "admin", "operator", "founder", "founders", "owner", "co-founder"}
+    roles = getattr(member, "roles", [])
+    return any(getattr(r, "name", "").lower() in staff_roles for r in roles)
 
 @bot.hybrid_command(name="setup", aliases=["setupcvs", "setup-optimizer"], description="Create the private CVS coupon optimizer category & channel")
 @commands.guild_only()
@@ -5171,6 +5291,201 @@ async def post_food_panel(ctx, channel: Optional[discord.TextChannel] = None):
     await target.send(embed=embed, view=view)
     if target.id != ctx.channel.id:
         await ctx.send(f"✅ Fast food rewards purchase panel deployed to {target.mention}!", delete_after=5)
+
+# ============================================================
+# STAFF TICKET & ORDER FULFILLMENT COMMANDS
+# ============================================================
+
+@bot.hybrid_command(
+    name="paid",
+    aliases=["orderpaid", "markpaid"],
+    description="Staff command: Confirm payment received and update ticket status"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    amount="Amount received (e.g. $10, 10.00)",
+    method="Payment method (CashApp, ApplePay, Crypto, etc.)"
+)
+async def paid_cmd(ctx: commands.Context, amount: Optional[str] = None, *, method: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can mark orders as paid.", delete_after=6)
+        return
+
+    update_ticket_status(ctx.channel.id, "paid")
+    amt_text = amount.strip() if amount else None
+    if amt_text and not amt_text.startswith("$") and re.match(r"^\d+(\.\d{2})?$", amt_text):
+        amt_text = f"${amt_text}"
+
+    embed = discord.Embed(
+        title="💰 Payment Verified & Received",
+        description=(
+            f"Payment has been confirmed by {ctx.author.mention}!\n\n"
+            "• **Status:** `PAID / PROCESSING`\n"
+            "• Staff is preparing your account credentials or fulfillment now."
+        ),
+        color=0x2ecc71
+    )
+    if amt_text:
+        embed.add_field(name="💵 Amount Paid", value=f"**{amt_text}**", inline=True)
+    if method:
+        embed.add_field(name="💳 Method", value=f"**{method.strip()}**", inline=True)
+    embed.add_field(name="⏰ Confirmed At", value=f"<t:{int(time.time())}:R>", inline=True)
+    embed.set_footer(text=f"Confirmed by {ctx.author.display_name} • AIO Order Suite")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="complete",
+    aliases=["ordercomplete", "fulfill", "done"],
+    description="Staff command: Mark order/ticket fulfilled and completed"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(notes="Optional completion notes or delivery summary")
+async def complete_cmd(ctx: commands.Context, *, notes: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can complete orders.", delete_after=6)
+        return
+
+    update_ticket_status(ctx.channel.id, "completed")
+    embed = discord.Embed(
+        title="🎉 Order Fulfilled & Completed!",
+        description=(
+            f"Your order has been marked as completed by {ctx.author.mention}!\n\n"
+            "Thank you for shopping with us! If you loved the service, drop a shoutout in **#receipt-brags**.\n\n"
+            "You may click **Close Ticket** below when finished."
+        ),
+        color=0x9b59b6
+    )
+    if notes:
+        embed.add_field(name="📝 Notes", value=notes.strip(), inline=False)
+    embed.add_field(name="⏰ Completed At", value=f"<t:{int(time.time())}:R>", inline=True)
+    embed.set_footer(text=f"Fulfilled by {ctx.author.display_name} • AIO Fulfillment Suite")
+    await ctx.send(embed=embed, view=TicketControlView())
+
+
+@bot.hybrid_command(
+    name="otp",
+    aliases=["code", "totp", "verifycode"],
+    description="Staff command: Send Taco Bell OTP code in a tap-to-copy block"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    code="The OTP verification code",
+    notes="Optional instructions or notes"
+)
+async def otp_cmd(ctx: commands.Context, code: str, *, notes: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can dispatch OTP codes.", delete_after=6)
+        return
+
+    clean_code = code.strip()
+    embed = discord.Embed(
+        title="🔑 Taco Bell App Login OTP Code",
+        description=(
+            "Here is your verification code! Tap the box below to copy it immediately:\n\n"
+            f"```\n{clean_code}\n```\n"
+            "⚠️ **Expires in 5 minutes!** Enter this code into the Taco Bell app now."
+        ),
+        color=0xe67e22
+    )
+    if notes:
+        embed.add_field(name="📝 Notes", value=notes.strip(), inline=False)
+    embed.set_footer(text=f"Sent by {ctx.author.display_name} • AIO Security Suite")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="deliver",
+    aliases=["deliveraccount", "credentials", "sendacc"],
+    description="Staff command: Securely deliver account credentials inside spoiler tags"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    credentials="Login details/credentials to deliver (email:pass, token, etc.)",
+    notes="Optional customer instructions or notes"
+)
+async def deliver_cmd(ctx: commands.Context, credentials: str, *, notes: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can deliver accounts.", delete_after=6)
+        return
+
+    embed = discord.Embed(
+        title="📦 Fast Food Account Delivered",
+        description=(
+            "Your preloaded rewards account is ready! Click the black spoiler box below to reveal your login details:\n\n"
+            f"|| `{credentials.strip()}` ||\n\n"
+            "• **Next Step:** Log in immediately to verify your rewards.\n"
+            "• **Security Reminder:** Save your credentials in a safe place.\n"
+            "• If you have questions or need assistance, ping staff here!"
+        ),
+        color=0x2ecc71
+    )
+    if notes:
+        embed.add_field(name="📝 Staff Note", value=notes.strip(), inline=False)
+    embed.set_footer(text=f"Delivered by {ctx.author.display_name} • AIO Fulfillment Suite")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="claim",
+    aliases=["ticketclaim"],
+    description="Staff command: Claim the current ticket"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+async def claim_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can claim tickets.", delete_after=6)
+        return
+
+    claim_ticket_record(ctx.channel.id, ctx.author.id)
+    embed = discord.Embed(
+        title="📌 Ticket Claimed",
+        description=f"{ctx.author.mention} has claimed this ticket and will be assisting you!",
+        color=COLOR_PRIMARY
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="close",
+    aliases=["closeticket", "ticketclose"],
+    description="Close the current ticket channel (shields #form-automation)"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+async def close_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if is_protected_channel(ctx.channel):
+        await ctx.send("🛡️ **Protected Channel:** `#form-automation` CANNOT be closed or deleted!", delete_after=8)
+        return
+
+    info = tickets_db.get("tickets", {}).get(str(ctx.channel.id), {})
+    is_owner = (info.get("owner_id") == ctx.author.id)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author) and not is_owner:
+        await ctx.send("⛔ Only staff, founders, or the ticket owner can close this ticket.", delete_after=6)
+        return
+
+    await ctx.send(
+        "⚠️ **Close Ticket Confirmation**\nAre you sure you want to close this ticket? This will delete the channel.",
+        view=TicketCloseConfirmView()
+    )
+
 
 @bot.hybrid_command(name="ping", description="Check the bot's latency")
 async def ping(ctx):
