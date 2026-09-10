@@ -735,6 +735,51 @@ class TestAIOBot(unittest.TestCase):
         # None guild
         self.assertIsNone(main.get_founder_role(None))
 
+    def test_moderator_and_staff_role_helpers(self):
+        class MockRole:
+            def __init__(self, name: str):
+                self.name = name
+
+        class MockGuild:
+            def __init__(self, roles):
+                self.roles = roles
+
+        class MockMember:
+            def __init__(self, roles):
+                self.roles = roles
+                self.guild_permissions = main.discord.Permissions(administrator=False, manage_channels=False, manage_messages=False)
+
+        # Moderator role detection
+        g1 = MockGuild([MockRole("Member"), MockRole("Moderator")])
+        m1 = main.get_moderator_role(g1)
+        self.assertIsNotNone(m1)
+        self.assertEqual(m1.name, "Moderator")
+
+        # Mod role detection
+        g2 = MockGuild([MockRole("Mod")])
+        m2 = main.get_moderator_role(g2)
+        self.assertIsNotNone(m2)
+        self.assertEqual(m2.name, "Mod")
+
+        # Staff role detection
+        g3 = MockGuild([MockRole("Staff")])
+        s1 = main.get_staff_role(g3)
+        self.assertIsNotNone(s1)
+        self.assertEqual(s1.name, "Staff")
+
+        # is_staff_or_admin check for Moderator / Mod / Mods
+        mem_mod = MockMember([MockRole("Moderator")])
+        self.assertTrue(main.is_staff_or_admin(mem_mod))
+
+        mem_short_mod = MockMember([MockRole("Mod")])
+        self.assertTrue(main.is_staff_or_admin(mem_short_mod))
+
+        mem_mods = MockMember([MockRole("Mods")])
+        self.assertTrue(main.is_staff_or_admin(mem_mods))
+
+        mem_regular = MockMember([MockRole("Member"), MockRole("Gamer")])
+        self.assertFalse(main.is_staff_or_admin(mem_regular))
+
     def test_order_fulfillment_flow_and_ticket_status(self):
         saved_db = copy.deepcopy(main.tickets_db)
         try:

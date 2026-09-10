@@ -231,6 +231,28 @@ def get_founder_role(guild: Optional[discord.Guild]) -> Optional[discord.Role]:
             return r
     return None
 
+def get_moderator_role(guild: Optional[discord.Guild]) -> Optional[discord.Role]:
+    if not guild:
+        return None
+    for r in guild.roles:
+        if r.name.lower() in ("moderator", "moderators", "mod", "mods"):
+            return r
+    for r in guild.roles:
+        if "moderator" in r.name.lower() or "mod" in r.name.lower():
+            return r
+    return None
+
+def get_staff_role(guild: Optional[discord.Guild]) -> Optional[discord.Role]:
+    if not guild:
+        return None
+    for r in guild.roles:
+        if r.name.lower() in ("staff", "support", "operator", "team"):
+            return r
+    for r in guild.roles:
+        if "staff" in r.name.lower():
+            return r
+    return None
+
 def format_ticket_transcript(messages: List[discord.Message], ticket_id: int, owner_id: int) -> str:
     lines = [
         "============================================================",
@@ -2219,6 +2241,8 @@ class TicketLaunchView(discord.ui.View):
         channel_name = f"ticket-{ticket_num:04d}-{safe_name}"
 
         founder_role = get_founder_role(guild)
+        mod_role = get_moderator_role(guild)
+        staff_role = get_staff_role(guild)
 
         ch_overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -2235,10 +2259,18 @@ class TicketLaunchView(discord.ui.View):
             ch_overwrites[founder_role] = discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
             )
+        if mod_role:
+            ch_overwrites[mod_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+            )
+        if staff_role:
+            ch_overwrites[staff_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+            )
         for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin", "founder"):
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
                 ch_overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
+                    view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
                 )
 
         new_ch = await guild.create_text_channel(
@@ -2253,7 +2285,7 @@ class TicketLaunchView(discord.ui.View):
         embed = discord.Embed(
             title=f"🎫 Support Ticket #{ticket_num:04d}",
             description=(
-                f"Welcome {interaction.user.mention}! Support staff has been notified.\n\n"
+                f"Welcome {interaction.user.mention}! Support staff & moderators have been notified.\n\n"
                 "Please describe your issue or inquiry in detail below. An operator will be with you shortly."
             ),
             color=COLOR_PRIMARY
@@ -2266,10 +2298,12 @@ class TicketLaunchView(discord.ui.View):
         mention_targets = [interaction.user.mention]
         if founder_role:
             mention_targets.append(founder_role.mention)
+        if mod_role and (not founder_role or mod_role.id != founder_role.id):
+            mention_targets.append(mod_role.mention)
         ping_str = " ".join(mention_targets)
 
         await new_ch.send(
-            content=f"{ping_str} Support ticket opened! Staff & Founders have been alerted.",
+            content=f"{ping_str} Support ticket opened! Staff, Moderators & Founders have been alerted.",
             embed=embed,
             view=TicketControlView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True)
@@ -2343,6 +2377,8 @@ class FoodAccountOrderModal(discord.ui.Modal):
         channel_name = f"order-{brand_slug}-{ticket_num:04d}-{safe_user}"
 
         founder_role = get_founder_role(guild)
+        mod_role = get_moderator_role(guild)
+        staff_role = get_staff_role(guild)
 
         ch_overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -2359,10 +2395,18 @@ class FoodAccountOrderModal(discord.ui.Modal):
             ch_overwrites[founder_role] = discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
             )
+        if mod_role:
+            ch_overwrites[mod_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+            )
+        if staff_role:
+            ch_overwrites[staff_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+            )
         for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin", "founder"):
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
                 ch_overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
+                    view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
                 )
 
         new_ch = await guild.create_text_channel(
@@ -2380,7 +2424,7 @@ class FoodAccountOrderModal(discord.ui.Modal):
         embed = discord.Embed(
             title=f"{'🌮' if brand_slug == 'tacobell' else '🍕'} {self.brand} Order #{ticket_num:04d}",
             description=(
-                f"Welcome {interaction.user.mention}! Support staff has been notified of your order.\n\n"
+                f"Welcome {interaction.user.mention}! Support staff & moderators have been notified of your order.\n\n"
                 f"**Order Details:**\n"
                 f"• Item: **{self.brand} Preloaded Account(s)**\n"
                 f"• Quantity: **{qty} account(s)** (${self.price:.2f} each)\n"
@@ -2407,10 +2451,12 @@ class FoodAccountOrderModal(discord.ui.Modal):
         mention_targets = [interaction.user.mention]
         if founder_role:
             mention_targets.append(founder_role.mention)
+        if mod_role and (not founder_role or mod_role.id != founder_role.id):
+            mention_targets.append(mod_role.mention)
         ping_str = " ".join(mention_targets)
 
         await new_ch.send(
-            content=f"{ping_str} Thank you for your order! Staff & Founders have been alerted.",
+            content=f"{ping_str} Thank you for your order! Staff, Moderators & Founders have been alerted.",
             embed=embed,
             view=TicketControlView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True)
@@ -2657,7 +2703,7 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
     created_cats = 0
     created_channels = 0
 
-    # Ensure Founder role exists and is mentionable for notifications
+    # Ensure Founder, Moderator, and Staff roles exist and are mentionable
     founder_role = get_founder_role(guild)
     if not founder_role and guild.me.guild_permissions.manage_roles:
         try:
@@ -2682,6 +2728,44 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
         except Exception:
             pass
 
+    mod_role = get_moderator_role(guild)
+    if not mod_role and guild.me.guild_permissions.manage_roles:
+        try:
+            mod_role = await guild.create_role(
+                name="Moderator",
+                color=discord.Color.blue(),
+                hoist=True,
+                mentionable=True,
+                reason="Created Moderator role during server formatting"
+            )
+        except Exception as e:
+            print(f"⚠️ Could not auto-create Moderator role: {e}", file=sys.stderr)
+    elif mod_role and not mod_role.mentionable and guild.me.guild_permissions.manage_roles:
+        try:
+            if guild.me.top_role > mod_role:
+                await mod_role.edit(mentionable=True, reason="Made Moderator role mentionable for staff pings")
+        except Exception:
+            pass
+
+    staff_role = get_staff_role(guild)
+    if not staff_role and guild.me.guild_permissions.manage_roles:
+        try:
+            staff_role = await guild.create_role(
+                name="Staff",
+                color=discord.Color.teal(),
+                hoist=True,
+                mentionable=True,
+                reason="Created Staff role during server formatting"
+            )
+        except Exception as e:
+            print(f"⚠️ Could not auto-create Staff role: {e}", file=sys.stderr)
+    elif staff_role and not staff_role.mentionable and guild.me.guild_permissions.manage_roles:
+        try:
+            if guild.me.top_role > staff_role:
+                await staff_role.edit(mentionable=True, reason="Made Staff role mentionable for staff pings")
+        except Exception:
+            pass
+
     for section in FORMAT_SERVER_BLUEPRINT:
         cat_name = section["category"]
         cat = discord.utils.get(guild.categories, name=cat_name)
@@ -2690,9 +2774,15 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
         if section.get("staff_only") or section.get("private"):
             cat_overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
             cat_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
+            if founder_role:
+                cat_overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+            if mod_role:
+                cat_overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+            if staff_role:
+                cat_overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
             for role in guild.roles:
-                if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin", "founder"):
-                    cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
+                    cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         elif section.get("read_only"):
             cat_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
             cat_overwrites[guild.me] = discord.PermissionOverwrite(send_messages=True, manage_channels=True)
@@ -4960,7 +5050,7 @@ def is_staff_or_admin(member: Any) -> bool:
     if perms:
         if getattr(perms, "manage_channels", False) or getattr(perms, "administrator", False) or getattr(perms, "manage_messages", False):
             return True
-    staff_roles = {"staff", "moderator", "admin", "operator", "founder", "founders", "owner", "co-founder"}
+    staff_roles = {"staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "operator", "founder", "founders", "owner", "co-founder"}
     roles = getattr(member, "roles", [])
     return any(getattr(r, "name", "").lower() in staff_roles for r in roles)
 
@@ -4980,9 +5070,18 @@ async def setup_channel(ctx):
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
     }
+    founder_role = get_founder_role(guild)
+    mod_role = get_moderator_role(guild)
+    staff_role = get_staff_role(guild)
+    if founder_role:
+        cat_overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+    if mod_role:
+        cat_overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+    if staff_role:
+        cat_overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
     for role in guild.roles:
-        if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
-            cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
+            cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
     if not cat:
         cat = await guild.create_category(cat_name, overwrites=cat_overwrites)
