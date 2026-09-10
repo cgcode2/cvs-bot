@@ -253,6 +253,202 @@ def get_staff_role(guild: Optional[discord.Guild]) -> Optional[discord.Role]:
             return r
     return None
 
+def get_channel_mention(guild: Optional[discord.Guild], name: str, fallback: Optional[str] = None) -> str:
+    """Finds a channel by name or partial match and returns a clickable <#channel_id> mention."""
+    if not guild:
+        return fallback or f"#{name}"
+    ch = discord.utils.get(guild.channels, name=name)
+    if ch:
+        return ch.mention
+    clean = re.sub(r'^[^\w\-]+', '', name).strip("-").lower()
+    for c in guild.channels:
+        clean_c = re.sub(r'^[^\w\-]+', '', c.name).strip("-").lower()
+        if clean and (clean == clean_c or clean in clean_c or clean_c in clean):
+            return c.mention
+    return fallback or f"#{name}"
+
+# --- COMPLETED ORDER STATS TRACKER ---
+def record_completed_order(
+    guild_id: int,
+    ticket_id: int,
+    channel_id: int,
+    channel_name: str,
+    customer_id: int,
+    customer_name: str,
+    completed_by_id: int,
+    completed_by_name: str,
+    brand: str,
+    amount: float,
+    notes: Optional[str] = None
+) -> Dict[str, Any]:
+    if "completed_orders" not in tickets_db:
+        tickets_db["completed_orders"] = []
+    
+    order_num = len(tickets_db["completed_orders"]) + 1
+    now_iso = datetime.now(timezone.utc).isoformat()
+    record = {
+        "order_id": order_num,
+        "ticket_id": ticket_id,
+        "channel_id": channel_id,
+        "channel_name": channel_name,
+        "guild_id": guild_id,
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "completed_by_id": completed_by_id,
+        "completed_by_name": completed_by_name,
+        "brand": brand,
+        "amount": round(float(amount), 2),
+        "notes": notes or "",
+        "completed_at": now_iso
+    }
+    tickets_db["completed_orders"].append(record)
+    save_tickets()
+    return record
+
+def remove_completed_order(order_or_ticket_id: int, guild_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    orders = tickets_db.get("completed_orders", [])
+    for idx, order in enumerate(orders):
+        if guild_id and order.get("guild_id") and order.get("guild_id") != guild_id:
+            continue
+        if order.get("order_id") == order_or_ticket_id or order.get("ticket_id") == order_or_ticket_id:
+            removed = orders.pop(idx)
+            save_tickets()
+            return removed
+    return None
+
+def clear_completed_orders(guild_id: Optional[int] = None) -> int:
+    orders = tickets_db.get("completed_orders", [])
+    if guild_id is None:
+        count = len(orders)
+        tickets_db["completed_orders"] = []
+        save_tickets()
+        return count
+    else:
+        new_orders = [o for o in orders if o.get("guild_id") and o.get("guild_id") != guild_id]
+        cleared = len(orders) - len(new_orders)
+        tickets_db["completed_orders"] = new_orders
+        save_tickets()
+        return cleared
+
+# --- STAFF PAYMENT PROFILE CACHE ---
+STAFF_PAYMENT_FILE = "staff_payment_data.json"
+staff_payment_db: Dict[str, Any] = load_json_file(STAFF_PAYMENT_FILE, {})
+
+def save_staff_payment(staff_id: int, cashapp: Optional[str] = None, venmo: Optional[str] = None) -> None:
+    sid = str(staff_id)
+    if sid not in staff_payment_db:
+        staff_payment_db[sid] = {}
+    if cashapp:
+        staff_payment_db[sid]["cashapp"] = cashapp.strip().lstrip("$")
+    if venmo:
+        staff_payment_db[sid]["venmo"] = venmo.strip().lstrip("@")
+    save_json_file(STAFF_PAYMENT_FILE, staff_payment_db)
+
+def get_staff_payment(staff_id: int) -> Dict[str, str]:
+    return staff_payment_db.get(str(staff_id), {})
+
+async def fix_server_roles(guild: discord.Guild) -> Dict[str, Any]:
+    """
+    Consolidates duplicate Moderator roles into a single Moderator role,
+    migrates members, and removes redundant Staff role.
+    Ensures Founder and Moderator roles are hoisted and mentionable.
+    """
+    results = {
+        "moderators_merged": 0,
+        "staff_role_removed": False,
+        "primary_mod_role": None,
+        "founder_role": None,
+        "logs": []
+    }
+    if not guild or not getattr(guild, "me", None):
+        return results
+
+    can_manage = getattr(guild.me, "guild_permissions", None) and guild.me.guild_permissions.manage_roles
+    
+    # 1. Identify all Moderator roles
+    mod_roles = [
+        r for r in guild.roles 
+        if r.name.strip().lower() in ("moderator", "moderators", "mod", "mods")
+    ]
+    if not mod_roles:
+        mod_roles = [r for r in guild.roles if "moderator" in r.name.strip().lower()]
+
+    primary_mod = None
+    if mod_roles:
+        mod_roles.sort(key=lambda r: (len(getattr(r, "members", [])), getattr(r, "position", 0)), reverse=True)
+        primary_mod = mod_roles[0]
+        results["primary_mod_role"] = primary_mod.name
+
+        for dup in mod_roles[1:]:
+            results["logs"].append(f"Found duplicate Moderator role: {dup.name} (ID {dup.id})")
+            if can_manage and guild.me.top_role > dup:
+                for m in getattr(dup, "members", []):
+                    try:
+                        if primary_mod not in m.roles and guild.me.top_role > primary_mod:
+                            await m.add_roles(primary_mod, reason="Consolidating duplicate Moderator roles")
+                    except Exception as e:
+                        print(f"⚠️ Error migrating member {m} to primary mod role: {e}", file=sys.stderr)
+                try:
+                    await dup.delete(reason="Deleting duplicate Moderator role")
+                    results["moderators_merged"] += 1
+                    results["logs"].append(f"Deleted duplicate Moderator role {dup.name}")
+                except Exception as e:
+                    print(f"⚠️ Error deleting duplicate Moderator role {dup.name}: {e}", file=sys.stderr)
+
+        if can_manage and guild.me.top_role > primary_mod:
+            try:
+                updates = {}
+                if primary_mod.name != "Moderator":
+                    updates["name"] = "Moderator"
+                if not primary_mod.mentionable:
+                    updates["mentionable"] = True
+                if not primary_mod.hoist:
+                    updates["hoist"] = True
+                if updates:
+                    await primary_mod.edit(**updates, reason="Standardizing primary Moderator role")
+            except Exception as e:
+                print(f"⚠️ Error updating primary Moderator role: {e}", file=sys.stderr)
+
+    # 2. Clean up redundant "Staff" role
+    staff_roles = [
+        r for r in guild.roles 
+        if r.name.strip().lower() in ("staff",)
+    ]
+    for s_role in staff_roles:
+        results["logs"].append(f"Found extra Staff role: {s_role.name} (ID {s_role.id})")
+        if can_manage and guild.me.top_role > s_role:
+            if primary_mod:
+                for m in getattr(s_role, "members", []):
+                    try:
+                        if primary_mod not in m.roles and guild.me.top_role > primary_mod:
+                            await m.add_roles(primary_mod, reason="Migrating Staff role members to Moderator")
+                    except Exception:
+                        pass
+            try:
+                await s_role.delete(reason="Removing redundant Staff role per user request")
+                results["staff_role_removed"] = True
+                results["logs"].append(f"Deleted extra Staff role {s_role.name}")
+            except Exception as e:
+                print(f"⚠️ Error deleting redundant Staff role {s_role.name}: {e}", file=sys.stderr)
+
+    # 3. Ensure Founder role is properly set
+    founder_role = get_founder_role(guild)
+    if founder_role:
+        results["founder_role"] = founder_role.name
+        if can_manage and guild.me.top_role > founder_role:
+            try:
+                updates = {}
+                if not founder_role.mentionable:
+                    updates["mentionable"] = True
+                if not founder_role.hoist:
+                    updates["hoist"] = True
+                if updates:
+                    await founder_role.edit(**updates, reason="Ensuring Founder role is hoisted & mentionable")
+            except Exception:
+                pass
+
+    return results
+
 def format_ticket_transcript(messages: List[discord.Message], ticket_id: int, owner_id: int) -> str:
     lines = [
         "============================================================",
@@ -2134,55 +2330,7 @@ class TicketControlView(discord.ui.View):
             f"📌 **Ticket Claimed:** {interaction.user.mention} has claimed this ticket and will be assisting you!"
         )
 
-    @discord.ui.button(label="Mark Paid", style=discord.ButtonStyle.success, emoji="💰", custom_id="aio_ticket_mark_paid_btn", row=0)
-    async def btn_paid(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
-            return
-        if not is_staff_or_admin(interaction.user):
-            await interaction.response.send_message("⛔ Only server staff or founders can mark tickets as paid.", ephemeral=True)
-            return
-
-        update_ticket_status(interaction.channel.id, "paid")
-        embed = discord.Embed(
-            title="💰 Payment Confirmed!",
-            description=(
-                f"✅ Payment has been verified by {interaction.user.mention}.\n\n"
-                "**📦 What happens next:**\n"
-                "▸ Staff is now preparing your account credentials\n"
-                "▸ You will receive your order details shortly\n"
-                "▸ Ping staff if you have any questions"
-            ),
-            color=0x2ecc71
-        )
-        embed.set_footer(text=f"Confirmed by {interaction.user.display_name} • AIO Order Suite")
-        await interaction.channel.send(embed=embed)
-        await interaction.response.send_message("✅ Order marked as paid!", ephemeral=True)
-
-    @discord.ui.button(label="Complete Order", style=discord.ButtonStyle.primary, emoji="✅", custom_id="aio_ticket_mark_complete_btn", row=0)
-    async def btn_complete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
-            return
-        if not is_staff_or_admin(interaction.user):
-            await interaction.response.send_message("⛔ Only server staff or founders can complete orders.", ephemeral=True)
-            return
-
-        update_ticket_status(interaction.channel.id, "completed")
-        embed = discord.Embed(
-            title="🎉 Order Complete!",
-            description=(
-                f"Your order has been fulfilled by {interaction.user.mention}!\n\n"
-                "**🙏 Thank you for your purchase!**\n"
-                "▸ We hope you enjoy your rewards!\n"
-                "▸ Feel free to drop a shoutout in **#receipt-brags** 🎉\n"
-                "▸ When you're done here, click **Close Ticket** below."
-            ),
-            color=0x9b59b6
-        )
-        embed.set_footer(text=f"Fulfilled by {interaction.user.display_name} • AIO Order Suite")
-        await interaction.channel.send(embed=embed)
-        await interaction.response.send_message("✅ Order marked as completed!", ephemeral=True)
-
-    @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="aio_ticket_transcript_btn", row=1)
+    @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="aio_ticket_transcript_btn", row=0)
     async def btn_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
@@ -2196,7 +2344,7 @@ class TicketControlView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to generate transcript: {e}", ephemeral=True)
 
-    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="aio_ticket_close_btn", row=1)
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="aio_ticket_close_btn", row=0)
     async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
         if is_protected_channel(interaction.channel):
             await interaction.response.send_message("🛡️ **Protected Channel:** This channel cannot be closed or deleted!", ephemeral=True)
@@ -2246,7 +2394,6 @@ class TicketLaunchView(discord.ui.View):
 
         founder_role = get_founder_role(guild)
         mod_role = get_moderator_role(guild)
-        staff_role = get_staff_role(guild)
 
         ch_overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -2267,12 +2414,8 @@ class TicketLaunchView(discord.ui.View):
             ch_overwrites[mod_role] = discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
             )
-        if staff_role:
-            ch_overwrites[staff_role] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
-            )
         for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
                 ch_overwrites[role] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
                 )
@@ -2385,7 +2528,6 @@ class FoodAccountOrderModal(discord.ui.Modal):
 
         founder_role = get_founder_role(guild)
         mod_role = get_moderator_role(guild)
-        staff_role = get_staff_role(guild)
 
         ch_overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -2406,12 +2548,8 @@ class FoodAccountOrderModal(discord.ui.Modal):
             ch_overwrites[mod_role] = discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
             )
-        if staff_role:
-            ch_overwrites[staff_role] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
-            )
         for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
                 ch_overwrites[role] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
                 )
@@ -2447,8 +2585,8 @@ class FoodAccountOrderModal(discord.ui.Modal):
                 f"Welcome {interaction.user.mention}! Support staff has been notified of your order.\n\n"
                 f"**📋 Order Details**\n"
                 f"▸ Item: **{self.brand} Preloaded Account(s)**\n"
-                f"▸ Quantity: **{qty} account(s)** — \${self.price:.2f} each\n"
-                f"▸ Estimated Total: **\${total_est:.2f}**\n"
+                f"▸ Quantity: **{qty} account(s)** — ${self.price:.2f} each\n"
+                f"▸ Estimated Total: **${total_est:.2f}**\n"
                 f"▸ Payment Note: `{notes_val}`\n\n"
                 f"**📌 How This Works**\n"
                 f"{instructions}"
@@ -2487,15 +2625,15 @@ def build_food_accounts_embed() -> discord.Embed:
     )
 
     tb_value = (
-        "💵 **\$10.00 per account** · 15 rewards pre-loaded on every account\n\n"
+        "💵 **$10.00 per account** · 15 rewards pre-loaded on every account\n\n"
         "**How to order:**\n"
         "1️⃣  Open a ticket → tell staff how many you want (1–10)\n"
         "2️⃣  Staff sends you an account email → enter it in the Taco Bell app\n"
         "3️⃣  Tap **Send Code** in the app, then ping staff for the OTP\n\n"
         "**Rewards on every account:**\n"
-        "▸ \$15 off your entire order\n"
-        "▸ \$10 off your entire order\n"
-        "▸ \$5 off your entire order + extra \$5 off\n"
+        "▸ $15 off your entire order\n"
+        "▸ $10 off your entire order\n"
+        "▸ $5 off your entire order + extra $5 off\n"
         "▸ 1 free individual item\n"
         "▸ Free Chalupa Supreme ×2\n"
         "▸ Free Quesadilla\n"
@@ -2508,7 +2646,7 @@ def build_food_accounts_embed() -> discord.Embed:
     embed.add_field(name="🌮 Taco Bell Rewards", value=tb_value, inline=False)
 
     ph_value = (
-        "💵 **\$15.00 per account** · stack 2–3 at a time for maximum savings\n\n"
+        "💵 **$15.00 per account** · stack 2–3 at a time for maximum savings\n\n"
         "Every account is a **Hut Rewards** login with these free rewards pre-loaded:\n\n"
         "**🍕 Pizzas**\n"
         "▸ 2 Large pizzas · 1 Medium pizza\n"
@@ -2710,7 +2848,10 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
     created_cats = 0
     created_channels = 0
 
-    # Ensure Founder, Moderator, and Staff roles exist and are mentionable
+    # Consolidate duplicate roles and remove redundant Staff role
+    await fix_server_roles(guild)
+
+    # Ensure Founder and single Moderator roles exist and are mentionable
     founder_role = get_founder_role(guild)
     if not founder_role and guild.me.guild_permissions.manage_roles:
         try:
@@ -2754,25 +2895,6 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
         except Exception:
             pass
 
-    staff_role = get_staff_role(guild)
-    if not staff_role and guild.me.guild_permissions.manage_roles:
-        try:
-            staff_role = await guild.create_role(
-                name="Staff",
-                color=discord.Color.teal(),
-                hoist=True,
-                mentionable=True,
-                reason="Created Staff role during server formatting"
-            )
-        except Exception as e:
-            print(f"⚠️ Could not auto-create Staff role: {e}", file=sys.stderr)
-    elif staff_role and not staff_role.mentionable and guild.me.guild_permissions.manage_roles:
-        try:
-            if guild.me.top_role > staff_role:
-                await staff_role.edit(mentionable=True, reason="Made Staff role mentionable for staff pings")
-        except Exception:
-            pass
-
     for section in FORMAT_SERVER_BLUEPRINT:
         cat_name = section["category"]
         cat = discord.utils.get(guild.categories, name=cat_name)
@@ -2785,10 +2907,8 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                 cat_overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
             if mod_role:
                 cat_overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
-            if staff_role:
-                cat_overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
             for role in guild.roles:
-                if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
+                if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
                     cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         elif section.get("read_only"):
             cat_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
@@ -2869,6 +2989,11 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
     if clean_old:
         deleted_count = await purge_channels_helper(guild, mode="clean_old")
 
+    opt_mention = get_channel_mention(guild, "🛒-coupon-optimizer", "#🛒-coupon-optimizer")
+    ticket_mention = get_channel_mention(guild, "📩-open-a-ticket", "#📩-open-a-ticket")
+    food_mention = get_channel_mention(guild, "🌮🍕-food-rewards", "#🌮🍕-food-rewards")
+    fa_mention = get_channel_mention(guild, "form-automation", "#form-automation")
+
     desc = (
         f"Your server layout has been organized with clean categories and channels!\n\n"
         f"• 📁 **Categories Created/Organized:** {created_cats}\n"
@@ -2877,10 +3002,10 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
     if clean_old:
         desc += f"• 🧹 **Previous Channels Cleaned:** {deleted_count} old channel(s) removed\n"
     desc += (
-        f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` was completely preserved and untouched.\n"
-        f"• 🔒 **Private CVS Optimizer:** Active in `#🛒-coupon-optimizer` under `🔒 PRIVATE CVS` (Staff grant access with `/permit @user`)\n"
-        f"• 🎫 **Tickets Deployed:** Active in `#📩-open-a-ticket`\n"
-        f"• 🌮🍕 **Food Accounts Store Deployed:** Active in `#🌮🍕-food-rewards`"
+        f"• 🛡️ **Guaranteed Safeguard:** {fa_mention} was completely preserved and untouched.\n"
+        f"• 🔒 **Private CVS Optimizer:** Active in {opt_mention} under `🔒 PRIVATE CVS` (Staff grant access with `/permit @user`)\n"
+        f"• 🎫 **Tickets Deployed:** Active in {ticket_mention}\n"
+        f"• 🌮🍕 **Food Accounts Store Deployed:** Active in {food_mention}"
     )
 
     summary_embed = discord.Embed(
@@ -3488,6 +3613,10 @@ async def on_ready():
                     await role.edit(name="AIO Bot", reason="Update role name from CVS Coupon Optimizer to AIO Bot")
         except Exception as e:
             print(f"ℹ️ Note on auto role rename in guild '{guild.name}': {e}", file=sys.stderr, flush=True)
+        try:
+            await fix_server_roles(guild)
+        except Exception as e:
+            print(f"ℹ️ Note on auto role fix in guild '{guild.name}': {e}", file=sys.stderr, flush=True)
 
     try:
         bot.add_view(TicketLaunchView())
@@ -5213,23 +5342,28 @@ async def revoke_user(ctx, member: discord.Member, channel: Optional[discord.Tex
 @app_commands.default_permissions(administrator=True)
 async def format_server(ctx):
     await safely_delete_message(ctx)
+    def _m(name: str) -> str:
+        return get_channel_mention(ctx.guild, name, f"`#{name}`")
+
+    desc = (
+        "This command will organize and build a clean, professional server layout with organized categories, topic channels, and proper permissions.\n\n"
+        f"🛡️ **SAFEGUARD ACTIVE:** {_m('form-automation')} is permanently protected and will NEVER be touched, modified, or moved.\n\n"
+        "**Blueprint Structure:**\n"
+        f"• 📌 **INFORMATION**: {_m('📢-announcements')}, {_m('📜-rules')}, {_m('👋-welcome')}\n"
+        f"• 💬 **COMMUNITY**: {_m('💬-general-chat')}, {_m('🤖-bot-commands')}, {_m('💡-suggestions')}\n"
+        f"• 🔒 **PRIVATE CVS**: {_m('🛒-coupon-optimizer')} *(private channel! Staff grant access with `/permit @user`)*\n"
+        f"• 🛍️ **SAVINGS & REWARDS**: {_m('🌮🍕-food-rewards')}, {_m('🏷️-deals-and-savings')}, {_m('🧾-receipt-brags')}\n"
+        f"• 🎫 **SUPPORT**: {_m('📩-open-a-ticket')} *(with Ticket Panel!)*\n"
+        "• 🔊 **VOICE CHANNELS**: `🔊 General Voice`, `🔊 Lounge 1`\n"
+        f"• 🛡️ **STAFF ZONE**: {_m('🛡️-staff-chat')}, {_m('📜-mod-logs')} *(staff-only)*\n\n"
+        "**Options Below:**\n"
+        "• **Format & Clean Old Channels**: Sets up the blueprint AND wipes leftover/unformatted channels\n"
+        "• **Format (Keep Old)**: Sets up the blueprint alongside existing channels"
+    )
+
     embed = discord.Embed(
         title="🏗️ Server Layout Formatter & Architect",
-        description=(
-            "This command will organize and build a clean, professional server layout with organized categories, topic channels, and proper permissions.\n\n"
-            "🛡️ **SAFEGUARD ACTIVE:** `#form-automation` is permanently protected and will NEVER be touched, modified, or moved.\n\n"
-            "**Blueprint Structure:**\n"
-            "• 📌 **INFORMATION**: `#📢-announcements`, `#📜-rules`, `#👋-welcome`\n"
-            "• 💬 **COMMUNITY**: `#💬-general-chat`, `#🤖-bot-commands`, `#💡-suggestions`\n"
-            "• 🔒 **PRIVATE CVS**: `#🛒-coupon-optimizer` *(private channel! Staff grant access with `/permit @user`)*\n"
-            "• 🛍️ **SAVINGS & REWARDS**: `#🌮🍕-food-rewards`, `#🏷️-deals-and-savings`, `#🧾-receipt-brags`\n"
-            "• 🎫 **SUPPORT**: `#📩-open-a-ticket` *(with Ticket Panel!)*\n"
-            "• 🔊 **VOICE CHANNELS**: `🔊 General Voice`, `🔊 Lounge 1`\n"
-            "• 🛡️ **STAFF ZONE**: `#🛡️-staff-chat`, `#📜-mod-logs` *(staff-only)*\n\n"
-            "**Options Below:**\n"
-            "• **Format & Clean Old Channels**: Sets up the blueprint AND wipes leftover/unformatted channels\n"
-            "• **Format (Keep Old)**: Sets up the blueprint alongside existing channels"
-        ),
+        description=desc,
         color=COLOR_PRIMARY
     )
     embed.set_footer(text="Admin Command • Choose an option below")
@@ -5422,8 +5556,11 @@ async def paid_cmd(ctx: commands.Context, amount: Optional[str] = None, *, metho
         return
 
     update_ticket_status(ctx.channel.id, "paid")
+    t_info = tickets_db.get("tickets", {}).get(str(ctx.channel.id), {})
     amt_text = amount.strip() if amount else None
-    if amt_text and not amt_text.startswith("$") and re.match(r"^\d+(\.\d{2})?$", amt_text):
+    if not amt_text and t_info.get("invoice_amount"):
+        amt_text = f"${t_info['invoice_amount']:.2f}"
+    elif amt_text and not amt_text.startswith("$") and re.match(r"^\d+(\.\d{2})?$", amt_text):
         amt_text = f"${amt_text}"
 
     embed = discord.Embed(
@@ -5460,11 +5597,39 @@ async def complete_cmd(ctx: commands.Context, *, notes: Optional[str] = None):
         return
 
     update_ticket_status(ctx.channel.id, "completed")
+    t_info = tickets_db.get("tickets", {}).get(str(ctx.channel.id), {})
+    ticket_id = t_info.get("id", 0)
+    customer_id = t_info.get("owner_id", 0)
+    customer = ctx.guild.get_member(customer_id) if ctx.guild and customer_id else None
+    customer_name = str(customer) if customer else (f"User-{customer_id}" if customer_id else "Customer")
+
+    ch_name = getattr(ctx.channel, "name", "")
+    brand = "Taco Bell" if "taco" in ch_name.lower() else ("Pizza Hut" if "pizza" in ch_name.lower() else "Fast Food Rewards")
+    amt = t_info.get("invoice_amount")
+    if amt is None:
+        amt = 10.0 if "taco" in brand.lower() else (15.0 if "pizza" in brand.lower() else 0.0)
+
+    # Record order in persistent stats tracker
+    record_completed_order(
+        guild_id=ctx.guild.id if ctx.guild else 0,
+        ticket_id=ticket_id,
+        channel_id=ctx.channel.id,
+        channel_name=ch_name,
+        customer_id=customer_id,
+        customer_name=customer_name,
+        completed_by_id=ctx.author.id,
+        completed_by_name=str(ctx.author),
+        brand=brand,
+        amount=amt,
+        notes=notes
+    )
+
+    receipt_mention = get_channel_mention(ctx.guild, "🧾-receipt-brags", "#receipt-brags")
     embed = discord.Embed(
         title="🎉 Order Fulfilled & Completed!",
         description=(
             f"Your order has been marked as completed by {ctx.author.mention}!\n\n"
-            "Thank you for shopping with us! If you loved the service, drop a shoutout in **#receipt-brags**.\n\n"
+            f"Thank you for shopping with us! If you loved the service, drop a shoutout in {receipt_mention} 🎉\n\n"
             "You may click **Close Ticket** below when finished."
         ),
         color=0x9b59b6
@@ -5473,7 +5638,7 @@ async def complete_cmd(ctx: commands.Context, *, notes: Optional[str] = None):
         embed.add_field(name="📝 Notes", value=notes.strip(), inline=False)
     embed.add_field(name="⏰ Completed At", value=f"<t:{int(time.time())}:R>", inline=True)
     embed.set_footer(text=f"Fulfilled by {ctx.author.display_name} • AIO Fulfillment Suite")
-    await ctx.send(embed=embed, view=TicketControlView())
+    await ctx.send(embed=embed)
 
 
 @bot.hybrid_command(
@@ -5592,6 +5757,266 @@ async def close_cmd(ctx: commands.Context):
         "⚠️ **Close Ticket Confirmation**\nAre you sure you want to close this ticket? This will delete the channel.",
         view=TicketCloseConfirmView()
     )
+
+
+# --- INVOICING / BILLING COMMAND ---
+@bot.hybrid_command(
+    name="invoice",
+    aliases=["bill", "createbill", "sendinvoice"],
+    description="Staff command: Generate a payment bill/invoice with CashApp and Venmo"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    price="Total price due (e.g. 10.00, $15, 20)",
+    cashapp="Your Cash App handle/$cashtag (e.g. $cody or cody)",
+    venmo="Your Venmo handle (e.g. @cody or cody)",
+    item="Item/service name (optional, e.g. Taco Bell 1x Account)",
+    customer="Customer to invoice (optional, defaults to ticket owner)"
+)
+async def invoice_cmd(
+    ctx: commands.Context,
+    price: str,
+    cashapp: Optional[str] = None,
+    venmo: Optional[str] = None,
+    item: Optional[str] = None,
+    customer: Optional[discord.Member] = None
+):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can generate invoices.", delete_after=6)
+        return
+
+    clean_price_str = price.replace("$", "").replace(",", "").strip()
+    try:
+        val = float(clean_price_str)
+        price_formatted = f"${val:.2f}"
+    except ValueError:
+        await ctx.send("❌ Please enter a valid number for price (e.g. `10.00` or `$15`).", delete_after=6)
+        return
+
+    saved_handles = get_staff_payment(ctx.author.id)
+    ca_handle = (cashapp.strip().lstrip("$") if cashapp else saved_handles.get("cashapp", "")).strip()
+    vm_handle = (venmo.strip().lstrip("@") if venmo else saved_handles.get("venmo", "")).strip()
+
+    if cashapp or venmo:
+        save_staff_payment(ctx.author.id, cashapp=ca_handle if ca_handle else None, venmo=vm_handle if vm_handle else None)
+
+    t_info = tickets_db.get("tickets", {}).get(str(ctx.channel.id), {})
+    ticket_id = t_info.get("id")
+    target_cust = customer
+    if not target_cust and t_info.get("owner_id") and ctx.guild:
+        target_cust = ctx.guild.get_member(t_info["owner_id"])
+
+    item_desc = item.strip() if item else None
+    if not item_desc:
+        ch_name = getattr(ctx.channel, "name", "")
+        if "taco" in ch_name.lower():
+            item_desc = "Taco Bell Preloaded Account(s)"
+        elif "pizza" in ch_name.lower():
+            item_desc = "Pizza Hut Preloaded Account(s)"
+        else:
+            item_desc = "Fast Food Rewards / Preloaded Account"
+
+    if str(ctx.channel.id) in tickets_db.get("tickets", {}):
+        tickets_db["tickets"][str(ctx.channel.id)]["invoice_amount"] = val
+        tickets_db["tickets"][str(ctx.channel.id)]["invoice_item"] = item_desc
+        tickets_db["tickets"][str(ctx.channel.id)]["status"] = "invoiced"
+        save_tickets()
+
+    embed = discord.Embed(
+        title="🧾 Official Payment Invoice",
+        description=(
+            f"Payment requested for {target_cust.mention if target_cust else 'this order'}!\n\n"
+            "Please send payment using either **Cash App** or **Venmo** below to complete your order."
+        ),
+        color=0xf1c40f
+    )
+    embed.add_field(name="💵 Amount Due", value=f"**{price_formatted}**", inline=True)
+    embed.add_field(name="📦 Item", value=f"**{item_desc}**", inline=True)
+    if ticket_id:
+        embed.add_field(name="🎫 Ticket", value=f"`#{ticket_id:04d}`", inline=True)
+
+    pay_methods = []
+    if ca_handle:
+        pay_methods.append(f"• **Cash App:** [${ca_handle}](https://cash.app/${ca_handle}) · ` ${ca_handle} `")
+    if vm_handle:
+        pay_methods.append(f"• **Venmo:** [@{vm_handle}](https://venmo.com/u/{vm_handle}) · ` @{vm_handle} `")
+    if not pay_methods:
+        pay_methods.append("• *Contact staff in this channel for payment handle details.*")
+    embed.add_field(name="💳 Payment Handles", value="\n".join(pay_methods), inline=False)
+
+    instructions = (
+        f"1️⃣ Send exactly **{price_formatted}** to the handle listed above.\n"
+        "2️⃣ In the payment note, include your **Discord username** or ticket number.\n"
+        "3️⃣ Reply in this channel once sent (or upload a screenshot).\n"
+        "4️⃣ Staff will verify payment and immediately fulfill your order!"
+    )
+    embed.add_field(name="📌 Instructions", value=instructions, inline=False)
+    embed.add_field(name="⏳ Status", value="🟡 Awaiting Payment", inline=True)
+    embed.set_footer(text=f"Issued by {ctx.author.display_name} • Staff: run /paid once payment arrives")
+
+    ping_cust = target_cust.mention if target_cust else ""
+    await ctx.send(content=f"{ping_cust} Here is your official invoice:", embed=embed)
+
+
+# --- COMPLETED ORDER STATS COMMANDS ---
+@bot.hybrid_command(
+    name="orderstats",
+    aliases=["completedorders", "sales", "orders"],
+    description="Staff command: View completed order statistics and history"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(action="Optional action: 'view' (default) or 'reset' (clears all test orders)")
+async def orderstats_cmd(ctx: commands.Context, action: Optional[str] = "view"):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can view order stats.", delete_after=6)
+        return
+
+    act = (action or "view").lower().strip()
+    if act in ("reset", "clear_all", "clearall", "wipe"):
+        cleared_count = clear_completed_orders(guild_id=ctx.guild.id if ctx.guild else None)
+        embed = discord.Embed(
+            title="🧹 Order Stats Reset",
+            description=f"Cleared **{cleared_count}** order(s) from the stat tracker!",
+            color=COLOR_SUCCESS
+        )
+        await ctx.send(embed=embed)
+        return
+
+    orders = tickets_db.get("completed_orders", [])
+    if ctx.guild:
+        guild_orders = [o for o in orders if o.get("guild_id") == ctx.guild.id or not o.get("guild_id")]
+    else:
+        guild_orders = orders
+
+    total_count = len(guild_orders)
+    total_rev = sum(o.get("amount", 0.0) for o in guild_orders)
+    taco_count = sum(1 for o in guild_orders if "taco" in o.get("brand", "").lower())
+    pizza_count = sum(1 for o in guild_orders if "pizza" in o.get("brand", "").lower())
+    other_count = total_count - (taco_count + pizza_count)
+
+    embed = discord.Embed(
+        title="📊 Completed Orders & Sales Tracker",
+        description=f"Summary of all fulfilled customer orders in **{ctx.guild.name if ctx.guild else 'AIO Bot'}**:",
+        color=COLOR_SUCCESS
+    )
+    embed.add_field(name="🏆 Total Completed", value=f"**{total_count} orders**", inline=True)
+    embed.add_field(name="💰 Total Revenue", value=f"**${total_rev:.2f}**", inline=True)
+    embed.add_field(name="🏷️ Brand Breakdown", value=f"🌮 Taco Bell: **{taco_count}**\n🍕 Pizza Hut: **{pizza_count}**" + (f"\n✨ Other: **{other_count}**" if other_count > 0 else ""), inline=True)
+
+    if guild_orders:
+        recent = guild_orders[-8:]
+        lines = []
+        for o in reversed(recent):
+            oid = o.get("order_id", o.get("ticket_id", "?"))
+            brand = o.get("brand", "Order")
+            amt = o.get("amount", 0.0)
+            cust = o.get("customer_name") or f"<@{o.get('customer_id', '')}>"
+            ts = ""
+            if o.get("completed_at"):
+                try:
+                    dt = datetime.fromisoformat(o["completed_at"])
+                    ts = f" · <t:{int(dt.timestamp())}:R>"
+                except Exception:
+                    pass
+            lines.append(f"`#{oid:02d}` **{brand}** — **${amt:.2f}** ({cust}){ts}")
+        embed.add_field(name="📋 Recent Completed Orders", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="📋 Recent Completed Orders", value="*No completed orders tracked yet.*", inline=False)
+
+    embed.set_footer(text="Staff: Run /clearorder <id> to remove an order, or /orderstats reset to clear test data")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="clearorder",
+    aliases=["removeorder", "delorder", "deleteorder"],
+    description="Staff command: Manually remove a test or cancelled order from the stat tracker"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(order_id="The Order ID or Ticket Number to remove (e.g. 1, 2, 0002)")
+async def clearorder_cmd(ctx: commands.Context, order_id: str):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can edit order stats.", delete_after=6)
+        return
+
+    clean_id_str = order_id.replace("#", "").strip()
+    try:
+        target_num = int(clean_id_str)
+    except ValueError:
+        await ctx.send("❌ Please enter a valid order number or ticket ID (e.g. `/clearorder 2`).", delete_after=6)
+        return
+
+    removed = remove_completed_order(target_num, guild_id=ctx.guild.id if ctx.guild else None)
+    if removed:
+        remaining = len([o for o in tickets_db.get("completed_orders", []) if not ctx.guild or o.get("guild_id") == ctx.guild.id])
+        embed = discord.Embed(
+            title="🗑️ Order Removed from Tracker",
+            description=(
+                f"Successfully removed Order **`#{removed.get('order_id', target_num):02d}`** ({removed.get('brand', 'Item')}) from stats.\n\n"
+                f"• **Amount Reverted:** ${removed.get('amount', 0.0):.2f}\n"
+                f"• **Remaining Completed Orders:** {remaining}\n"
+                "• *This will no longer count towards completed order statistics.*"
+            ),
+            color=COLOR_WARN
+        )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(f"❌ Could not find Order or Ticket `#{target_num}` in the completed orders tracker.", delete_after=8)
+
+
+# --- ROLE CLEANUP & FIX COMMAND ---
+@bot.hybrid_command(
+    name="fixroles",
+    aliases=["cleanroles", "repairroles"],
+    description="Staff command: Deduplicate Moderator roles and remove redundant Staff role"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_roles=True)
+@app_commands.default_permissions(manage_roles=True)
+async def fixroles_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can fix server roles.", delete_after=6)
+        return
+
+    status_msg = await ctx.send("⏳ **Auditing and fixing server roles...** Please wait.")
+    results = await fix_server_roles(ctx.guild)
+
+    desc = "Server role audit and cleanup complete!\n\n"
+    if results["moderators_merged"] > 0:
+        desc += f"• 🧹 **Duplicate Moderator Roles Merged/Deleted:** {results['moderators_merged']}\n"
+    else:
+        desc += "• ✅ **Moderator Roles:** Clean (No duplicate roles detected)\n"
+
+    if results["staff_role_removed"]:
+        desc += "• 🗑️ **Redundant Staff Role:** Removed (Members migrated to Moderator)\n"
+    else:
+        desc += "• ✅ **Staff Role:** None present / Already cleaned\n"
+
+    founder_role = get_founder_role(ctx.guild)
+    mod_role = get_moderator_role(ctx.guild)
+    desc += (
+        f"\n**Active Server Staff Roles:**\n"
+        f"• 👑 **Founder Role:** {founder_role.mention if founder_role else 'None'}\n"
+        f"• 🛡️ **Moderator Role:** {mod_role.mention if mod_role else 'None'}"
+    )
+
+    embed = discord.Embed(
+        title="🛡️ Server Roles Repaired & Cleaned",
+        description=desc,
+        color=COLOR_SUCCESS
+    )
+    embed.set_footer(text="AIO Role Management Suite")
+    await status_msg.edit(content=None, embed=embed)
 
 
 @bot.hybrid_command(name="ping", description="Check the bot's latency")

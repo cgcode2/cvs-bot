@@ -156,8 +156,8 @@ class TestAIOBot(unittest.TestCase):
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
             "balance", "daily", "pay", "leaderboard",
             "accounts", "cvsaccount",
-            "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel",
-            "revoke", "paid", "complete", "otp", "deliver", "claim", "close"
+            "revoke", "paid", "complete", "otp", "deliver", "claim", "close",
+            "invoice", "orderstats", "clearorder", "fixroles"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -809,12 +809,108 @@ class TestAIOBot(unittest.TestCase):
         view = main.TicketControlView()
         custom_ids = [getattr(child, "custom_id", None) for child in view.children]
         
-        # Verify all persistent buttons exist
+        # Verify panel buttons exist (Claim, Transcript, Close)
         self.assertIn("aio_ticket_claim_btn", custom_ids)
-        self.assertIn("aio_ticket_mark_paid_btn", custom_ids)
-        self.assertIn("aio_ticket_mark_complete_btn", custom_ids)
         self.assertIn("aio_ticket_transcript_btn", custom_ids)
         self.assertIn("aio_ticket_close_btn", custom_ids)
+        # Paid and Complete were removed from panel per user request (now commands only)
+        self.assertNotIn("aio_ticket_mark_paid_btn", custom_ids)
+        self.assertNotIn("aio_ticket_mark_complete_btn", custom_ids)
+
+        # Verify /paid and /complete are registered bot commands
+        self.assertIn("paid", main.bot.all_commands)
+        self.assertIn("complete", main.bot.all_commands)
+
+    def test_order_stats_tracker_and_clearorder(self):
+        saved_db = copy.deepcopy(main.tickets_db)
+        try:
+            main.tickets_db["completed_orders"] = []
+            
+            # Record test order 1
+            o1 = main.record_completed_order(
+                guild_id=101,
+                ticket_id=1,
+                channel_id=1001,
+                channel_name="order-tacobell-0001",
+                customer_id=501,
+                customer_name="Customer1",
+                completed_by_id=901,
+                completed_by_name="Staff1",
+                brand="Taco Bell",
+                amount=10.0,
+                notes="Paid via CashApp"
+            )
+            self.assertEqual(o1["order_id"], 1)
+            self.assertEqual(len(main.tickets_db["completed_orders"]), 1)
+
+            # Record test order 2
+            o2 = main.record_completed_order(
+                guild_id=101,
+                ticket_id=2,
+                channel_id=1002,
+                channel_name="order-pizzahut-0002",
+                customer_id=502,
+                customer_name="Customer2",
+                completed_by_id=901,
+                completed_by_name="Staff1",
+                brand="Pizza Hut",
+                amount=15.0
+            )
+            self.assertEqual(o2["order_id"], 2)
+            self.assertEqual(len(main.tickets_db["completed_orders"]), 2)
+
+            # Remove specific order (test order 1)
+            removed = main.remove_completed_order(1)
+            self.assertIsNotNone(removed)
+            self.assertEqual(removed["order_id"], 1)
+            self.assertEqual(len(main.tickets_db["completed_orders"]), 1)
+            self.assertEqual(main.tickets_db["completed_orders"][0]["order_id"], 2)
+
+            # Clear all remaining orders
+            cleared = main.clear_completed_orders(guild_id=101)
+            self.assertEqual(cleared, 1)
+            self.assertEqual(len(main.tickets_db["completed_orders"]), 0)
+        finally:
+            main.tickets_db.clear()
+            main.tickets_db.update(saved_db)
+            main.save_tickets()
+
+    def test_get_channel_mention_helper(self):
+        class MockChannel:
+            def __init__(self, name: str, cid: int):
+                self.name = name
+                self.id = cid
+            @property
+            def mention(self):
+                return f"<#{self.id}>"
+
+        class MockGuild:
+            def __init__(self, channels):
+                self.channels = channels
+
+        ch1 = MockChannel("🧾-receipt-brags", 111222)
+        ch2 = MockChannel("form-automation", 333444)
+        guild = MockGuild([ch1, ch2])
+
+        # Exact match
+        self.assertEqual(main.get_channel_mention(guild, "🧾-receipt-brags"), "<#111222>")
+        # Partial match without prefix
+        self.assertEqual(main.get_channel_mention(guild, "receipt-brags"), "<#111222>")
+        # Channel not in guild returns fallback
+        self.assertEqual(main.get_channel_mention(guild, "nonexistent", fallback="#default"), "#default")
+        # None guild returns fallback
+        self.assertEqual(main.get_channel_mention(None, "anything", fallback="#fallback"), "#fallback")
+
+    def test_staff_payment_profiles(self):
+        saved_db = dict(main.staff_payment_db)
+        try:
+            main.save_staff_payment(12345, cashapp="$MyCashtag", venmo="@MyVenmo")
+            prof = main.get_staff_payment(12345)
+            self.assertEqual(prof.get("cashapp"), "MyCashtag")
+            self.assertEqual(prof.get("venmo"), "MyVenmo")
+        finally:
+            main.staff_payment_db.clear()
+            main.staff_payment_db.update(saved_db)
 
 
 if __name__ == '__main__':
