@@ -253,6 +253,39 @@ def get_staff_role(guild: Optional[discord.Guild]) -> Optional[discord.Role]:
             return r
     return None
 
+def is_staff_member(member: Optional[Any]) -> bool:
+    """Checks if a user is server owner, administrator, moderator, or staff."""
+    if member is None:
+        return False
+    guild = getattr(member, "guild", None)
+    if guild and getattr(guild, "owner_id", None) == member.id:
+        return True
+    perms = getattr(member, "guild_permissions", None)
+    if perms:
+        if getattr(perms, "manage_channels", False) or getattr(perms, "administrator", False) or getattr(perms, "manage_messages", False):
+            return True
+    staff_roles = {"staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "operator", "founder", "founders", "owner", "co-founder"}
+    roles = getattr(member, "roles", [])
+    return any(getattr(r, "name", "").lower() in staff_roles for r in roles)
+
+def resolve_member_from_input(guild: Optional[discord.Guild], query: str) -> Optional[discord.Member]:
+    """Resolves a guild member from mention (<@123>), user ID (123), or username / nickname."""
+    if not guild or not query:
+        return None
+    cleaned = query.strip().lstrip("<@!").rstrip(">")
+    if cleaned.isdigit():
+        mem = guild.get_member(int(cleaned))
+        if mem:
+            return mem
+    q_lower = query.strip().lower()
+    for m in guild.members:
+        if m.name.lower() == q_lower or m.display_name.lower() == q_lower:
+            return m
+    for m in guild.members:
+        if q_lower in m.name.lower() or q_lower in m.display_name.lower():
+            return m
+    return None
+
 def get_channel_mention(guild: Optional[discord.Guild], name: str, fallback: Optional[str] = None) -> str:
     """Finds a channel by name or partial match and returns a clickable <#channel_id> mention."""
     if not guild:
@@ -346,6 +379,138 @@ def save_staff_payment(staff_id: int, cashapp: Optional[str] = None, venmo: Opti
 
 def get_staff_payment(staff_id: int) -> Dict[str, str]:
     return staff_payment_db.get(str(staff_id), {})
+
+def build_order_stats_embed(guild: Optional[discord.Guild]) -> discord.Embed:
+    orders = tickets_db.get("completed_orders", [])
+    if guild:
+        guild_orders = [o for o in orders if o.get("guild_id") == guild.id or not o.get("guild_id")]
+    else:
+        guild_orders = orders
+
+    total_count = len(guild_orders)
+    total_rev = sum(o.get("amount", 0.0) for o in guild_orders)
+    taco_count = sum(1 for o in guild_orders if "taco" in o.get("brand", "").lower())
+    pizza_count = sum(1 for o in guild_orders if "pizza" in o.get("brand", "").lower())
+    other_count = total_count - (taco_count + pizza_count)
+
+    gname = guild.name if guild else "AIO Bot"
+    embed = discord.Embed(
+        title="📊 Completed Orders & Sales Tracker",
+        description=f"Summary of all fulfilled customer orders in **{gname}**:",
+        color=COLOR_SUCCESS
+    )
+    embed.add_field(name="🏆 Total Completed", value=f"**{total_count} orders**", inline=True)
+    embed.add_field(name="💰 Total Revenue", value=f"**${total_rev:.2f}**", inline=True)
+    embed.add_field(
+        name="🏷️ Brand Breakdown",
+        value=f"🌮 Taco Bell: **{taco_count}**\n🍕 Pizza Hut: **{pizza_count}**" + (f"\n✨ Other: **{other_count}**" if other_count > 0 else ""),
+        inline=True
+    )
+
+    if guild_orders:
+        recent = guild_orders[-8:]
+        lines = []
+        for o in reversed(recent):
+            oid = o.get("order_id", o.get("ticket_id", "?"))
+            brand = o.get("brand", "Order")
+            amt = o.get("amount", 0.0)
+            cust = o.get("customer_name") or f"<@{o.get('customer_id', '')}>"
+            ts = ""
+            if o.get("completed_at"):
+                try:
+                    dt = datetime.fromisoformat(o["completed_at"])
+                    ts = f" · <t:{int(dt.timestamp())}:R>"
+                except Exception:
+                    pass
+            lines.append(f"`#{oid:02d}` **{brand}** — **${amt:.2f}** ({cust}){ts}")
+        embed.add_field(name="📋 Recent Completed Orders", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="📋 Recent Completed Orders", value="*No completed orders tracked yet.*", inline=False)
+
+    embed.set_footer(text="Staff: Run /clearorder <id> to remove an order, or /orderstats reset to clear test data")
+    return embed
+
+def create_invoice_embed(
+    author: Union[discord.Member, discord.User],
+    channel: Any,
+    price_str: str,
+    cashapp: Optional[str] = None,
+    venmo: Optional[str] = None,
+    item: Optional[str] = None,
+    customer: Optional[discord.Member] = None
+) -> Tuple[Optional[discord.Embed], Optional[discord.Member], Optional[str]]:
+    clean_price_str = price_str.replace("$", "").replace(",", "").strip()
+    try:
+        val = float(clean_price_str)
+        price_formatted = f"${val:.2f}"
+    except ValueError:
+        return None, None, "❌ Please enter a valid number for price (e.g. `10.00` or `$15`)."
+
+    saved_handles = get_staff_payment(author.id)
+    ca_handle = (cashapp.strip().lstrip("$") if cashapp else saved_handles.get("cashapp", "")).strip()
+    vm_handle = (venmo.strip().lstrip("@") if venmo else saved_handles.get("venmo", "")).strip()
+
+    if cashapp or venmo:
+        save_staff_payment(author.id, cashapp=ca_handle if ca_handle else None, venmo=vm_handle if vm_handle else None)
+
+    guild = getattr(channel, "guild", None)
+    t_info = tickets_db.get("tickets", {}).get(str(getattr(channel, "id", 0)), {})
+    ticket_id = t_info.get("id")
+    target_cust = customer
+    if not target_cust and t_info.get("owner_id") and guild:
+        target_cust = guild.get_member(t_info["owner_id"])
+
+    item_desc = item.strip() if item else None
+    if not item_desc:
+        ch_name = getattr(channel, "name", "")
+        if "taco" in ch_name.lower():
+            item_desc = "Taco Bell Preloaded Account(s)"
+        elif "pizza" in ch_name.lower():
+            item_desc = "Pizza Hut Preloaded Account(s)"
+        else:
+            item_desc = "Fast Food Rewards / Preloaded Account"
+
+    ch_id_str = str(getattr(channel, "id", 0))
+    if ch_id_str in tickets_db.get("tickets", {}):
+        tickets_db["tickets"][ch_id_str]["invoice_amount"] = val
+        tickets_db["tickets"][ch_id_str]["invoice_item"] = item_desc
+        tickets_db["tickets"][ch_id_str]["status"] = "invoiced"
+        save_tickets()
+
+    embed = discord.Embed(
+        title="🧾 Official Payment Invoice",
+        description=(
+            f"Payment requested for {target_cust.mention if target_cust else 'this order'}!\n\n"
+            "Please send payment using either **Cash App** or **Venmo** below to complete your order."
+        ),
+        color=0xf1c40f
+    )
+    embed.add_field(name="💵 Amount Due", value=f"**{price_formatted}**", inline=True)
+    embed.add_field(name="📦 Item", value=f"**{item_desc}**", inline=True)
+    if ticket_id:
+        embed.add_field(name="🎫 Ticket", value=f"`#{ticket_id:04d}`", inline=True)
+
+    pay_methods = []
+    if ca_handle:
+        pay_methods.append(f"• **Cash App:** [${ca_handle}](https://cash.app/${ca_handle}) · ` ${ca_handle} `")
+    if vm_handle:
+        pay_methods.append(f"• **Venmo:** [@{vm_handle}](https://venmo.com/u/{vm_handle}) · ` @{vm_handle} `")
+    if not pay_methods:
+        pay_methods.append("• *Contact staff in this channel for payment handle details.*")
+    embed.add_field(name="💳 Payment Handles", value="\n".join(pay_methods), inline=False)
+
+    instructions = (
+        f"1️⃣ Send exactly **{price_formatted}** to the handle listed above.\n"
+        "2️⃣ In the payment note, include your **Discord username** or ticket number.\n"
+        "3️⃣ Reply in this channel once sent (or upload a screenshot).\n"
+        "4️⃣ Staff will verify payment and immediately fulfill your order!"
+    )
+    embed.add_field(name="📌 Instructions", value=instructions, inline=False)
+    embed.add_field(name="⏳ Status", value="🟡 Awaiting Payment", inline=True)
+    author_name = getattr(author, "display_name", str(author))
+    embed.set_footer(text=f"Issued by {author_name} • Staff: run /paid once payment arrives")
+
+    return embed, target_cust, None
 
 async def fix_server_roles(guild: discord.Guild) -> Dict[str, Any]:
     """
@@ -2263,7 +2428,7 @@ class HelpCategorySelect(discord.ui.Select):
                 ),
                 inline=False
             )
-            embed.add_field(name="Private Optimizer Channel", value="`/setup` — create private `#aio-coupon-optimizer` room\n`/permit [@member]` — grant access to user", inline=False)
+            embed.add_field(name="Private Optimizer Hub", value="`/setup` — create `#🛒-coupon-optimizer` hub\n`[🛒 Open Private Optimizer Room]` — instant personal room for shopping & savings", inline=False)
             embed.add_field(name="CVS Accounts Database", value="`/accounts [query]` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans, search, pagination & custom card formatter", inline=False)
             embed.add_field(name="Database Management", value="`/delete-last-trip` (or `!undotrip`) — delete last recorded trip and revert lifetime savings stats", inline=False)
             embed.add_field(name="CPU Benchmark & Stress Test", value="`/run-stress-test` (or `!stresstest`, `!benchmark`) — benchmark algorithm latency across permutation graphs", inline=False)
@@ -2703,7 +2868,7 @@ FORMAT_SERVER_BLUEPRINT = [
         "category": "🔒 PRIVATE CVS",
         "private": True,
         "channels": [
-            {"name": "🛒-coupon-optimizer", "type": "text", "topic": "Private CVS & retail coupon optimizer center. Staff can grant access via /permit!"}
+            {"name": "🛒-coupon-optimizer", "type": "text", "topic": "CVS & retail coupon optimizer hub. Click the button below to open your private room!"}
         ]
     },
     {
@@ -2732,7 +2897,8 @@ FORMAT_SERVER_BLUEPRINT = [
         "staff_only": True,
         "channels": [
             {"name": "🛡️-staff-chat", "type": "text", "topic": "Private discussions for server staff and admins."},
-            {"name": "📜-mod-logs", "type": "text", "topic": "Audit logs, moderation actions, and security alerts."}
+            {"name": "📜-mod-logs", "type": "text", "topic": "Audit logs, moderation actions, and security alerts."},
+            {"name": "🎛️-mod-panel", "type": "text", "topic": "Staff control center: execute moderation, billing, role fixes, and panel refreshes via buttons."}
         ]
     }
 ]
@@ -2766,7 +2932,7 @@ def is_preserved_channel(channel: Any, mode: str = "clean_old") -> bool:
                 return True
         if ch_name in get_blueprint_channel_names():
             return True
-        if ch_name.startswith(("ticket-", "order-")):
+        if ch_name.startswith(("ticket-", "order-", "cart-")):
             return True
         parent = getattr(channel, "category", None)
         if parent and getattr(parent, "name", "") == "📁 TICKETS":
@@ -2844,10 +3010,707 @@ async def purge_channels_helper(
 
     return deleted_count
 
+# --- STAFF MOD PANEL MODALS ---
+
+class ModWarnModal(discord.ui.Modal, title="⚠️ Issue Member Warning"):
+    member_query = discord.ui.TextInput(
+        label="Member (Mention, ID, or Username)",
+        placeholder="e.g. @username or 123456789012345678",
+        required=True
+    )
+    reason = discord.ui.TextInput(
+        label="Reason for Warning",
+        placeholder="Reason for official warning...",
+        style=discord.TextStyle.paragraph,
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = resolve_member_from_input(guild, self.member_query.value)
+        if not member:
+            await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
+            return
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+            await interaction.response.send_message("⛔ You cannot warn a member with an equal or higher role than you.", ephemeral=True)
+            return
+
+        guild_id = str(guild.id)
+        user_id = str(member.id)
+        key = f"{guild_id}_{user_id}"
+        record = {
+            "reason": self.reason.value,
+            "moderator": str(interaction.user),
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        }
+        warnings_db.setdefault(key, []).append(record)
+        save_warnings(warnings_db)
+        count = len(warnings_db[key])
+        case_id = log_mod_case(guild.id, "Warning", str(member), str(interaction.user), self.reason.value, f"Active warning count: {count}")
+
+        embed = discord.Embed(title="⚠️ Official Warning Issued", color=COLOR_WARN)
+        embed.add_field(name="Member", value=member.mention, inline=True)
+        embed.add_field(name="Warning Count", value=f"**#{count}**", inline=True)
+        embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Reason", value=f"`{self.reason.value}`", inline=False)
+        embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        await interaction.response.send_message(embed=embed)
+
+
+class ModTimeoutModal(discord.ui.Modal, title="⏱️ Timeout Member"):
+    member_query = discord.ui.TextInput(
+        label="Member (Mention, ID, or Username)",
+        placeholder="e.g. @username or 1234567890",
+        required=True
+    )
+    duration = discord.ui.TextInput(
+        label="Duration (e.g. 5m, 10m, 1h, 1d)",
+        placeholder="10m",
+        default="10m",
+        required=True
+    )
+    reason = discord.ui.TextInput(
+        label="Reason",
+        placeholder="Reason for timeout...",
+        style=discord.TextStyle.paragraph,
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = resolve_member_from_input(guild, self.member_query.value)
+        if not member:
+            await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
+            return
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+            await interaction.response.send_message("⛔ You cannot timeout a member with an equal or higher role than you.", ephemeral=True)
+            return
+
+        td = parse_duration(self.duration.value)
+        if not td:
+            await interaction.response.send_message("❌ Invalid duration format. Examples: `10m`, `1h`, `1d`.", ephemeral=True)
+            return
+        if td > timedelta(days=28):
+            await interaction.response.send_message("❌ Discord timeouts cannot exceed 28 days.", ephemeral=True)
+            return
+
+        r_text = self.reason.value or "No reason provided"
+        try:
+            await member.timeout(td, reason=f"{r_text} (by {interaction.user})")
+            case_id = log_mod_case(guild.id, "Timeout", str(member), str(interaction.user), r_text, f"Duration: {self.duration.value}")
+            embed = discord.Embed(title="🔇 Member Timed Out", color=COLOR_WARN)
+            embed.add_field(name="Member", value=member.mention, inline=True)
+            embed.add_field(name="Duration", value=f"**{self.duration.value}**", inline=True)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Reason", value=f"`{r_text}`", inline=False)
+            embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+            await interaction.response.send_message(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Bot lacks permission to timeout this member.", ephemeral=True)
+
+
+class ModKickModal(discord.ui.Modal, title="👢 Kick Member"):
+    member_query = discord.ui.TextInput(
+        label="Member (Mention, ID, or Username)",
+        placeholder="e.g. @username or 1234567890",
+        required=True
+    )
+    reason = discord.ui.TextInput(
+        label="Reason for Kick",
+        placeholder="Reason for kick...",
+        style=discord.TextStyle.paragraph,
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = resolve_member_from_input(guild, self.member_query.value)
+        if not member:
+            await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
+            return
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+            await interaction.response.send_message("⛔ You cannot kick a member with an equal or higher role than you.", ephemeral=True)
+            return
+
+        r_text = self.reason.value or "No reason provided"
+        try:
+            await member.kick(reason=f"{r_text} (by {interaction.user})")
+            case_id = log_mod_case(guild.id, "Kick", str(member), str(interaction.user), r_text)
+            embed = discord.Embed(title="👢 Member Kicked", color=COLOR_WARN)
+            embed.add_field(name="Member", value=f"**{member}** (`{member.id}`)", inline=True)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Reason", value=f"`{r_text}`", inline=False)
+            embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+            await interaction.response.send_message(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Bot lacks permission to kick this member.", ephemeral=True)
+
+
+class ModBanModal(discord.ui.Modal, title="🔨 Ban Member"):
+    member_query = discord.ui.TextInput(
+        label="Member (Mention, ID, or Username)",
+        placeholder="e.g. @username or 1234567890",
+        required=True
+    )
+    days = discord.ui.TextInput(
+        label="Delete Message Days (0-7)",
+        placeholder="0",
+        default="0",
+        required=False
+    )
+    reason = discord.ui.TextInput(
+        label="Reason for Ban",
+        placeholder="Reason for ban...",
+        style=discord.TextStyle.paragraph,
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = resolve_member_from_input(guild, self.member_query.value)
+        if not member:
+            await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
+            return
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+            await interaction.response.send_message("⛔ You cannot ban a member with an equal or higher role than you.", ephemeral=True)
+            return
+
+        try:
+            delete_days = max(0, min(7, int(self.days.value or "0")))
+        except ValueError:
+            delete_days = 0
+
+        r_text = self.reason.value or "No reason provided"
+        try:
+            await member.ban(delete_message_days=delete_days, reason=f"{r_text} (by {interaction.user})")
+            case_id = log_mod_case(guild.id, "Ban", str(member), str(interaction.user), r_text, f"Purged {delete_days}d messages")
+            embed = discord.Embed(title="🔨 Member Banned", color=COLOR_ERROR)
+            embed.add_field(name="Member", value=f"**{member}** (`{member.id}`)", inline=True)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Reason", value=f"`{r_text}`", inline=False)
+            embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+            await interaction.response.send_message(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Bot lacks permission to ban this member.", ephemeral=True)
+
+
+class ModPurgeModal(discord.ui.Modal, title="🧹 Bulk Purge Messages"):
+    count = discord.ui.TextInput(
+        label="Message Count (1-100)",
+        placeholder="25",
+        default="25",
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        channel = interaction.channel
+        if is_protected_channel(channel):
+            await interaction.response.send_message("❌ Cannot purge messages in a protected channel (#form-automation).", ephemeral=True)
+            return
+        try:
+            limit_val = max(1, min(100, int(self.count.value)))
+        except ValueError:
+            await interaction.response.send_message("❌ Please enter a valid integer between 1 and 100.", ephemeral=True)
+            return
+
+        deleted = await channel.purge(limit=limit_val)
+        await interaction.response.send_message(f"🧹 Purged **{len(deleted)}** messages from {channel.mention}!", ephemeral=True)
+
+
+class ModSlowmodeModal(discord.ui.Modal, title="⏳ Set Channel Slowmode"):
+    seconds = discord.ui.TextInput(
+        label="Slowmode Delay (Seconds, 0 to disable)",
+        placeholder="5",
+        default="5",
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        channel = interaction.channel
+        try:
+            sec_val = max(0, min(21600, int(self.seconds.value)))
+        except ValueError:
+            await interaction.response.send_message("❌ Please enter a valid number of seconds (0 to 21600).", ephemeral=True)
+            return
+
+        await channel.edit(slowmode_delay=sec_val, reason=f"Slowmode updated via Mod Panel by {interaction.user}")
+        if sec_val == 0:
+            await interaction.response.send_message(f"⚡ Slowmode **disabled** for {channel.mention}.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⏳ Slowmode set to **{sec_val} seconds** for {channel.mention}.", ephemeral=True)
+
+
+class ModInvoiceModal(discord.ui.Modal, title="💵 Create & Send Customer Invoice"):
+    price = discord.ui.TextInput(
+        label="Total Due / Price ($)",
+        placeholder="e.g. 10 or 15.00",
+        required=True
+    )
+    cashapp = discord.ui.TextInput(
+        label="Cash App Handle (Optional if cached)",
+        placeholder="e.g. $cody (leave blank to use saved handle)",
+        required=False
+    )
+    venmo = discord.ui.TextInput(
+        label="Venmo Handle (Optional if cached)",
+        placeholder="e.g. @cody (leave blank to use saved handle)",
+        required=False
+    )
+    item = discord.ui.TextInput(
+        label="Item / Service Name (Optional)",
+        placeholder="e.g. Taco Bell Preloaded Account",
+        required=False
+    )
+    customer = discord.ui.TextInput(
+        label="Customer (Mention, ID, or Username)",
+        placeholder="e.g. @customer (optional)",
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        cust_mem = resolve_member_from_input(guild, self.customer.value) if self.customer.value else None
+        embed, target_cust, err = create_invoice_embed(
+            author=interaction.user,
+            channel=interaction.channel,
+            price_str=self.price.value,
+            cashapp=self.cashapp.value or None,
+            venmo=self.venmo.value or None,
+            item=self.item.value or None,
+            customer=cust_mem
+        )
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        ping_cust = target_cust.mention if target_cust else ""
+        await interaction.channel.send(content=f"{ping_cust} Here is your official invoice:", embed=embed)
+        await interaction.response.send_message("✅ Invoice created and sent to this channel!", ephemeral=True)
+
+
+# --- COUPON OPTIMIZER HUB & PRIVATE ROOM VIEWS ---
+
+def build_coupon_hub_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🛒 CVS & Retail Coupon Optimizer Hub",
+        description=(
+            "Welcome to the **CVS & Retail Coupon Optimizer**!\n\n"
+            "Build optimized shopping trips, stack manufacturer and store coupons, calculate exact cashier sequencing, and maximize your savings!\n\n"
+            "**How to start:**\n"
+            "▸ Click **[🛒 Open Private Optimizer Room]** below\n"
+            "▸ A personal room (`cart-{your-username}`) will be created just for you\n"
+            "▸ Add your items, input your coupons, and run the optimizer\n"
+            "▸ When you are finished, click **🔒 Close Room** to cleanly delete your room\n\n"
+            "Ready to save big? Open your private room now!"
+        ),
+        color=COLOR_PRIMARY
+    )
+    embed.set_footer(text="AIO Bot Coupon Optimizer • Your cart and savings calculations remain 100% private")
+    return embed
+
+
+class CouponHubLaunchView(discord.ui.View):
+    """Persistent view placed in #🛒-coupon-optimizer for members to spawn their private room."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Open Private Optimizer Room",
+        style=discord.ButtonStyle.success,
+        emoji="🛒",
+        custom_id="coupon_hub_launch_room"
+    )
+    async def btn_open_room(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ This action can only be run in a server.", ephemeral=True)
+            return
+
+        clean_username = "".join(c for c in interaction.user.name.lower() if c.isalnum() or c in "-_")[:18] or "user"
+        room_name = f"cart-{clean_username}"
+
+        # Check if an existing room already exists for this member
+        existing = discord.utils.get(guild.text_channels, name=room_name)
+        if existing:
+            await interaction.response.send_message(
+                f"⚠️ You already have an active private room: {existing.mention}!\n"
+                f"Please finish your session there or click **Close Room** inside it.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Find or determine category (same category as current channel, or '🔒 PRIVATE CVS')
+        category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
+        if not category:
+            for cat in guild.categories:
+                if "private cvs" in cat.name.lower() or "cvs" in cat.name.lower():
+                    category = cat
+                    break
+
+        founder_role = get_founder_role(guild)
+        mod_role = get_moderator_role(guild)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False, send_messages=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                attach_files=True,
+                read_message_history=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                attach_files=True,
+                manage_channels=True,
+                manage_messages=True
+            )
+        }
+        if founder_role:
+            overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        if mod_role:
+            overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        try:
+            new_room = await guild.create_text_channel(
+                name=room_name,
+                category=category,
+                topic=f"Private coupon optimizer room for {interaction.user.name} ({interaction.user.id}).",
+                overwrites=overwrites
+            )
+
+            welcome_embed = discord.Embed(
+                title=f"🛒 {interaction.user.display_name}'s Private Optimizer Room",
+                description=(
+                    f"Welcome {interaction.user.mention}! This is your private shopping and coupon optimization room.\n\n"
+                    "**Quick Controls:**\n"
+                    "• **➕ Add Items:** Enter items and prices to build your cart\n"
+                    "• **🎟️ Load Coupons:** Load digital manufacturer and store coupons / ExtraBucks\n"
+                    "• **📊 Optimize Plan:** Calculate optimal cashier scanning order and max savings\n"
+                    "• **↩️ Undo Last:** Remove the most recently added item\n"
+                    "• **✅ Checkout:** Complete your cart trip summary\n"
+                    "• **🔒 Close Room:** Cleanly delete this private room when you're done\n\n"
+                    "*Use the buttons below to manage your session.*"
+                ),
+                color=COLOR_SUCCESS
+            )
+            welcome_embed.set_footer(text="Private CVS Session • Click Close Room when finished")
+
+            view = CouponRoomControlView(interaction.user.id)
+            await new_room.send(embed=welcome_embed, view=view)
+
+            await interaction.followup.send(
+                f"✅ Your private coupon room has been created: {new_room.mention}!",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to create private room: {e}", ephemeral=True)
+
+
+class CouponRoomControlView(discord.ui.View):
+    """Interactive buttons inside an active private coupon optimizer room."""
+    def __init__(self, room_owner_id: int = 0):
+        super().__init__(timeout=None)
+        self.room_owner_id = room_owner_id
+
+    def _is_owner_or_staff(self, user: discord.Member, channel: Any) -> bool:
+        if self.room_owner_id != 0 and user.id == self.room_owner_id:
+            return True
+        if is_staff_member(user):
+            return True
+        topic = getattr(channel, "topic", "") or ""
+        if str(user.id) in topic:
+            return True
+        ch_name = getattr(channel, "name", "")
+        clean_user = "".join(c for c in user.name.lower() if c.isalnum() or c in "-_")
+        if clean_user and clean_user in ch_name.lower():
+            return True
+        return False
+
+    @discord.ui.button(label="Add Items", style=discord.ButtonStyle.success, emoji="➕", custom_id="croom_add", row=0)
+    async def btn_add(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AddItemModal(interaction.user.id))
+
+    @discord.ui.button(label="Load Coupons", style=discord.ButtonStyle.primary, emoji="🎟️", custom_id="croom_coupons", row=0)
+    async def btn_coupons(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(LoadCouponsModal(interaction.user.id))
+
+    @discord.ui.button(label="Optimize Plan", style=discord.ButtonStyle.primary, emoji="📊", custom_id="croom_opt", row=0)
+    async def btn_opt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = get_session(interaction.user.id)
+        if not session["items"]:
+            await interaction.response.send_message("❌ Cart is empty! Click **Add Items** first.", ephemeral=True)
+            return
+        embed = build_strategy_embed(session["items"], session["coupons"])
+        await interaction.response.send_message(embed=embed, view=CouponRoomControlView(self.room_owner_id))
+
+    @discord.ui.button(label="Undo Last", style=discord.ButtonStyle.secondary, emoji="↩️", custom_id="croom_undo", row=1)
+    async def btn_undo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = get_session(interaction.user.id)
+        if not session["items"]:
+            await interaction.response.send_message("❌ Nothing to undo — your cart is empty!", ephemeral=True)
+            return
+        removed = session["items"].pop()
+        subtotal = sum(i['price'] for i in session["items"])
+        await interaction.response.send_message(
+            f"↩️ Removed **{removed['name']}** (${removed['price']:.2f}). Subtotal: **${subtotal:.2f}**",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Checkout", style=discord.ButtonStyle.success, emoji="✅", custom_id="croom_checkout", row=1)
+    async def btn_checkout(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = get_session(interaction.user.id)
+        if not session["items"]:
+            await interaction.response.send_message("❌ Cart is empty — nothing to check out!", ephemeral=True)
+            return
+        items = list(session["items"])
+        coupons = list(session["coupons"])
+        embed = _do_checkout(items, coupons)[0]
+        reset_session(interaction.user.id)
+        await interaction.response.send_message(embed=embed)
+
+    @discord.ui.button(label="Clear Cart", style=discord.ButtonStyle.secondary, emoji="🧹", custom_id="croom_clear", row=1)
+    async def btn_clear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        reset_session(interaction.user.id)
+        await interaction.response.send_message("🧹 Your cart and coupons have been cleared!", ephemeral=True)
+
+    @discord.ui.button(label="Close Room", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="croom_close", row=2)
+    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_owner_or_staff(interaction.user, interaction.channel):
+            await interaction.response.send_message("❌ Only the room owner or server staff can close this room.", ephemeral=True)
+            return
+        await interaction.response.send_message("🔒 Closing private coupon room in 3 seconds...", ephemeral=False)
+        await asyncio.sleep(3)
+        try:
+            await interaction.channel.delete(reason=f"Private coupon room closed by {interaction.user.display_name}")
+        except Exception as e:
+            print(f"⚠️ Could not delete coupon room channel: {e}", file=sys.stderr)
+
+
+# --- STAFF MOD PANEL BUTTON VIEW & EMBED ---
+
+def build_staff_modpanel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎛️ Staff Control Center & Moderation Panel",
+        description=(
+            "Welcome to the **Staff Command Hub**. Execute server moderation, channel controls, "
+            "order billing, and system refreshes directly using the interactive buttons below.\n\n"
+            "**🛡️ Member Discipline:**\n"
+            "• **⚠️ Warn:** Issue an official logged warning to a member\n"
+            "• **⏱️ Timeout:** Temporarily mute/timeout a member\n"
+            "• **👢 Kick:** Remove a member from the server\n"
+            "• **🔨 Ban:** Ban a member and optionally purge messages\n"
+            "• **🧹 Purge:** Clean up recent messages in this channel\n\n"
+            "**🔒 Channel & Server Security:**\n"
+            "• **🔒 Lock / 🔓 Unlock:** Restrict or restore messaging in this channel\n"
+            "• **⏳ Slowmode:** Configure channel message cooldown\n"
+            "• **🚨 Server Lockdown:** Emergency freeze across text channels\n\n"
+            "**💵 Store, Billing & Hierarchy:**\n"
+            "• **💵 Create Invoice:** Generate official bill with CashApp / Venmo links\n"
+            "• **📈 Order Stats:** View completed sales, revenue & order log\n"
+            "• **👥 Fix Roles:** Consolidate Moderator roles & remove redundant Staff\n"
+            "• **🌮 Refresh Store:** Update `#🌮🍕-food-rewards` with latest stock\n\n"
+            "**🎟️ Panels & Server Info:**\n"
+            "• **🎟️ Refresh Tickets:** Refresh the ticket deployment panel\n"
+            "• **🛒 Refresh Hub:** Refresh the Coupon Optimizer Hub\n"
+            "• **ℹ️ Server Info:** View guild statistics and diagnostics"
+        ),
+        color=COLOR_PRIMARY
+    )
+    embed.set_footer(text="AIO Bot Staff Control Center • Staff & Admin Only")
+    return embed
+
+
+class StaffModPanelButtonView(discord.ui.View):
+    """Persistent button-driven moderation, billing, and channel control center."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message(
+                "⛔ **Access Denied**: This control panel is strictly reserved for Server Founders and Staff.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    # --- ROW 0: MEMBER DISCIPLINE ---
+    @discord.ui.button(label="Warn", style=discord.ButtonStyle.secondary, emoji="⚠️", custom_id="modpanel_warn", row=0)
+    async def btn_warn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModWarnModal())
+
+    @discord.ui.button(label="Timeout", style=discord.ButtonStyle.secondary, emoji="⏱️", custom_id="modpanel_timeout", row=0)
+    async def btn_timeout(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModTimeoutModal())
+
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.danger, emoji="👢", custom_id="modpanel_kick", row=0)
+    async def btn_kick(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModKickModal())
+
+    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="🔨", custom_id="modpanel_ban", row=0)
+    async def btn_ban(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModBanModal())
+
+    @discord.ui.button(label="Purge", style=discord.ButtonStyle.secondary, emoji="🧹", custom_id="modpanel_purge", row=0)
+    async def btn_purge(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModPurgeModal())
+
+    # --- ROW 1: CHANNEL & SERVER CONTROLS ---
+    @discord.ui.button(label="Lock Channel", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="modpanel_lock", row=1)
+    async def btn_lock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if is_protected_channel(interaction.channel):
+            await interaction.response.send_message("❌ Cannot lock protected channel (#form-automation).", ephemeral=True)
+            return
+        await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False, reason=f"Channel locked via Mod Panel by {interaction.user}")
+        await interaction.response.send_message(f"🔒 {interaction.channel.mention} has been **locked** by {interaction.user.mention}.")
+
+    @discord.ui.button(label="Unlock Channel", style=discord.ButtonStyle.secondary, emoji="🔓", custom_id="modpanel_unlock", row=1)
+    async def btn_unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=None, reason=f"Channel unlocked via Mod Panel by {interaction.user}")
+        await interaction.response.send_message(f"🔓 {interaction.channel.mention} has been **unlocked** by {interaction.user.mention}.")
+
+    @discord.ui.button(label="Slowmode", style=discord.ButtonStyle.secondary, emoji="⏳", custom_id="modpanel_slowmode", row=1)
+    async def btn_slowmode(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModSlowmodeModal())
+
+    @discord.ui.button(label="Server Lockdown", style=discord.ButtonStyle.danger, emoji="🚨", custom_id="modpanel_lockdown", row=1)
+    async def btn_lockdown(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Server not found.", ephemeral=True)
+            return
+        gen_ch = discord.utils.get(guild.text_channels, name="💬-general-chat") or interaction.channel
+        curr_lock = (gen_ch.overwrites_for(guild.default_role).send_messages is False)
+        new_lock = not curr_lock
+        action_name = "on" if new_lock else "off"
+
+        await interaction.response.defer(ephemeral=False)
+        changed_count = 0
+        for ch in guild.text_channels:
+            if is_protected_channel(ch):
+                continue
+            perms = ch.overwrites_for(guild.default_role)
+            if new_lock:
+                if perms.send_messages is not False:
+                    perms.send_messages = False
+                    try:
+                        await ch.set_permissions(guild.default_role, overwrite=perms, reason=f"Lockdown ON via Mod Panel by {interaction.user}")
+                        changed_count += 1
+                    except Exception:
+                        pass
+            else:
+                if perms.send_messages is False:
+                    perms.send_messages = None
+                    try:
+                        await ch.set_permissions(guild.default_role, overwrite=perms, reason=f"Lockdown OFF via Mod Panel by {interaction.user}")
+                        changed_count += 1
+                    except Exception:
+                        pass
+
+        case_id = log_mod_case(
+            guild_id=guild.id,
+            action=f"Lockdown {action_name.upper()}",
+            target=f"{changed_count} channels",
+            moderator=str(interaction.user),
+            reason="Triggered via Mod Panel"
+        )
+        embed = discord.Embed(
+            title=f"🚨 Server Lockdown {'ACTIVATED' if new_lock else 'DEACTIVATED'}",
+            description=f"Server-wide message permissions have been **{'LOCKED' if new_lock else 'UNLOCKED'}**.",
+            color=COLOR_ERROR if new_lock else COLOR_SUCCESS
+        )
+        embed.add_field(name="Channels Updated", value=f"**{changed_count}** text channels", inline=True)
+        embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        await interaction.followup.send(embed=embed)
+
+    # --- ROW 2: STORE, BILLING & ROLES ---
+    @discord.ui.button(label="Create Invoice", style=discord.ButtonStyle.success, emoji="💵", custom_id="modpanel_invoice", row=2)
+    async def btn_invoice(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModInvoiceModal())
+
+    @discord.ui.button(label="Order Stats", style=discord.ButtonStyle.primary, emoji="📈", custom_id="modpanel_orderstats", row=2)
+    async def btn_orderstats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = build_order_stats_embed(interaction.guild)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Fix Roles", style=discord.ButtonStyle.primary, emoji="👥", custom_id="modpanel_fixroles", row=2)
+    async def btn_fixroles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        summary = await fix_server_roles(interaction.guild)
+        deleted_mods = len(summary.get("deleted_moderator_roles", []))
+        removed_staff = summary.get("deleted_staff_role", False)
+        migrated = summary.get("members_migrated", 0)
+        desc = (
+            f"Role hierarchy consolidated!\n"
+            f"• Duplicate Moderator Roles Removed: **{deleted_mods}**\n"
+            f"• Redundant Staff Role Removed: **{'Yes' if removed_staff else 'No'}**\n"
+            f"• Members Migrated: **{migrated}**"
+        )
+        embed = discord.Embed(title="👥 Roles Consolidated", description=desc, color=COLOR_SUCCESS)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Refresh Store", style=discord.ButtonStyle.success, emoji="🌮", custom_id="modpanel_refresh_food", row=2)
+    async def btn_refresh_food(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        ch = None
+        for c in guild.text_channels:
+            if "food" in c.name.lower() or "rewards" in c.name.lower():
+                ch = c
+                break
+        if ch:
+            name = await refresh_channel_content(ch, interaction.user.id)
+            await interaction.followup.send(f"✅ Refreshed store in {ch.mention}!", ephemeral=True)
+        else:
+            await interaction.followup.send("⚠️ Could not find food rewards channel in this server.", ephemeral=True)
+
+    # --- ROW 3: PANELS & INFO ---
+    @discord.ui.button(label="Refresh Tickets", style=discord.ButtonStyle.primary, emoji="🎟️", custom_id="modpanel_refresh_tickets", row=3)
+    async def btn_refresh_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        ch = None
+        for c in guild.text_channels:
+            if "ticket" in c.name.lower() or "open" in c.name.lower():
+                ch = c
+                break
+        if ch:
+            name = await refresh_channel_content(ch, interaction.user.id)
+            await interaction.followup.send(f"✅ Refreshed ticket panel in {ch.mention}!", ephemeral=True)
+        else:
+            await interaction.followup.send("⚠️ Could not find ticket panel channel in this server.", ephemeral=True)
+
+    @discord.ui.button(label="Refresh Hub", style=discord.ButtonStyle.primary, emoji="🛒", custom_id="modpanel_refresh_coupon", row=3)
+    async def btn_refresh_coupon(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        ch = None
+        for c in guild.text_channels:
+            if "coupon" in c.name.lower() or "optimizer" in c.name.lower():
+                ch = c
+                break
+        if ch:
+            name = await refresh_channel_content(ch, interaction.user.id)
+            await interaction.followup.send(f"✅ Refreshed coupon hub in {ch.mention}!", ephemeral=True)
+        else:
+            await interaction.followup.send("⚠️ Could not find coupon optimizer channel in this server.", ephemeral=True)
+
+    @discord.ui.button(label="Server Info", style=discord.ButtonStyle.secondary, emoji="ℹ️", custom_id="modpanel_serverinfo", row=3)
+    async def btn_serverinfo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = build_serverinfo_embed(interaction.guild)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def refresh_channel_content(channel: discord.TextChannel, author_id: int, clear_history: bool = True) -> str:
     """
     Clears channel messages (if clear_history=True) and posts the latest
-    updated embed/buttons for recognized blueprint channels (Food Rewards, Ticket Panel, Coupon Optimizer).
+    updated embed/buttons for recognized blueprint channels (Food Rewards, Ticket Panel, Coupon Optimizer, Mod Panel).
     """
     if is_protected_channel(channel):
         raise ValueError("Protected channel (#form-automation) cannot be reset or cleared.")
@@ -2883,16 +3746,14 @@ async def refresh_channel_content(channel: discord.TextChannel, author_id: int, 
         return "🎫 Support & Order Ticket Panel"
 
     elif "coupon" in ch_name or "optimizer" in ch_name:
-        cart_embed = build_cart_embed(author_id)
-        cart_embed.title = "🔒 Private CVS Coupon Optimizer"
-        cart_embed.description = (
-            "Welcome to the **Private CVS Coupon Optimizer**!\n\n"
-            "• 🔒 **Private Access:** Only staff and permitted members can view this channel.\n"
-            "• 👥 **Staff Controls:** Staff can grant member access with `/permit @member` or revoke with `/revoke @member`.\n"
-            "• 🛒 **Shopping Tools:** Click the buttons below or run `/panel` / `/add` to optimize your shopping trips!"
-        )
-        await channel.send(embed=cart_embed, view=QuickCartActionView(author_id))
-        return "🔒 Private CVS Coupon Optimizer"
+        hub_embed = build_coupon_hub_embed()
+        await channel.send(embed=hub_embed, view=CouponHubLaunchView())
+        return "🛒 CVS Coupon Optimizer Hub"
+
+    elif "mod-panel" in ch_name or "modpanel" in ch_name:
+        mod_embed = build_staff_modpanel_embed()
+        await channel.send(embed=mod_embed, view=StaffModPanelButtonView())
+        return "🎛️ Staff Control Center & Moderation Panel"
 
     else:
         for sec in FORMAT_SERVER_BLUEPRINT:
@@ -2997,7 +3858,7 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                         except Exception:
                             pass
                     # Refresh existing blueprint panel channels with latest info
-                    if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮🍕-food-rewards"):
+                    if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮🍕-food-rewards", "🎛️-mod-panel"):
                         try:
                             await refresh_channel_content(existing, author.id, clear_history=clean_old)
                         except Exception as e:
@@ -3016,7 +3877,7 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                     )
                     created_channels += 1
 
-                    if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮🍕-food-rewards"):
+                    if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮🍕-food-rewards", "🎛️-mod-panel"):
                         try:
                             await refresh_channel_content(new_ch, author.id, clear_history=False)
                         except Exception as e:
@@ -3035,6 +3896,7 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
     opt_mention = get_channel_mention(guild, "🛒-coupon-optimizer", "#🛒-coupon-optimizer")
     ticket_mention = get_channel_mention(guild, "📩-open-a-ticket", "#📩-open-a-ticket")
     food_mention = get_channel_mention(guild, "🌮🍕-food-rewards", "#🌮🍕-food-rewards")
+    mod_mention = get_channel_mention(guild, "🎛️-mod-panel", "#🎛️-mod-panel")
     fa_mention = get_channel_mention(guild, "form-automation", "#form-automation")
 
     desc = (
@@ -3046,9 +3908,10 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
         desc += f"• 🧹 **Previous Channels Cleaned:** {deleted_count} old channel(s) removed\n"
     desc += (
         f"• 🛡️ **Guaranteed Safeguard:** {fa_mention} was completely preserved and untouched.\n"
-        f"• 🔒 **Private CVS Optimizer:** Active in {opt_mention} under `🔒 PRIVATE CVS` (Staff grant access with `/permit @user`)\n"
+        f"• 🔒 **Private CVS Optimizer:** Active in {opt_mention} under `🔒 PRIVATE CVS` (Click button to open private room)\n"
         f"• 🎫 **Tickets Deployed:** Active in {ticket_mention}\n"
-        f"• 🌮🍕 **Food Accounts Store Deployed:** Active in {food_mention}"
+        f"• 🌮🍕 **Food Accounts Store Deployed:** Active in {food_mention}\n"
+        f"• 🎛️ **Staff Mod Panel:** Active in {mod_mention}"
     )
 
     summary_embed = discord.Embed(
@@ -3665,8 +4528,11 @@ async def on_ready():
         bot.add_view(TicketLaunchView())
         bot.add_view(TicketControlView())
         bot.add_view(FoodAccountPurchaseView())
+        bot.add_view(CouponHubLaunchView())
+        bot.add_view(CouponRoomControlView())
+        bot.add_view(StaffModPanelButtonView())
     except Exception as e:
-        print(f"ℹ️ Note on ticket/purchase view persistence: {e}", file=sys.stderr, flush=True)
+        print(f"ℹ️ Note on persistent views registration: {e}", file=sys.stderr, flush=True)
 
     try:
         for g in bot.guilds:
@@ -3768,12 +4634,8 @@ async def open_panel(ctx):
 @app_commands.default_permissions(manage_channels=True)
 async def open_modpanel(ctx):
     await safely_delete_message(ctx)
-    embed = discord.Embed(
-        title="🛡️ AIO Bot — Moderation Control Center",
-        description="Select an action from the dropdown below to manage channels, slowmode, message cleanup, and server health.",
-        color=COLOR_INFO
-    )
-    view = ModerationPanelView()
+    embed = build_staff_modpanel_embed()
+    view = StaffModPanelButtonView()
     await ctx.send(embed=embed, view=view)
 
 @bot.hybrid_command(name="help", description="Show the AIO Bot interactive help menu")
@@ -5277,18 +6139,11 @@ async def setup_channel(ctx):
     new_channel = await guild.create_text_channel(
         channel_name,
         category=cat,
-        topic="Private CVS & retail coupon optimizer center. Staff can grant access via /permit!",
+        topic="CVS & retail coupon optimizer hub. Click the button below to open your private room!",
         overwrites=cat_overwrites
     )
-    cart_embed = build_cart_embed(ctx.author.id)
-    cart_embed.title = "🔒 Private CVS Coupon Optimizer"
-    cart_embed.description = (
-        "Welcome to the **Private CVS Coupon Optimizer**!\n\n"
-        "• 🔒 **Private Access:** Only staff and permitted members can view this channel.\n"
-        "• 👥 **Staff Controls:** Staff can grant member access with `/permit @member` or revoke with `/revoke @member`.\n"
-        "• 🛒 **Shopping Tools:** Click the buttons below or run `/panel` / `/add` to optimize your shopping trips!"
-    )
-    await new_channel.send(embed=cart_embed, view=QuickCartActionView(ctx.author.id))
+    hub_embed = build_coupon_hub_embed()
+    await new_channel.send(embed=hub_embed, view=CouponHubLaunchView())
     await ctx.send(f"✅ Secure private CVS channel {new_channel.mention} created under `{cat_name}`!", delete_after=6)
 
 @bot.hybrid_command(
@@ -5394,11 +6249,11 @@ async def format_server(ctx):
         "**Blueprint Structure:**\n"
         f"• 📌 **INFORMATION**: {_m('📢-announcements')}, {_m('📜-rules')}, {_m('👋-welcome')}\n"
         f"• 💬 **COMMUNITY**: {_m('💬-general-chat')}, {_m('🤖-bot-commands')}, {_m('💡-suggestions')}\n"
-        f"• 🔒 **PRIVATE CVS**: {_m('🛒-coupon-optimizer')} *(private channel! Staff grant access with `/permit @user`)*\n"
+        f"• 🔒 **PRIVATE CVS**: {_m('🛒-coupon-optimizer')} *(Click button to open private room)*\n"
         f"• 🛍️ **SAVINGS & REWARDS**: {_m('🌮🍕-food-rewards')}, {_m('🏷️-deals-and-savings')}, {_m('🧾-receipt-brags')}\n"
         f"• 🎫 **SUPPORT**: {_m('📩-open-a-ticket')} *(with Ticket Panel!)*\n"
         "• 🔊 **VOICE CHANNELS**: `🔊 General Voice`, `🔊 Lounge 1`\n"
-        f"• 🛡️ **STAFF ZONE**: {_m('🛡️-staff-chat')}, {_m('📜-mod-logs')} *(staff-only)*\n\n"
+        f"• 🛡️ **STAFF ZONE**: {_m('🛡️-staff-chat')}, {_m('📜-mod-logs')}, {_m('🎛️-mod-panel')} *(staff-only control panel)*\n\n"
         "**Options Below:**\n"
         "• **Format & Clean Old Channels**: Sets up the blueprint AND wipes leftover/unformatted channels\n"
         "• **Format (Keep Old)**: Sets up the blueprint alongside existing channels"
@@ -5892,74 +6747,18 @@ async def invoice_cmd(
         await ctx.send("⛔ Only server staff or founders can generate invoices.", delete_after=6)
         return
 
-    clean_price_str = price.replace("$", "").replace(",", "").strip()
-    try:
-        val = float(clean_price_str)
-        price_formatted = f"${val:.2f}"
-    except ValueError:
-        await ctx.send("❌ Please enter a valid number for price (e.g. `10.00` or `$15`).", delete_after=6)
+    embed, target_cust, err = create_invoice_embed(
+        author=ctx.author,
+        channel=ctx.channel,
+        price_str=price,
+        cashapp=cashapp,
+        venmo=venmo,
+        item=item,
+        customer=customer
+    )
+    if err:
+        await ctx.send(err, delete_after=6)
         return
-
-    saved_handles = get_staff_payment(ctx.author.id)
-    ca_handle = (cashapp.strip().lstrip("$") if cashapp else saved_handles.get("cashapp", "")).strip()
-    vm_handle = (venmo.strip().lstrip("@") if venmo else saved_handles.get("venmo", "")).strip()
-
-    if cashapp or venmo:
-        save_staff_payment(ctx.author.id, cashapp=ca_handle if ca_handle else None, venmo=vm_handle if vm_handle else None)
-
-    t_info = tickets_db.get("tickets", {}).get(str(ctx.channel.id), {})
-    ticket_id = t_info.get("id")
-    target_cust = customer
-    if not target_cust and t_info.get("owner_id") and ctx.guild:
-        target_cust = ctx.guild.get_member(t_info["owner_id"])
-
-    item_desc = item.strip() if item else None
-    if not item_desc:
-        ch_name = getattr(ctx.channel, "name", "")
-        if "taco" in ch_name.lower():
-            item_desc = "Taco Bell Preloaded Account(s)"
-        elif "pizza" in ch_name.lower():
-            item_desc = "Pizza Hut Preloaded Account(s)"
-        else:
-            item_desc = "Fast Food Rewards / Preloaded Account"
-
-    if str(ctx.channel.id) in tickets_db.get("tickets", {}):
-        tickets_db["tickets"][str(ctx.channel.id)]["invoice_amount"] = val
-        tickets_db["tickets"][str(ctx.channel.id)]["invoice_item"] = item_desc
-        tickets_db["tickets"][str(ctx.channel.id)]["status"] = "invoiced"
-        save_tickets()
-
-    embed = discord.Embed(
-        title="🧾 Official Payment Invoice",
-        description=(
-            f"Payment requested for {target_cust.mention if target_cust else 'this order'}!\n\n"
-            "Please send payment using either **Cash App** or **Venmo** below to complete your order."
-        ),
-        color=0xf1c40f
-    )
-    embed.add_field(name="💵 Amount Due", value=f"**{price_formatted}**", inline=True)
-    embed.add_field(name="📦 Item", value=f"**{item_desc}**", inline=True)
-    if ticket_id:
-        embed.add_field(name="🎫 Ticket", value=f"`#{ticket_id:04d}`", inline=True)
-
-    pay_methods = []
-    if ca_handle:
-        pay_methods.append(f"• **Cash App:** [${ca_handle}](https://cash.app/${ca_handle}) · ` ${ca_handle} `")
-    if vm_handle:
-        pay_methods.append(f"• **Venmo:** [@{vm_handle}](https://venmo.com/u/{vm_handle}) · ` @{vm_handle} `")
-    if not pay_methods:
-        pay_methods.append("• *Contact staff in this channel for payment handle details.*")
-    embed.add_field(name="💳 Payment Handles", value="\n".join(pay_methods), inline=False)
-
-    instructions = (
-        f"1️⃣ Send exactly **{price_formatted}** to the handle listed above.\n"
-        "2️⃣ In the payment note, include your **Discord username** or ticket number.\n"
-        "3️⃣ Reply in this channel once sent (or upload a screenshot).\n"
-        "4️⃣ Staff will verify payment and immediately fulfill your order!"
-    )
-    embed.add_field(name="📌 Instructions", value=instructions, inline=False)
-    embed.add_field(name="⏳ Status", value="🟡 Awaiting Payment", inline=True)
-    embed.set_footer(text=f"Issued by {ctx.author.display_name} • Staff: run /paid once payment arrives")
 
     ping_cust = target_cust.mention if target_cust else ""
     await ctx.send(content=f"{ping_cust} Here is your official invoice:", embed=embed)
@@ -5992,48 +6791,7 @@ async def orderstats_cmd(ctx: commands.Context, action: Optional[str] = "view"):
         await ctx.send(embed=embed)
         return
 
-    orders = tickets_db.get("completed_orders", [])
-    if ctx.guild:
-        guild_orders = [o for o in orders if o.get("guild_id") == ctx.guild.id or not o.get("guild_id")]
-    else:
-        guild_orders = orders
-
-    total_count = len(guild_orders)
-    total_rev = sum(o.get("amount", 0.0) for o in guild_orders)
-    taco_count = sum(1 for o in guild_orders if "taco" in o.get("brand", "").lower())
-    pizza_count = sum(1 for o in guild_orders if "pizza" in o.get("brand", "").lower())
-    other_count = total_count - (taco_count + pizza_count)
-
-    embed = discord.Embed(
-        title="📊 Completed Orders & Sales Tracker",
-        description=f"Summary of all fulfilled customer orders in **{ctx.guild.name if ctx.guild else 'AIO Bot'}**:",
-        color=COLOR_SUCCESS
-    )
-    embed.add_field(name="🏆 Total Completed", value=f"**{total_count} orders**", inline=True)
-    embed.add_field(name="💰 Total Revenue", value=f"**${total_rev:.2f}**", inline=True)
-    embed.add_field(name="🏷️ Brand Breakdown", value=f"🌮 Taco Bell: **{taco_count}**\n🍕 Pizza Hut: **{pizza_count}**" + (f"\n✨ Other: **{other_count}**" if other_count > 0 else ""), inline=True)
-
-    if guild_orders:
-        recent = guild_orders[-8:]
-        lines = []
-        for o in reversed(recent):
-            oid = o.get("order_id", o.get("ticket_id", "?"))
-            brand = o.get("brand", "Order")
-            amt = o.get("amount", 0.0)
-            cust = o.get("customer_name") or f"<@{o.get('customer_id', '')}>"
-            ts = ""
-            if o.get("completed_at"):
-                try:
-                    dt = datetime.fromisoformat(o["completed_at"])
-                    ts = f" · <t:{int(dt.timestamp())}:R>"
-                except Exception:
-                    pass
-            lines.append(f"`#{oid:02d}` **{brand}** — **${amt:.2f}** ({cust}){ts}")
-        embed.add_field(name="📋 Recent Completed Orders", value="\n".join(lines), inline=False)
-    else:
-        embed.add_field(name="📋 Recent Completed Orders", value="*No completed orders tracked yet.*", inline=False)
-
-    embed.set_footer(text="Staff: Run /clearorder <id> to remove an order, or /orderstats reset to clear test data")
+    embed = build_order_stats_embed(ctx.guild)
     await ctx.send(embed=embed)
 
 

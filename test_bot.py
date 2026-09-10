@@ -114,6 +114,13 @@ class TestAIOBot(unittest.TestCase):
         self.assertIsNotNone(main.FormatServerConfirmView(12345))
         self.assertIsNotNone(main.DeleteChannelsConfirmView(12345))
         self.assertIsNotNone(main.FoodAccountPurchaseView())
+        self.assertIsNotNone(main.CouponHubLaunchView())
+        self.assertIsNotNone(main.CouponRoomControlView(12345))
+        self.assertIsNotNone(main.StaffModPanelButtonView())
+        hub_embed = main.build_coupon_hub_embed()
+        self.assertIn("Coupon Optimizer", hub_embed.title)
+        mod_embed = main.build_staff_modpanel_embed()
+        self.assertIn("Staff Control Center", mod_embed.title)
         food_embed = main.build_food_accounts_embed()
         self.assertIn("Taco Bell", food_embed.fields[0].name)
         self.assertIn("Pizza Hut", food_embed.fields[1].name)
@@ -953,13 +960,129 @@ class TestAIOBot(unittest.TestCase):
         self.assertEqual(len(ticket_ch.messages_sent), 1)
         self.assertIsInstance(ticket_ch.messages_sent[0]["view"], main.TicketLaunchView)
 
-        # 4. Coupon optimizer channel deploys QuickCartActionView
+        # 4. Coupon optimizer channel deploys CouponHubLaunchView
         opt_ch = MockChannel("🛒-coupon-optimizer")
         res_opt = asyncio.run(main.refresh_channel_content(opt_ch, author_id=123, clear_history=True))
         self.assertTrue(opt_ch.purged)
-        self.assertIn("Coupon Optimizer", res_opt)
+        self.assertIn("Coupon Optimizer Hub", res_opt)
         self.assertEqual(len(opt_ch.messages_sent), 1)
-        self.assertIsInstance(opt_ch.messages_sent[0]["view"], main.QuickCartActionView)
+        self.assertIsInstance(opt_ch.messages_sent[0]["view"], main.CouponHubLaunchView)
+
+        # 5. Mod panel channel deploys StaffModPanelButtonView
+        mod_ch = MockChannel("🎛️-mod-panel")
+        res_mod = asyncio.run(main.refresh_channel_content(mod_ch, author_id=123, clear_history=True))
+        self.assertTrue(mod_ch.purged)
+        self.assertIn("Staff Control Center", res_mod)
+        self.assertEqual(len(mod_ch.messages_sent), 1)
+        self.assertIsInstance(mod_ch.messages_sent[0]["view"], main.StaffModPanelButtonView)
+
+    def test_is_staff_member_and_resolve_member(self):
+        class MockRole:
+            def __init__(self, name: str):
+                self.name = name
+
+        class MockMember:
+            def __init__(self, uid: int, name: str, display_name: str, roles=None, is_owner=False, is_admin=False):
+                self.id = uid
+                self.name = name
+                self.display_name = display_name
+                self.roles = roles or []
+                self.guild = None
+                self._is_owner = is_owner
+                self._is_admin = is_admin
+
+            @property
+            def guild_permissions(self):
+                class MockPerms:
+                    def __init__(self, is_admin):
+                        self.administrator = is_admin
+                        self.manage_channels = is_admin
+                        self.manage_messages = is_admin
+                return MockPerms(self._is_admin)
+
+        class MockGuild:
+            def __init__(self, owner_id: int):
+                self.id = 9999
+                self.owner_id = owner_id
+                self.members = []
+
+            def get_member(self, uid: int):
+                for m in self.members:
+                    if m.id == uid:
+                        return m
+                return None
+
+        guild = MockGuild(owner_id=100)
+        m_owner = MockMember(100, "owneruser", "Server Owner", is_owner=True)
+        m_owner.guild = guild
+        m_mod = MockMember(101, "moduser", "Moderator Mike", roles=[MockRole("Moderator")])
+        m_mod.guild = guild
+        m_regular = MockMember(102, "regularguy", "Regular Guy", roles=[MockRole("Member")])
+        m_regular.guild = guild
+        guild.members = [m_owner, m_mod, m_regular]
+
+        self.assertTrue(main.is_staff_member(m_owner))
+        self.assertTrue(main.is_staff_member(m_mod))
+        self.assertFalse(main.is_staff_member(m_regular))
+        self.assertFalse(main.is_staff_member(None))
+
+        # Test resolve_member_from_input
+        self.assertEqual(main.resolve_member_from_input(guild, "<@100>"), m_owner)
+        self.assertEqual(main.resolve_member_from_input(guild, "101"), m_mod)
+        self.assertEqual(main.resolve_member_from_input(guild, "regularguy"), m_regular)
+        self.assertEqual(main.resolve_member_from_input(guild, "Mike"), m_mod)
+        self.assertIsNone(main.resolve_member_from_input(guild, "nonexistent"))
+
+    def test_coupon_room_control_view_and_hub_embed(self):
+        view = main.CouponRoomControlView(room_owner_id=555)
+        self.assertEqual(view.room_owner_id, 555)
+
+        # Check all 7 buttons exist on view
+        labels = [item.label for item in view.children if hasattr(item, "label")]
+        self.assertIn("Add Items", labels)
+        self.assertIn("Load Coupons", labels)
+        self.assertIn("Optimize Plan", labels)
+        self.assertIn("Undo Last", labels)
+        self.assertIn("Checkout", labels)
+        self.assertIn("Clear Cart", labels)
+        self.assertIn("Close Room", labels)
+
+        hub = main.CouponHubLaunchView()
+        hub_labels = [item.label for item in hub.children if hasattr(item, "label")]
+        self.assertIn("Open Private Optimizer Room", hub_labels)
+
+    def test_staff_modpanel_view_and_embed(self):
+        view = main.StaffModPanelButtonView()
+        labels = [item.label for item in view.children if hasattr(item, "label")]
+
+        # Discipline buttons
+        self.assertIn("Warn", labels)
+        self.assertIn("Timeout", labels)
+        self.assertIn("Kick", labels)
+        self.assertIn("Ban", labels)
+        self.assertIn("Purge", labels)
+
+        # Channel & Server buttons
+        self.assertIn("Lock Channel", labels)
+        self.assertIn("Unlock Channel", labels)
+        self.assertIn("Slowmode", labels)
+        self.assertIn("Server Lockdown", labels)
+
+        # Store, Billing & Hierarchy buttons
+        self.assertIn("Create Invoice", labels)
+        self.assertIn("Order Stats", labels)
+        self.assertIn("Fix Roles", labels)
+        self.assertIn("Refresh Store", labels)
+
+        # Panels & Info
+        self.assertIn("Refresh Tickets", labels)
+        self.assertIn("Refresh Hub", labels)
+        self.assertIn("Server Info", labels)
+
+        embed = main.build_staff_modpanel_embed()
+        self.assertIn("Staff Control Center", embed.title)
+        self.assertIn("Member Discipline", embed.description)
+        self.assertIn("Channel & Server Security", embed.description)
 
 
 if __name__ == '__main__':
