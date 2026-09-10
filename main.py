@@ -849,39 +849,36 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
 
     coupon_link = "https://www.cvs.com/extracare/deals-and-rewards"
     extracare_link = "https://www.cvs.com/extracare/home"
+    deals_link = "https://www.cvs.com/deals/coupons"
 
     embed = discord.Embed(
         title=f"💳 CVS ExtraCare® Card — #{acc_id} {name}",
         description=(
-            "Scannable barcode generated below for register & self-checkout scanners.\n\n"
-            f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 💰 **[ExtraCare Dashboard]({extracare_link})**"
+            f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 🎟️ **[Digital Coupons]({deals_link})** • 💰 **[Dashboard]({extracare_link})**\n"
+            f"*Scannable barcode generated below for register & self-checkout scanners.*"
         ),
         color=COLOR_PRIMARY
     )
     embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
 
     formatted_card = " ".join([raw_card[i:i+4] for i in range(0, len(raw_card), 4)])
-    embed.add_field(name="🔢 ExtraCare Number", value=f"```\n{formatted_card}\n```", inline=False)
-
     phone = acc.get("phone", "")
-    if len(phone) == 10:
-        phone_fmt = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}"
-    else:
-        phone_fmt = phone or "—"
+    phone_fmt = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}" if len(phone) == 10 else (phone or "—")
 
+    embed.add_field(name="🔢 ExtraCare Number", value=f"`{formatted_card}`", inline=True)
     embed.add_field(name="👤 Cardholder", value=f"**{name}**", inline=True)
     embed.add_field(name="📞 Phone", value=f"`{phone_fmt}`", inline=True)
-    if acc.get("birthday"):
-        embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
-
-    val = f"📧 **Email:** `{email}`" if email else ""
-    if pwd:
-        val += f"\n🔑 **Password:** ||`{pwd}`||"
-    if val:
-        embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
 
     if acc.get("extrabucks"):
         embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{acc['extrabucks']}**", inline=True)
+    if acc.get("birthday"):
+        embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
+
+    val = f"📧 `{email}`" if email else ""
+    if pwd:
+        val += f" • 🔑 ||`{pwd}`||"
+    if val:
+        embed.add_field(name="🔐 Credentials", value=val, inline=False)
 
     if acc.get("notes"):
         embed.add_field(name="🎟️ Loaded Coupons & Notes", value=acc['notes'], inline=False)
@@ -914,11 +911,6 @@ class CVSAccountsPaginationView(discord.ui.View):
         self.current_idx = current_idx
         self.dropdown = AccountSelectDropdown(current_idx)
         self.add_item(self.dropdown)
-
-        # Action Links in Row 2
-        self.add_item(discord.ui.Button(label="Deals & Rewards", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/deals-and-rewards", emoji="🎯", row=2))
-        self.add_item(discord.ui.Button(label="Digital Coupons", style=discord.ButtonStyle.link, url="https://www.cvs.com/deals/coupons", emoji="🎟️", row=2))
-        self.add_item(discord.ui.Button(label="ExtraCare Home", style=discord.ButtonStyle.link, url="https://www.cvs.com/extracare/home", emoji="💰", row=2))
 
     def update_select(self):
         self.remove_item(self.dropdown)
@@ -1115,17 +1107,48 @@ def _do_checkout(items: List[Dict[str, Any]], coupons: List[Any]) -> tuple:
     save_savings(savings_tracker)
 
     embed = discord.Embed(title="✅ Trip Checked Out!", color=COLOR_SUCCESS)
-    embed.add_field(name="🗓️ Date Logged",            value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
-    embed.add_field(name="Full Price (No Coupons)",   value=f"${subtotal:.2f}",    inline=True)
-    embed.add_field(name="Register Total Paid",       value=f"${total_due:.2f}",   inline=True)
-    embed.add_field(name="Spent on Coupons",          value=f"${coupon_spend:.2f}", inline=True)
-    embed.add_field(name="💰 Net Money Saved",        value=f"## **${net_saved:.2f}**", inline=False)
-    embed.add_field(
-        name="📈 Lifetime Total Saved",
-        value=f"**${savings_tracker['total_net_saved']:.2f}** across {savings_tracker['trip_count']} trip(s)",
-        inline=False
+    embed.description = (
+        f"🗓️ **{now.strftime('%A, %b %d, %Y @ %I:%M %p')}**\n"
+        f"💰 **Net Money Saved:** **${net_saved:.2f}**\n"
+        f"📈 **Lifetime Saved:** **${savings_tracker['total_net_saved']:.2f}** across {savings_tracker['trip_count']} trip(s)"
     )
+    embed.add_field(name="🏷️ Full Retail", value=f"${subtotal:.2f}", inline=True)
+    embed.add_field(name="💵 Register Paid", value=f"${total_due:.2f}", inline=True)
+    embed.add_field(name="🎟️ Coupon Spend", value=f"${coupon_spend:.2f}", inline=True)
     return embed, subtotal, total_due, coupon_spend, net_saved, now
+
+
+def build_cart_embed(user_id: int, notice: Optional[str] = None) -> discord.Embed:
+    session = get_session(user_id)
+    items = session["items"]
+    coupons = session["coupons"]
+    subtotal = sum(i['price'] for i in items)
+
+    embed = discord.Embed(title="🛒 AIO Shopping Cart & Optimizer", color=COLOR_PRIMARY)
+    desc_lines = []
+    if notice:
+        desc_lines.append(f"{notice}\n")
+
+    if not items:
+        desc_lines.append("📭 *Your cart is empty. Click **Add Items** or type `/add` to start!*")
+    else:
+        for item in items[:12]:
+            desc_lines.append(f"• **{item['name']}** — ${item['price']:.2f}")
+        if len(items) > 12:
+            desc_lines.append(f"*...and {len(items) - 12} more item(s)*")
+
+    embed.description = "\n".join(desc_lines)
+    coupon_str = ", ".join(coupon_label(c) for c in coupons) if coupons else "None loaded"
+
+    embed.add_field(name="💵 Subtotal", value=f"**${subtotal:.2f}** ({len(items)} items)", inline=True)
+    embed.add_field(name="🎟️ Coupons", value=coupon_str, inline=True)
+    if items and coupons:
+        est_due, _ = calculate_best_bundles(items, coupons)
+        saved = max(0.0, subtotal - est_due)
+        embed.add_field(name="💰 Est. Register Due", value=f"**${est_due:.2f}** *(Save ${saved:.2f})*", inline=True)
+
+    embed.set_footer(text="Manage below with buttons • Run /optimize for step-by-step cashier plan")
+    return embed
 
 
 class QuickCartActionView(discord.ui.View):
@@ -1142,21 +1165,7 @@ class QuickCartActionView(discord.ui.View):
     async def btn_coupons(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(LoadCouponsModal(interaction.user.id))
 
-    @discord.ui.button(label="View Cart", style=discord.ButtonStyle.secondary, emoji="🛒", row=0)
-    async def btn_view_cart(self, interaction: discord.Interaction, button: discord.ui.Button):
-        session    = get_session(interaction.user.id)
-        items      = session["items"]
-        coupons    = session["coupons"]
-        subtotal   = sum(i['price'] for i in items)
-        item_str   = "\n".join(f"• **{i['name']}**: ${i['price']:.2f}" for i in items) or "No items added yet."
-        coupon_str = ", ".join(coupon_label(c) for c in coupons) or "None loaded yet."
-        embed = discord.Embed(title="🛒 AIO Shopping Cart", color=COLOR_PRIMARY)
-        embed.add_field(name="Scanned Items",    value=item_str,               inline=False)
-        embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=True)
-        embed.add_field(name="🎟️ Active Coupons", value=coupon_str,           inline=True)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Calculate Best Plan", style=discord.ButtonStyle.primary, emoji="📊", row=1)
+    @discord.ui.button(label="Optimize Plan", style=discord.ButtonStyle.primary, emoji="📊", row=0)
     async def btn_opt(self, interaction: discord.Interaction, button: discord.ui.Button):
         session = get_session(interaction.user.id)
         if not session["items"]:
@@ -1165,7 +1174,7 @@ class QuickCartActionView(discord.ui.View):
         embed = build_strategy_embed(session["items"], session["coupons"])
         await interaction.response.send_message(embed=embed, view=QuickCartActionView(interaction.user.id), ephemeral=True)
 
-    @discord.ui.button(label="Undo Last Item", style=discord.ButtonStyle.secondary, emoji="↩️", row=1)
+    @discord.ui.button(label="Undo Last", style=discord.ButtonStyle.secondary, emoji="↩️", row=1)
     async def btn_undo(self, interaction: discord.Interaction, button: discord.ui.Button):
         session = get_session(interaction.user.id)
         if not session["items"]:
@@ -1174,7 +1183,7 @@ class QuickCartActionView(discord.ui.View):
         removed  = session["items"].pop()
         subtotal = sum(i['price'] for i in session["items"])
         await interaction.response.send_message(
-            f"↩️ Removed **{removed['name']}** (${removed['price']:.2f}). Updated subtotal: **${subtotal:.2f}**",
+            f"↩️ Removed **{removed['name']}** (${removed['price']:.2f}). Subtotal: **${subtotal:.2f}**",
             ephemeral=True
         )
 
@@ -1925,30 +1934,29 @@ class HelpMenuView(discord.ui.View):
         self.add_item(HelpCategorySelect(author_perms, is_owner))
 
 def build_serverinfo_embed(guild: discord.Guild) -> discord.Embed:
-    embed = discord.Embed(title=f"📊 {guild.name} — Server Information", color=COLOR_INFO)
+    embed = discord.Embed(title=f"📊 {guild.name}", color=COLOR_INFO)
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
     owner = guild.owner or f"<@{guild.owner_id}>"
-    embed.add_field(name="👑 Server Owner", value=str(owner), inline=True)
-    embed.add_field(name="🆔 Server ID", value=str(guild.id), inline=True)
-    embed.add_field(name="📅 Created On", value=guild.created_at.strftime("%B %d, %Y"), inline=True)
-    embed.add_field(name="👥 Total Members", value=str(guild.member_count), inline=True)
-    embed.add_field(name="💬 Channels", value=f"Text: {len(guild.text_channels)} | Voice: {len(guild.voice_channels)}", inline=True)
-    embed.add_field(name="🛡️ Roles", value=str(len(guild.roles)), inline=True)
-    embed.add_field(name="🚀 Boost Level", value=f"Tier {guild.premium_tier} ({guild.premium_subscription_count} Boosts)", inline=True)
-    embed.set_footer(text="AIO Bot Server Diagnostics")
+    embed.description = f"👑 **Owner:** {owner} • 🆔 `{guild.id}`\n🗓️ **Created:** {guild.created_at.strftime('%b %d, %Y')}"
+    embed.add_field(name="👥 Members", value=f"**{guild.member_count:,}**", inline=True)
+    embed.add_field(name="💬 Channels", value=f"**{len(guild.text_channels)}** text • **{len(guild.voice_channels)}** voice", inline=True)
+    embed.add_field(name="🚀 Boosts", value=f"Tier **{guild.premium_tier}** ({guild.premium_subscription_count} boosts)", inline=True)
+    embed.set_footer(text=f"AIO Bot Server Diagnostics • {len(guild.roles)} Roles")
     return embed
 
 def build_userinfo_embed(member: discord.Member) -> discord.Embed:
-    embed = discord.Embed(title=f"👤 {member.display_name} — Member Information", color=member.color or 0x3498db)
+    embed = discord.Embed(title=f"👤 {member.display_name}", color=member.color if member.color.value != 0 else COLOR_PRIMARY)
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="Tag", value=str(member), inline=True)
-    embed.add_field(name="User ID", value=str(member.id), inline=True)
-    embed.add_field(name="Bot Account?", value="Yes 🤖" if member.bot else "No 👤", inline=True)
-    embed.add_field(name="Account Created", value=member.created_at.strftime("%B %d, %Y"), inline=True)
-    embed.add_field(name="Joined Server", value=member.joined_at.strftime("%B %d, %Y") if member.joined_at else "Unknown", inline=True)
+    badge = " 🤖 *(Bot)*" if member.bot else ""
+    embed.description = f"**{member}**{badge} • 🆔 `{member.id}`"
+    embed.add_field(name="🗓️ Created", value=member.created_at.strftime("%b %d, %Y"), inline=True)
+    embed.add_field(name="📥 Joined", value=member.joined_at.strftime("%b %d, %Y") if member.joined_at else "Unknown", inline=True)
     roles = [r.mention for r in reversed(member.roles) if r.name != "@everyone"]
-    embed.add_field(name=f"Roles ({len(roles)})", value=" ".join(roles[:15]) if roles else "None", inline=False)
+    role_str = " ".join(roles[:12]) if roles else "None"
+    if len(roles) > 12:
+        role_str += f" *(+{len(roles)-12} more)*"
+    embed.add_field(name=f"🏷️ Roles ({len(roles)})", value=role_str, inline=False)
     return embed
 
 # 5. CORE EVENTS & COMMANDS
@@ -2071,18 +2079,7 @@ async def on_message_delete(message: discord.Message):
 @bot.hybrid_command(name="panel", description="Open the interactive Shopping Cart & Coupon Optimizer panel")
 async def open_panel(ctx):
     await safely_delete_message(ctx)
-    embed = discord.Embed(
-        title="🛒 AIO Bot — Shopping & Optimizer Panel",
-        description=(
-            "Use the buttons below to manage your cart in real-time!\n\n"
-            "• **Add Items** — enter item names and prices\n"
-            "• **Load Coupons** — enter your coupon values\n"
-            "• **View Cart** — see everything in your current session\n"
-            "• **Calculate Best Plan** — get the optimal register strategy\n"
-            "• **Checkout** — lock in savings and record your trip"
-        ),
-        color=COLOR_PRIMARY
-    )
+    embed = build_cart_embed(ctx.author.id)
     await ctx.send(embed=embed, view=QuickCartActionView(ctx.author.id))
 
 
@@ -2107,12 +2104,13 @@ async def help_command(ctx):
     is_owner = await bot.is_owner(ctx.author)
     embed = discord.Embed(
         title="📖 AIO Bot — Command Center",
-        description="Welcome to **AIO Bot**! Select a category from the menu below to explore features.",
+        description="Select a category from the dropdown menu below to view detailed command guides.",
         color=COLOR_PRIMARY
     )
-    embed.add_field(name="🛍️ Coupon Optimizer", value="Calculates the most profitable checkout bundles for CVS and retail coupons.", inline=False)
-    embed.add_field(name="🛡️ Server Moderation", value="Advanced channel nuking, lock/unlock, member timeouts, kicks, bans, and purges.", inline=False)
-    embed.add_field(name="🎨 Custom Embeds & Tools", value="Build custom rich announcement embeds and access real-time diagnostics.", inline=False)
+    embed.add_field(name="🛍️ Coupon Optimizer", value="Find optimal checkout bundles & max savings.", inline=True)
+    embed.add_field(name="🛡️ Moderation Suite", value="Anti-raid, auto-mod filters, cases & staff discipline.", inline=True)
+    embed.add_field(name="🎮 Games & Economy", value="Blackjack, Slots, Connect 4, Trivia & coin bank.", inline=True)
+    embed.set_footer(text="Tip: All commands work with either / or ! (e.g. /panel or !panel)")
     view = HelpMenuView(author_perms, is_owner)
     await ctx.send(embed=embed, view=view)
 
@@ -2448,12 +2446,10 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
     total_savings = full_subtotal - total_due
     savings_pct = (total_savings / full_subtotal * 100) if full_subtotal > 0 else 0
 
+    tx_count = len(coupons) if coupons else 1
     embed = discord.Embed(
         title="🧾 Cashier Step-by-Step Checkout Strategy",
-        description=(
-            f"Here is your optimal register plan to pay the absolute minimum!\n"
-            f"Tell the cashier you are doing **{len(coupons) if coupons else 1} transaction(s)**."
-        ),
+        description=f"Split your items into **{tx_count} transaction(s)** at the register for maximum savings.",
         color=COLOR_SUCCESS if total_savings > 0 else 0x3498db
     )
 
@@ -2468,17 +2464,15 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
         for idx, coupon_val in enumerate(coupons):
             group_items = bundling.get(idx, [])
             if group_items:
-                item_lines = "\n".join([f"• **{i['name']}**: ${i['price']:.2f}" for i in group_items])
+                item_bullets = " • ".join([f"**{i['name']}** (${i['price']:.2f})" for i in group_items])
                 group_sub = sum(i['price'] for i in group_items)
                 due = group_due(group_items, coupon_val)
                 saved_amt = group_sub - due
                 embed.add_field(
                     name=f"🛒 Step {idx+1}: Ring Up {len(group_items)} Item(s)",
                     value=(
-                        f"{item_lines}\n"
-                        f"── Subtotal: **${group_sub:.2f}**\n"
-                        f"🎟️ Scan: **{coupon_label(coupon_val)}**\n"
-                        f"💵 **Cashier Price Due: ${due:.2f}** *(Saved ${saved_amt:.2f}!)*"
+                        f"{item_bullets}\n"
+                        f"Scan: `{coupon_label(coupon_val)}` • Subtotal: ${group_sub:.2f} ➔ **Cashier Due: ${due:.2f}** *(Saved ${saved_amt:.2f}!)*"
                     ),
                     inline=False
                 )
@@ -2487,9 +2481,8 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
     embed.add_field(
         name="📊 Checkout Summary",
         value=(
-            f"🏷️ **Full Retail Value:** ${full_subtotal:.2f}\n"
-            f"🎟️ **Total Discounts:** -${total_savings:.2f} ({savings_pct:.0f}% OFF)\n"
-            f"💵 **Final Out-of-Pocket Total:** ## **${total_due:.2f}**"
+            f"🏷️ Retail: **${full_subtotal:.2f}** • 🎟️ Discounts: **-${total_savings:.2f}** ({savings_pct:.0f}% OFF)\n"
+            f"💵 **Final Register Out-of-Pocket: ${total_due:.2f}**"
         ),
         inline=False
     )
@@ -2520,8 +2513,8 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
 
             trial_due, trial_bundling, register_savings = best_trial
             suggestions.append(
-                f"• Buy a **{coupon_label(best_candidate)}** coupon (costs ${coupon_cost(best_candidate):.2f}) "
-                f"➔ Drops register price to **${trial_due:.2f}** (saves ${register_savings:.2f}, **${best_net_benefit:.2f} net profit** in your pocket!)"
+                f"• Buy `{coupon_label(best_candidate)}` (${coupon_cost(best_candidate):.2f}) "
+                f"➔ Drops register to **${trial_due:.2f}** *(+${best_net_benefit:.2f} profit!)*"
             )
             working_coupons.append(best_candidate)
             working_due = trial_due
@@ -2529,7 +2522,7 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
         if suggestions:
             embed.add_field(
                 name="💡 Extra Savings Opportunities",
-                value="You can save even more money by buying these coupons:\n" + "\n".join(suggestions),
+                value="Save even more by purchasing these coupons:\n" + "\n".join(suggestions),
                 inline=False
             )
 
@@ -2548,16 +2541,8 @@ async def add_item(ctx, *, items: str):
         return
 
     session["items"].extend(parsed)
-    subtotal = sum(item['price'] for item in session["items"])
-    embed = discord.Embed(title="🛒 AIO Shopping Cart", color=COLOR_PRIMARY)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in session["items"]])
-    coupon_str = ", ".join([coupon_label(c) for c in session["coupons"]]) or "None loaded yet."
     added_str = ", ".join(f"**{i['name']}** (${i['price']:.2f})" for i in parsed)
-
-    embed.add_field(name=f"Added {len(parsed)} Item(s)", value=added_str, inline=False)
-    embed.add_field(name="Scanned Items", value=item_str, inline=False)
-    embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=True)
-    embed.add_field(name="Active Coupons", value=coupon_str, inline=True)
+    embed = build_cart_embed(ctx.author.id, notice=f"✅ **Added {len(parsed)} item(s):** {added_str}")
     view = QuickCartActionView(ctx.author.id)
     await ctx.send(embed=embed, view=view)
 
@@ -2573,11 +2558,7 @@ async def set_coupons(ctx, *, values: str):
     session["coupons"].extend(parsed)
     session["coupons"].sort(key=lambda c: -1 if c == "half" else float(c), reverse=True)
     added_str = ", ".join([coupon_label(c) for c in parsed])
-    all_str = ", ".join([coupon_label(c) for c in session["coupons"]])
-
-    embed = discord.Embed(title="🎟️ Coupons Loaded", color=COLOR_SUCCESS)
-    embed.add_field(name="Just Added", value=added_str, inline=False)
-    embed.add_field(name="All Active Coupons", value=all_str, inline=False)
+    embed = build_cart_embed(ctx.author.id, notice=f"🎟️ **Loaded {len(parsed)} coupon(s):** {added_str}")
     view = QuickCartActionView(ctx.author.id)
     await ctx.send(embed=embed, view=view)
 
@@ -2631,16 +2612,7 @@ async def quick_calc(ctx, *, query: str):
 @bot.hybrid_command(name="cart", description="View your current shopping cart")
 async def view_cart(ctx):
     await safely_delete_message(ctx)
-    session = get_session(ctx.author.id)
-    items = session["items"]
-    coupons = session["coupons"]
-    embed = discord.Embed(title="🛒 AIO Shopping Cart", color=COLOR_PRIMARY)
-    item_str = "\n".join([f"• **{item['name']}**: ${item['price']:.2f}" for item in items]) or "No items added yet."
-    subtotal = sum(item['price'] for item in items)
-    coupon_str = ", ".join([coupon_label(c) for c in coupons]) or "None loaded yet."
-    embed.add_field(name="Scanned Items", value=item_str, inline=False)
-    embed.add_field(name="Current Subtotal", value=f"**${subtotal:.2f}**", inline=True)
-    embed.add_field(name="Active Coupons", value=coupon_str, inline=True)
+    embed = build_cart_embed(ctx.author.id)
     view = QuickCartActionView(ctx.author.id)
     await ctx.send(embed=embed, view=view)
 
@@ -2692,16 +2664,21 @@ async def checkout(ctx):
 
     # Send DM receipt
     try:
-        item_str   = "\n".join(f"• **{i['name']}**: ${i['price']:.2f}" for i in items) or "No items."
+        item_str   = "\n".join(f"• **{i['name']}**: ${i['price']:.2f}" for i in items[:15]) or "No items."
+        if len(items) > 15:
+            item_str += f"\n*...and {len(items)-15} more items*"
         coupon_str = ", ".join(coupon_label(c) for c in coupons) or "None"
         dm = discord.Embed(title="🧾 Your AIO Trip Receipt", color=COLOR_SUCCESS)
-        dm.add_field(name="🗓️ Date",            value=now.strftime("%A, %B %d, %Y @ %I:%M %p"), inline=False)
-        dm.add_field(name="🛒 Items Purchased",  value=item_str,                                  inline=False)
-        dm.add_field(name="🎟️ Coupons Used",    value=coupon_str,                                 inline=False)
-        dm.add_field(name="Full Price",          value=f"${subtotal:.2f}",                        inline=True)
-        dm.add_field(name="Paid at Register",    value=f"${total_due:.2f}",                       inline=True)
-        dm.add_field(name="Coupon Cost",         value=f"${coupon_spend:.2f}",                    inline=True)
-        dm.add_field(name="💰 Net Money Saved",  value=f"## **${net_saved:.2f}**",                inline=False)
+        dm.description = (
+            f"🗓️ **{now.strftime('%A, %b %d, %Y @ %I:%M %p')}**\n"
+            f"💰 **Net Money Saved:** **${net_saved:.2f}**"
+        )
+        dm.add_field(name="🏷️ Full Retail",   value=f"${subtotal:.2f}",     inline=True)
+        dm.add_field(name="💵 Register Paid", value=f"${total_due:.2f}",     inline=True)
+        dm.add_field(name="🎟️ Coupon Cost",   value=f"${coupon_spend:.2f}",  inline=True)
+        dm.add_field(name="🛒 Items Purchased", value=item_str, inline=False)
+        if coupons:
+            dm.add_field(name="🎟️ Coupons Used", value=coupon_str, inline=False)
         await ctx.author.send(embed=dm)
     except (discord.Forbidden, discord.HTTPException):
         pass  # DMs disabled — silently skip
@@ -2816,12 +2793,15 @@ async def view_savings(ctx):
     else:
         trip_count = s["trip_count"]
         avg_saved = s["total_net_saved"] / trip_count if trip_count > 0 else 0.0
-        embed.add_field(name="🧾 Trips Checked Out", value=str(trip_count), inline=True)
-        embed.add_field(name="🏷️ Total Full Price", value=f"${s['total_full_price']:.2f}", inline=True)
-        embed.add_field(name="💵 Total Actually Paid", value=f"${s['total_paid']:.2f}", inline=True)
-        embed.add_field(name="🎟️ Total Spent on Coupons", value=f"${s['total_coupon_cost']:.2f}", inline=True)
-        embed.add_field(name="📊 Avg Net Saved / Trip", value=f"${avg_saved:.2f}", inline=True)
-        embed.add_field(name="💰 Lifetime Net Money Saved", value=f"## **${s['total_net_saved']:.2f}**", inline=False)
+        pct_saved = ((s['total_net_saved'] / s['total_full_price']) * 100) if s.get('total_full_price', 0) > 0 else 0
+        embed.description = (
+            f"## 💵 Total Saved: ${s['total_net_saved']:.2f}\n"
+            f"Across **{trip_count} trip(s)** • Average **${avg_saved:.2f} saved/trip** ({pct_saved:.0f}% savings rate)"
+        )
+        embed.add_field(name="🏷️ Retail Value", value=f"${s['total_full_price']:.2f}", inline=True)
+        embed.add_field(name="💵 Total Paid", value=f"${s['total_paid']:.2f}", inline=True)
+        embed.add_field(name="🎟️ Coupon Cost", value=f"${s['total_coupon_cost']:.2f}", inline=True)
+        embed.set_footer(text="AIO Bot Savings Analytics • Use /history to view individual trips")
     await ctx.send(embed=embed)
 
 def _parse_history_date(raw: Optional[str]):
@@ -2865,13 +2845,17 @@ async def view_history(ctx, start: Optional[str] = None, end: Optional[str] = No
         return
 
     embed = discord.Embed(title="📜 Trip History", color=COLOR_INFO)
-    for trip in matches[-15:]:
+    desc_lines = []
+    for trip in matches[-8:]:
         item_names = ", ".join(i["name"] for i in trip.get("items", [])) or "Items"
-        embed.add_field(
-            name=f"🗓️ {trip.get('date', '—')} @ {trip.get('time', '—')}",
-            value=f"Items: {item_names}\nPaid: ${trip.get('total_due', 0.0):.2f} (Full: ${trip.get('subtotal', 0.0):.2f})\n💰 Net Saved: **${trip.get('net_saved', 0.0):.2f}**",
-            inline=False
+        if len(item_names) > 42:
+            item_names = item_names[:39] + "..."
+        desc_lines.append(
+            f"🗓️ **{trip.get('date', '—')}** ({trip.get('time', '—')}) — Paid **${trip.get('total_due', 0.0):.2f}** *(Saved ${trip.get('net_saved', 0.0):.2f})*\n"
+            f"└ 🛒 *{item_names}*"
         )
+    embed.description = "\n\n".join(desc_lines)
+    embed.set_footer(text=f"Showing last {len(matches[-8:])} trip(s) • Total logged: {len(trips)}")
     await ctx.send(embed=embed)
 
 def delete_last_trip() -> Optional[Dict[str, Any]]:
@@ -3595,11 +3579,14 @@ async def about(ctx):
     await safely_delete_message(ctx)
     embed = discord.Embed(
         title="ℹ️ About AIO Bot",
-        description="All-In-One Discord assistant featuring advanced server moderation, channel nuking & cloning, rich embed builder, and combinatorics shopping optimizer.",
+        description="All-In-One Discord assistant featuring advanced server moderation, coupon & shopping optimization, and server mini-games.",
         color=COLOR_PRIMARY
     )
-    embed.add_field(name="Commands", value="Run `/help` or `!help` to explore all tools.", inline=False)
-    embed.add_field(name="Features", value="• 🛡️ Server Moderation & Channel Nuker\n• 🎨 Rich Embed Builder\n• 🛍️ Coupon Optimizer & Savings Engine", inline=False)
+    latency_ms = round(bot.latency * 1000) if bot.latency and not (bot.latency != bot.latency) else 0
+    embed.add_field(name="⚡ Latency", value=f"{latency_ms}ms", inline=True)
+    embed.add_field(name="🌐 Servers", value=f"{len(bot.guilds):,}", inline=True)
+    embed.add_field(name="👥 Total Users", value=f"{sum(g.member_count or 0 for g in bot.guilds):,}", inline=True)
+    embed.set_footer(text="AIO Bot • Use /help to explore all commands")
     await ctx.send(embed=embed)
 
 @bot.event
