@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.git
+.gitignore
+aio_bot_deploy.zip
+node_modules
+artifacts/mockup-sandbox

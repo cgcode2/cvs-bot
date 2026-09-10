@@ -2,8 +2,7 @@ FROM python:3.11-slim
 
 # Prevent Python from buffering stdout/stderr
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8000
+    PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
@@ -19,9 +18,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project files
 COPY . .
-
-# Expose port (Railway overrides this with $PORT)
-EXPOSE 8000
 
 # Start command
 CMD ["python", "main.py"]

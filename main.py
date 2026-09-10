@@ -58,7 +58,8 @@ def health():
 
 def run_server():
     try:
-        port = int(os.environ.get('PORT', 8000))
+        port_val = os.environ.get('PORT', '8000')
+        port = int(port_val) if port_val and str(port_val).strip().isdigit() else 8000
         app.run(host='0.0.0.0', port=port)
     except Exception as e:
         print(f"⚠️ Web server encountered an error: {e}", file=sys.stderr)
@@ -7164,9 +7165,11 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 def main():
     keep_alive()
-    port = os.environ.get('PORT', 8000)
-    token = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
-    if not token or token.strip() in ("", "YOUR_BOT_TOKEN_HERE"):
+    port_val = os.environ.get('PORT', '8000')
+    port = int(port_val) if port_val and str(port_val).strip().isdigit() else 8000
+    token_raw = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('DISCORD_TOKEN') or os.environ.get('token')
+    token = token_raw.strip().strip("'\"") if token_raw else None
+    if not token or token in ("", "YOUR_BOT_TOKEN_HERE"):
         print("=" * 60, flush=True)
         print("⚠️ NOTICE: DISCORD_BOT_TOKEN environment variable is not set.", flush=True)
         print(f"The background web server is running on port {port}.", flush=True)
@@ -7180,7 +7183,7 @@ def main():
             print("Bot shutdown.", flush=True)
     else:
         try:
-            bot.run(token.strip())
+            bot.run(token)
         except discord.errors.PrivilegedIntentsRequired:
             print("=" * 60, file=sys.stderr, flush=True)
             print("❌ CRITICAL ERROR: Privileged Gateway Intents are not enabled in Discord Developer Portal!", file=sys.stderr, flush=True)
