@@ -3,6 +3,7 @@ import os
 import json
 import time
 import copy
+import asyncio
 from datetime import datetime, timedelta
 
 import main
@@ -111,6 +112,12 @@ class TestAIOBot(unittest.TestCase):
         self.assertIsNotNone(main.TicketControlView())
         self.assertIsNotNone(main.TicketCloseConfirmView())
         self.assertIsNotNone(main.FormatServerConfirmView(12345))
+        self.assertIsNotNone(main.FoodAccountPurchaseView())
+        food_embed = main.build_food_accounts_embed()
+        self.assertIn("Taco Bell", food_embed.fields[0].name)
+        self.assertIn("Pizza Hut", food_embed.fields[1].name)
+        self.assertIn("$10.00", food_embed.fields[0].value)
+        self.assertIn("$15.00", food_embed.fields[1].value)
 
     def test_smart_items_parser(self):
         # Multi-word items with commas
@@ -148,7 +155,7 @@ class TestAIOBot(unittest.TestCase):
             "blackjack", "connect4", "trivia", "slots", "rps", "coinflip", "roll",
             "balance", "daily", "pay", "leaderboard",
             "accounts", "cvsaccount",
-            "formatserver", "ticketpanel"
+            "formatserver", "ticketpanel", "say", "foodpanel"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -504,6 +511,37 @@ class TestAIOBot(unittest.TestCase):
             main.tickets_db.clear()
             main.tickets_db.update(original_tickets)
             main.save_tickets()
+
+    def test_say_command_helper(self):
+        class MockChannel:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send(self, content=None, files=None):
+                self.sent_messages.append({"content": content, "files": files})
+
+        channel = MockChannel()
+        res1 = asyncio.run(main._do_say(channel, "", []))
+        self.assertFalse(res1)
+        self.assertEqual(len(channel.sent_messages), 0)
+
+        res2 = asyncio.run(main._do_say(channel, "Hello world repost!", []))
+        self.assertTrue(res2)
+        self.assertEqual(len(channel.sent_messages), 1)
+        self.assertEqual(channel.sent_messages[0]["content"], "Hello world repost!")
+
+    def test_food_accounts_embed_content(self):
+        embed = main.build_food_accounts_embed()
+        self.assertIn("Taco Bell", embed.fields[0].name)
+        self.assertIn("$15 off your entire order", embed.fields[0].value)
+        self.assertIn("Free Chalupa Supreme", embed.fields[0].value)
+        self.assertIn("Pizza Hut", embed.fields[1].name)
+        self.assertIn("2 Large pizzas", embed.fields[1].value)
+        self.assertIn("Triple chocolate fudge brownie", embed.fields[1].value)
+
+        modal = main.FoodAccountOrderModal(brand="Taco Bell", price=10.0)
+        self.assertEqual(modal.brand, "Taco Bell")
+        self.assertEqual(modal.price, 10.0)
 
 
 if __name__ == '__main__':

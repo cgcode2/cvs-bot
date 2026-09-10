@@ -2012,6 +2012,7 @@ class HelpCategorySelect(discord.ui.Select):
         elif cat == "utils":
             embed.title = "🎨 AIO Bot — Embeds & Utilities"
             embed.description = "Creative and diagnostic server tools. Run using either `!` or `/`."
+            embed.add_field(name="Bot Announcement & Echo", value="`/say` or `!say [text]` — repost text and attached photos/images through the bot", inline=False)
             embed.add_field(name="Custom Embed Creator", value="`/embed` or `!embed` — open interactive modal to design & publish rich embeds with titles, images, colors, and footers", inline=False)
             embed.add_field(name="Server & Member Info", value="`/serverinfo` or `!serverinfo` — server stats, boosts, channels, and roles\n`/userinfo` or `!userinfo [@member]` — member details, account age, join date, permissions", inline=False)
             embed.add_field(name="Bot Status", value="`/ping` or `!ping` — bot latency\n`/about` or `!about` — system info", inline=False)
@@ -2196,6 +2197,203 @@ class TicketLaunchView(discord.ui.View):
         await interaction.followup.send(f"✅ Your support ticket has been created: {new_ch.mention}", ephemeral=True)
 
 
+class FoodAccountOrderModal(discord.ui.Modal):
+    def __init__(self, brand: str, price: float):
+        super().__init__(title=f"🛒 {brand} Account Order")
+        self.brand = brand
+        self.price = price
+
+        self.qty_input = discord.ui.TextInput(
+            label="How many accounts do you want? (1–10)",
+            placeholder="1",
+            default="1",
+            min_length=1,
+            max_length=2,
+            required=True
+        )
+        self.add_item(self.qty_input)
+
+        self.notes_input = discord.ui.TextInput(
+            label="Payment Method / Notes (Optional)",
+            placeholder="e.g. CashApp, ApplePay, Venmo, Crypto",
+            required=False,
+            max_length=100
+        )
+        self.add_item(self.notes_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            return
+
+        raw_qty = self.qty_input.value.strip()
+        try:
+            qty = int(raw_qty)
+            if qty < 1 or qty > 10:
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message("❌ Please enter a valid quantity between 1 and 10.", ephemeral=True)
+            return
+
+        active_id = get_user_active_ticket(guild.id, interaction.user.id)
+        if active_id:
+            existing_ch = guild.get_channel(active_id)
+            if existing_ch:
+                await interaction.response.send_message(
+                    f"⚠️ You already have an open ticket in {existing_ch.mention}! Please use that channel or request staff to close it first.",
+                    ephemeral=True
+                )
+                return
+
+        await interaction.response.defer(ephemeral=True)
+
+        cat = discord.utils.get(guild.categories, name="📁 TICKETS")
+        if not cat:
+            cat = discord.utils.get(guild.categories, name="TICKETS")
+        if not cat:
+            cat_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True)
+            }
+            cat = await guild.create_category("📁 TICKETS", overwrites=cat_overwrites)
+
+        ticket_num = tickets_db.get("counter", 0) + 1
+        brand_slug = "tacobell" if "taco" in self.brand.lower() else "pizzahut"
+        safe_user = re.sub(r'[^a-zA-Z0-9]', '', interaction.user.name).lower()[:10] or "user"
+        channel_name = f"order-{brand_slug}-{ticket_num:04d}-{safe_user}"
+
+        ch_overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                attach_files=True, embed_links=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                manage_channels=True, manage_messages=True
+            )
+        }
+        for role in guild.roles:
+            if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "admin"):
+                ch_overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        new_ch = await guild.create_text_channel(
+            name=channel_name,
+            category=cat,
+            overwrites=ch_overwrites,
+            topic=f"{self.brand} Preloaded Accounts Order #{ticket_num:04d} | Buyer: {interaction.user} ({interaction.user.id})"
+        )
+
+        create_ticket_record(guild.id, new_ch.id, interaction.user.id, channel_name)
+
+        total_est = qty * self.price
+        notes_val = self.notes_input.value.strip() or "Standard Payment"
+
+        embed = discord.Embed(
+            title=f"{'🌮' if brand_slug == 'tacobell' else '🍕'} {self.brand} Order #{ticket_num:04d}",
+            description=(
+                f"Welcome {interaction.user.mention}! Support staff has been notified of your order.\n\n"
+                f"**Order Details:**\n"
+                f"• Item: **{self.brand} Preloaded Account(s)**\n"
+                f"• Quantity: **{qty} account(s)** (${self.price:.2f} each)\n"
+                f"• Estimated Total: **${total_est:.2f}**\n"
+                f"• Payment Note: `{notes_val}`\n\n"
+                f"**Instructions:**\n"
+                + (
+                    "1. Staff will provide the account email and payment address.\n"
+                    "2. Enter the email into the **Taco Bell app** and tap **Send code**.\n"
+                    "3. Ping staff here and they will immediately retrieve your OTP code!"
+                    if brand_slug == "tacobell" else
+                    "1. Staff will provide payment details and your Hut Rewards credentials.\n"
+                    "2. Log in directly on Pizza Hut app / web (delivery recommended, pickup works too)!\n"
+                    "3. Recommended to stack 2–3 rewards per order for maximum savings."
+                )
+            ),
+            color=0x2ecc71
+        )
+        embed.add_field(name="👤 Customer", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+        embed.add_field(name="⏰ Time", value=f"<t:{int(time.time())}:R>", inline=True)
+        embed.add_field(name="📌 Status", value="🟢 Awaiting Staff", inline=True)
+        embed.set_footer(text="Staff: Click Claim Ticket below to handle this order")
+
+        await new_ch.send(content=f"{interaction.user.mention} Thank you for your order! Staff has been alerted.", embed=embed, view=TicketControlView())
+        await interaction.followup.send(f"✅ Your purchase ticket has been created: {new_ch.mention}", ephemeral=True)
+
+
+def build_food_accounts_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🌮🍕 Fast Food Preloaded Rewards Accounts",
+        description=(
+            "Get preloaded **Taco Bell** & **Pizza Hut** rewards accounts with dozens of free items and discounts already claimed!\n\n"
+            "Click **Buy Taco Bell** or **Buy Pizza Hut** below to open a ticket."
+        ),
+        color=0xff7b00
+    )
+
+    tb_value = (
+        "**Price:** **$10.00 each** · *15 rewards already claimed on every account*\n\n"
+        "**How to order:** Open a ticket → for Taco Bell → how many you want (1–10). After staff provides account email, enter that into taco bell app, tap Send code in the Taco Bell app, then ping staff and they will retrieve the OTP code.\n\n"
+        "**What's on every account:**\n"
+        "• $15 off your entire order\n"
+        "• $10 off your entire order\n"
+        "• $5 off your entire order\n"
+        "• extra $5 off\n"
+        "• 1 free individual item\n"
+        "• Free Chalupa Supreme (two of these)\n"
+        "• Free quesadilla\n"
+        "• Fire tier + Hot tier free rewards\n"
+        "• Welcome + Referral free rewards\n"
+        "• Birthday Baja Blast Freeze\n"
+        "• Free large fountain drink\n\n"
+        "🔥 **Loyalty is ACTIVE.** These are free / off-the-order rewards — not spend coupons."
+    )
+    embed.add_field(name="🌮 Taco Bell Rewards", value=tb_value, inline=False)
+
+    ph_value = (
+        "**Price:** **$15.00 each** · *rewards stackable, recommended 2–3 at a time*\n\n"
+        "**Description:** Every account is a Hut Rewards login with these free rewards already claimed:\n\n"
+        "**Pizzas:**\n"
+        "• 2 Large pizzas\n"
+        "• 1 Medium pizza\n"
+        "• 1 Personal Pan pizza\n"
+        "• 1 Melt\n\n"
+        "**Sides:**\n"
+        "• 1 order of breadsticks\n"
+        "• 1 order of cheesy breadsticks\n"
+        "• 8 pc boneless wings\n"
+        "• Triple cheese mac\n"
+        "• Cinnamon sticks\n"
+        "• S'mores sticks\n"
+        "• Cinnabon cinnamon rolls\n"
+        "• 1 free dip cup (ranch / marinara / etc.)\n\n"
+        "**Drinks & dessert:**\n"
+        "• 1× 2-liter drink\n"
+        "• 1× 20oz drink\n"
+        "• Triple chocolate fudge brownie\n"
+        "• Huge ultimate cookie\n\n"
+        "🚗 *Delivery is recommended if you're shy lol — pickup works too.*"
+    )
+    embed.add_field(name="🍕 Pizza Hut Preloaded Accounts", value=ph_value, inline=False)
+
+    embed.set_footer(text="Click the buttons below to open an order ticket with staff!")
+    return embed
+
+
+class FoodAccountPurchaseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Buy Taco Bell ($10)", style=discord.ButtonStyle.primary, emoji="🌮", custom_id="aio_buy_tacobell_btn")
+    async def btn_tacobell(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(FoodAccountOrderModal(brand="Taco Bell", price=10.0))
+
+    @discord.ui.button(label="Buy Pizza Hut ($15)", style=discord.ButtonStyle.success, emoji="🍕", custom_id="aio_buy_pizzahut_btn")
+    async def btn_pizzahut(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(FoodAccountOrderModal(brand="Pizza Hut", price=15.0))
+
+
 class FormatServerConfirmView(discord.ui.View):
     def __init__(self, author_id: int):
         super().__init__(timeout=120)
@@ -2240,6 +2438,7 @@ class FormatServerConfirmView(discord.ui.View):
                 "category": "🛍️ CVS & SAVINGS",
                 "channels": [
                     {"name": "🛒-coupon-optimizer", "type": "text", "topic": "CVS & retail coupon optimizer center. Use /panel or /add!"},
+                    {"name": "🌮🍕-food-rewards", "type": "text", "topic": "Preloaded Taco Bell & Pizza Hut rewards accounts store. Order below!"},
                     {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."},
                     {"name": "🧾-receipt-brags", "type": "text", "topic": "Post your receipt savings and coupon hauls!"}
                 ]
@@ -2336,6 +2535,10 @@ class FormatServerConfirmView(discord.ui.View):
                             cart_embed = build_cart_embed(interaction.user.id)
                             await new_ch.send(embed=cart_embed, view=QuickCartActionView(interaction.user.id))
 
+                        elif ch_name == "🌮🍕-food-rewards":
+                            food_embed = build_food_accounts_embed()
+                            await new_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
+
                 elif ch_type == "voice":
                     existing_vc = discord.utils.get(guild.voice_channels, name=ch_name)
                     if not existing_vc:
@@ -2350,7 +2553,8 @@ class FormatServerConfirmView(discord.ui.View):
                 f"• 💬 **Channels Created/Positioned:** {created_channels}\n"
                 f"• 🛡️ **Guaranteed Safeguard:** `#form-automation` was completely preserved and untouched.\n"
                 f"• 🎫 **Tickets Deployed:** Active in `#📩-open-a-ticket`\n"
-                f"• 🛒 **Shopping Optimizer Deployed:** Active in `#🛒-coupon-optimizer`"
+                f"• 🛒 **Shopping Optimizer Deployed:** Active in `#🛒-coupon-optimizer`\n"
+                f"• 🌮🍕 **Food Accounts Store Deployed:** Active in `#🌮🍕-food-rewards`"
             ),
             color=COLOR_SUCCESS
         )
@@ -2421,8 +2625,9 @@ async def on_ready():
     try:
         bot.add_view(TicketLaunchView())
         bot.add_view(TicketControlView())
+        bot.add_view(FoodAccountPurchaseView())
     except Exception as e:
-        print(f"ℹ️ Note on ticket view persistence: {e}", file=sys.stderr, flush=True)
+        print(f"ℹ️ Note on ticket/purchase view persistence: {e}", file=sys.stderr, flush=True)
 
     try:
         for g in bot.guilds:
@@ -4063,6 +4268,73 @@ async def post_ticket_panel(ctx, channel: Optional[discord.TextChannel] = None):
     await target_channel.send(embed=embed, view=view)
     if target_channel.id != ctx.channel.id:
         await ctx.send(f"✅ Ticket panel deployed to {target_channel.mention}!", delete_after=5)
+
+async def _do_say(channel: discord.TextChannel, text: Optional[str], attachments: List[discord.Attachment]) -> bool:
+    files = []
+    for att in attachments:
+        try:
+            data = await att.read()
+            files.append(discord.File(io.BytesIO(data), filename=att.filename))
+        except Exception as e:
+            print(f"⚠️ Error reading attachment {att.filename}: {e}", file=sys.stderr)
+
+    if not text and not files:
+        return False
+
+    await channel.send(content=text if text else None, files=files if files else None)
+    return True
+
+@bot.command(name="say", aliases=["echo", "repeat", "repost", "botmsg"])
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+async def say_prefix_cmd(ctx: commands.Context, *, message: Optional[str] = None):
+    await safely_delete_message(ctx)
+    attachments = list(ctx.message.attachments) if ctx.message else []
+    success = await _do_say(ctx.channel, message, attachments)
+    if not success:
+        await ctx.send("❌ Please provide text or an attached photo to repost.", delete_after=6)
+
+@bot.tree.command(name="say", description="Reposts your message and any attached photos through the bot")
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(message="Text to repost", photo="Optional photo/image to repost", photo2="Second optional photo/image")
+async def say_slash_cmd(
+    interaction: discord.Interaction,
+    message: Optional[str] = None,
+    photo: Optional[discord.Attachment] = None,
+    photo2: Optional[discord.Attachment] = None
+):
+    if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.response.send_message("⛔ This command must be run in a server text channel.", ephemeral=True)
+        return
+
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ You need the Manage Messages permission to use /say.", ephemeral=True)
+        return
+
+    attachments = [p for p in (photo, photo2) if p is not None]
+    if not message and not attachments:
+        await interaction.response.send_message("❌ Please provide text or an attached photo to repost.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("✅ Reposted!", ephemeral=True)
+    await _do_say(interaction.channel, message, attachments)
+
+@bot.hybrid_command(
+    name="foodpanel",
+    aliases=["rewardsstore", "fastfood", "foodaccounts"],
+    description="Deploy the Taco Bell & Pizza Hut preloaded account purchase panel"
+)
+@commands.guild_only()
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
+async def post_food_panel(ctx, channel: Optional[discord.TextChannel] = None):
+    await safely_delete_message(ctx)
+    target = channel or ctx.channel
+    embed = build_food_accounts_embed()
+    view = FoodAccountPurchaseView()
+    await target.send(embed=embed, view=view)
+    if target.id != ctx.channel.id:
+        await ctx.send(f"✅ Fast food rewards purchase panel deployed to {target.mention}!", delete_after=5)
 
 @bot.hybrid_command(name="ping", description="Check the bot's latency")
 async def ping(ctx):

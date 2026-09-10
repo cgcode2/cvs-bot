@@ -1,4 +1,16 @@
 {
-  "counter": 0,
-  "tickets": {}
+  "counter": 1,
+  "tickets": {
+    "1547674569681277130": {
+      "id": 1,
+      "guild_id": 731326405937201183,
+      "channel_id": 1547674569681277130,
+      "owner_id": 560578688534577237,
+      "channel_name": "ticket-0001-codyg",
+      "status": "closed",
+      "claimed_by": 560578688534577237,
+      "created_at": "2026-09-10T18:26:11.283919+00:00",
+      "closed_at": "2026-09-10T18:26:46.666520+00:00"
+    }
+  }
 }
