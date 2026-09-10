@@ -2285,7 +2285,7 @@ class TicketLaunchView(discord.ui.View):
         embed = discord.Embed(
             title=f"🎫 Support Ticket #{ticket_num:04d}",
             description=(
-                f"Welcome {interaction.user.mention}! Support staff & moderators have been notified.\n\n"
+                f"Welcome {interaction.user.mention}! Support staff has been notified.\n\n"
                 "Please describe your issue or inquiry in detail below. An operator will be with you shortly."
             ),
             color=COLOR_PRIMARY
@@ -2303,7 +2303,7 @@ class TicketLaunchView(discord.ui.View):
         ping_str = " ".join(mention_targets)
 
         await new_ch.send(
-            content=f"{ping_str} Support ticket opened! Staff, Moderators & Founders have been alerted.",
+            content=f"{ping_str} Support ticket opened! Staff have been alerted.",
             embed=embed,
             view=TicketControlView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True)
@@ -2424,7 +2424,7 @@ class FoodAccountOrderModal(discord.ui.Modal):
         embed = discord.Embed(
             title=f"{'🌮' if brand_slug == 'tacobell' else '🍕'} {self.brand} Order #{ticket_num:04d}",
             description=(
-                f"Welcome {interaction.user.mention}! Support staff & moderators have been notified of your order.\n\n"
+                f"Welcome {interaction.user.mention}! Support staff has been notified of your order.\n\n"
                 f"**Order Details:**\n"
                 f"• Item: **{self.brand} Preloaded Account(s)**\n"
                 f"• Quantity: **{qty} account(s)** (${self.price:.2f} each)\n"
@@ -2456,7 +2456,7 @@ class FoodAccountOrderModal(discord.ui.Modal):
         ping_str = " ".join(mention_targets)
 
         await new_ch.send(
-            content=f"{ping_str} Thank you for your order! Staff, Moderators & Founders have been alerted.",
+            content=f"{ping_str} Thank you for your order! Staff have been alerted.",
             embed=embed,
             view=TicketControlView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True)
