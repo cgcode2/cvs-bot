@@ -1084,6 +1084,27 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Member Discipline", embed.description)
         self.assertIn("Channel & Server Security", embed.description)
 
+    def test_dedicated_setup_commands(self):
+        cmd_names = [c.name for c in main.bot.commands]
+        self.assertIn("setup", cmd_names)
+        self.assertIn("setup-mod-panel", cmd_names)
+        self.assertIn("setup-all-features", cmd_names)
+        self.assertIn("setup-food-store", cmd_names)
+        self.assertIn("setup-tickets", cmd_names)
+        self.assertIn("sync-commands", cmd_names)
+
+        setup_cmd = main.bot.get_command("setup")
+        self.assertIsNotNone(setup_cmd)
+        self.assertIn("setup-coupon-hub", setup_cmd.aliases)
+
+        mod_panel_cmd = main.bot.get_command("setup-mod-panel")
+        self.assertIsNotNone(mod_panel_cmd)
+        self.assertIn("setupmodpanel", mod_panel_cmd.aliases)
+
+        all_feat_cmd = main.bot.get_command("setup-all-features")
+        self.assertIsNotNone(all_feat_cmd)
+        self.assertIn("setupfeatures", all_feat_cmd.aliases)
+
 
 if __name__ == '__main__':
     unittest.main()

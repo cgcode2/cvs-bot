@@ -4498,35 +4498,9 @@ def build_userinfo_embed(member: discord.Member) -> discord.Embed:
 
 @bot.event
 async def on_ready():
-    print(f'🤖 AIO Bot is officially online! Logged in as {bot.user}', flush=True)
-    try:
-        if bot.user and bot.user.name != "AIO Bot":
-            await bot.user.edit(username="AIO Bot")
-            print('✅ Successfully updated Discord username to AIO Bot', flush=True)
-    except Exception as e:
-        print(f'ℹ️ Note on bot username update: {e}', file=sys.stderr, flush=True)
-    try:
-        if os.path.exists("avatar.png"):
-            with open("avatar.png", "rb") as f:
-                avatar_data = f.read()
-            await bot.user.edit(avatar=avatar_data)
-            print('✅ Successfully updated Discord bot profile picture (avatar.png)', flush=True)
-    except Exception as e:
-        print(f'ℹ️ Note on bot avatar update: {e}', file=sys.stderr, flush=True)
+    print(f'🤖 AIO Bot is officially online! Logged in as {bot.user} (ID: {bot.user.id if bot.user else "?"})', flush=True)
 
-    # Automatically rename CVS Coupon Optimizer role to AIO Bot across all connected guilds
-    for guild in bot.guilds:
-        try:
-            for role in guild.roles:
-                if role.name.strip().lower() in ("cvs coupon optimizer", "cvs coupon optimizer bot", "cvs optimizer", "cvs optimizer bot"):
-                    await role.edit(name="AIO Bot", reason="Update role name from CVS Coupon Optimizer to AIO Bot")
-        except Exception as e:
-            print(f"ℹ️ Note on auto role rename in guild '{guild.name}': {e}", file=sys.stderr, flush=True)
-        try:
-            await fix_server_roles(guild)
-        except Exception as e:
-            print(f"ℹ️ Note on auto role fix in guild '{guild.name}': {e}", file=sys.stderr, flush=True)
-
+    # Register persistent interactive views so buttons work across restarts
     try:
         bot.add_view(TicketLaunchView())
         bot.add_view(TicketControlView())
@@ -4534,18 +4508,14 @@ async def on_ready():
         bot.add_view(CouponHubLaunchView())
         bot.add_view(CouponRoomControlView())
         bot.add_view(StaffModPanelButtonView())
+        print('✅ Persistent interactive views registered successfully.', flush=True)
     except Exception as e:
         print(f"ℹ️ Note on persistent views registration: {e}", file=sys.stderr, flush=True)
 
+    # Global slash command tree sync
     try:
-        for g in bot.guilds:
-            try:
-                bot.tree.clear_commands(guild=g)
-                await bot.tree.sync(guild=g)
-            except Exception:
-                pass
         synced = await bot.tree.sync()
-        print(f'✅ Synced {len(synced)} global slash command(s) (guild duplicates cleared).', flush=True)
+        print(f'✅ Synced {len(synced)} global application slash command(s).', flush=True)
     except Exception as e:
         print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr, flush=True)
 
@@ -6099,55 +6069,294 @@ def is_staff_or_admin(member: Any) -> bool:
     roles = getattr(member, "roles", [])
     return any(getattr(r, "name", "").lower() in staff_roles for r in roles)
 
-@bot.hybrid_command(name="setup", aliases=["setupcvs", "setup-optimizer"], description="Create the private CVS coupon optimizer category & channel")
+@bot.hybrid_command(name="setup", aliases=["setup-coupon-hub", "setupcouponhub", "setupcvs", "setup-optimizer"], description="Staff command: Set up the #🛒-coupon-optimizer channel with private room launch button")
 @commands.guild_only()
 @commands.has_permissions(manage_channels=True)
 @app_commands.default_permissions(manage_channels=True)
-async def setup_channel(ctx):
+async def setup_channel(ctx: commands.Context):
     await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
+        return
+
     guild = ctx.guild
     if not guild:
         return
 
     cat_name = "🔒 PRIVATE CVS"
     cat = discord.utils.get(guild.categories, name=cat_name)
-    cat_overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
+    if not cat:
+        try:
+            cat = await guild.create_category(cat_name)
+        except Exception as e:
+            await ctx.send(f"❌ Failed to create category `{cat_name}`: {e}", delete_after=8)
+            return
+
+    channel_name = "🛒-coupon-optimizer"
+    hub_overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True, embed_links=True)
     }
     founder_role = get_founder_role(guild)
     mod_role = get_moderator_role(guild)
     staff_role = get_staff_role(guild)
     if founder_role:
-        cat_overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+        hub_overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
     if mod_role:
-        cat_overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+        hub_overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
     if staff_role:
-        cat_overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
-    for role in guild.roles:
-        if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
-            cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        hub_overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
 
-    if not cat:
-        cat = await guild.create_category(cat_name, overwrites=cat_overwrites)
-
-    channel_name = "🛒-coupon-optimizer"
     existing = discord.utils.get(guild.text_channels, name=channel_name)
     if existing:
         if existing.category_id != cat.id:
-            await existing.edit(category=cat)
-        await ctx.send(f"⚠️ Private CVS Optimizer channel already exists at {existing.mention}!", delete_after=6)
+            try:
+                await existing.edit(category=cat, overwrites=hub_overwrites)
+            except Exception:
+                pass
+        try:
+            await existing.purge(limit=10)
+        except Exception:
+            pass
+        hub_embed = build_coupon_hub_embed()
+        await existing.send(embed=hub_embed, view=CouponHubLaunchView())
+        await ctx.send(f"✅ Private Coupon Optimizer Hub refreshed at {existing.mention}! Members can click the button to open their personal room.", delete_after=8)
         return
 
-    new_channel = await guild.create_text_channel(
-        channel_name,
-        category=cat,
-        topic="CVS & retail coupon optimizer hub. Click the button below to open your private room!",
-        overwrites=cat_overwrites
+    try:
+        new_channel = await guild.create_text_channel(
+            channel_name,
+            category=cat,
+            topic="CVS & retail coupon optimizer hub. Click the button below to open your private room!",
+            overwrites=hub_overwrites
+        )
+        hub_embed = build_coupon_hub_embed()
+        await new_channel.send(embed=hub_embed, view=CouponHubLaunchView())
+        await ctx.send(f"✅ Secure Private Coupon Optimizer Hub created at {new_channel.mention}! Members can click the button to open their personal room.", delete_after=8)
+    except Exception as e:
+        await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
+
+@bot.hybrid_command(
+    name="setup-mod-panel",
+    aliases=["setupmodpanel", "setup-panel", "setuppanel"],
+    description="Staff command: Set up the #🎛️-mod-panel channel with staff control center action buttons"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_mod_panel_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    cat_name = "🛡️ STAFF ZONE"
+    cat = discord.utils.get(guild.categories, name=cat_name)
+    staff_overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True, embed_links=True)
+    }
+    founder_role = get_founder_role(guild)
+    mod_role = get_moderator_role(guild)
+    staff_role = get_staff_role(guild)
+    if founder_role:
+        staff_overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+    if mod_role:
+        staff_overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+    if staff_role:
+        staff_overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+
+    for role in guild.roles:
+        if role.permissions.administrator or role.permissions.manage_guild or role.name.lower() in ("staff", "moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
+            staff_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+    if not cat:
+        try:
+            cat = await guild.create_category(cat_name, overwrites=staff_overwrites)
+        except Exception:
+            pass
+
+    channel_name = "🎛️-mod-panel"
+    existing = discord.utils.get(guild.text_channels, name=channel_name)
+    if existing:
+        if cat and existing.category_id != cat.id:
+            try:
+                await existing.edit(category=cat, overwrites=staff_overwrites)
+            except Exception:
+                pass
+        try:
+            await existing.purge(limit=10)
+        except Exception:
+            pass
+        mod_embed = build_staff_modpanel_embed()
+        await existing.send(embed=mod_embed, view=StaffModPanelButtonView())
+        await ctx.send(f"✅ Staff Control Center & Moderation Panel refreshed at {existing.mention}! All actions are accessible via buttons.", delete_after=8)
+        return
+
+    try:
+        new_channel = await guild.create_text_channel(
+            channel_name,
+            category=cat,
+            topic="Staff control center: execute moderation, billing, role fixes, and panel refreshes via buttons.",
+            overwrites=staff_overwrites
+        )
+        mod_embed = build_staff_modpanel_embed()
+        await new_channel.send(embed=mod_embed, view=StaffModPanelButtonView())
+        await ctx.send(f"✅ Staff Control Center & Moderation Panel created at {new_channel.mention}! All actions are accessible via buttons.", delete_after=8)
+    except Exception as e:
+        await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
+
+@bot.hybrid_command(
+    name="setup-all-features",
+    aliases=["setupallfeatures", "setupfeatures", "setup-all", "setupall"],
+    description="Staff command: Set up both Coupon Optimizer Hub and Staff Mod Panel in one step"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_all_features_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
+        return
+
+    await setup_channel(ctx)
+    await setup_mod_panel_cmd(ctx)
+
+@bot.hybrid_command(
+    name="setup-food-store",
+    aliases=["setupfoodstore", "setupstore", "setup-store"],
+    description="Staff command: Set up the #🌮🍕-food-rewards channel with the food accounts store panel"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_food_store_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    cat_name = "🛍️ SAVINGS & REWARDS"
+    cat = discord.utils.get(guild.categories, name=cat_name)
+    if not cat:
+        try:
+            cat = await guild.create_category(cat_name)
+        except Exception:
+            pass
+
+    channel_name = "🌮🍕-food-rewards"
+    existing = discord.utils.get(guild.text_channels, name=channel_name)
+    target_ch = existing
+    if not target_ch:
+        try:
+            target_ch = await guild.create_text_channel(
+                channel_name,
+                category=cat,
+                topic="Preloaded Taco Bell & Pizza Hut rewards accounts store. Order below!"
+            )
+        except Exception as e:
+            await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
+            return
+    else:
+        try:
+            await target_ch.purge(limit=10)
+        except Exception:
+            pass
+
+    food_embed = build_food_accounts_embed()
+    await target_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
+    await ctx.send(f"✅ Food Rewards Store panel ready at {target_ch.mention}!", delete_after=8)
+
+@bot.hybrid_command(
+    name="setup-tickets",
+    aliases=["setuptickets", "setupticketpanel", "setup-ticket-panel"],
+    description="Staff command: Set up the #📩-open-a-ticket channel with the support ticket launch panel"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_tickets_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    cat_name = "🎫 SUPPORT"
+    cat = discord.utils.get(guild.categories, name=cat_name)
+    if not cat:
+        try:
+            cat = await guild.create_category(cat_name)
+        except Exception:
+            pass
+
+    channel_name = "📩-open-a-ticket"
+    existing = discord.utils.get(guild.text_channels, name=channel_name)
+    target_ch = existing
+    if not target_ch:
+        try:
+            target_ch = await guild.create_text_channel(
+                channel_name,
+                category=cat,
+                topic="Need help? Click the button below to open a private ticket!"
+            )
+        except Exception as e:
+            await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
+            return
+    else:
+        try:
+            await target_ch.purge(limit=10)
+        except Exception:
+            pass
+
+    panel_embed = discord.Embed(
+        title="🎫 Support & Order Help",
+        description=(
+            "Need assistance, have a question, or want to contact staff?\n\n"
+            "**How it works:**\n"
+            "▸ 🔒 A **private channel** is created just for you and staff\n"
+            "▸ 👥 Only you and server staff can see it\n"
+            "▸ ⚡ Staff will respond as soon as possible\n\n"
+            "Click the button below to open your ticket."
+        ),
+        color=COLOR_PRIMARY
     )
-    hub_embed = build_coupon_hub_embed()
-    await new_channel.send(embed=hub_embed, view=CouponHubLaunchView())
-    await ctx.send(f"✅ Secure private CVS channel {new_channel.mention} created under `{cat_name}`!", delete_after=6)
+    panel_embed.set_footer(text="AIO Bot Custom Ticket Center • One ticket per user")
+    await target_ch.send(embed=panel_embed, view=TicketLaunchView())
+    await ctx.send(f"✅ Ticket launch panel ready at {target_ch.mention}!", delete_after=8)
+
+@bot.hybrid_command(
+    name="sync-commands",
+    aliases=["sync", "forcesync"],
+    description="Founder command: Force sync global application slash commands with Discord"
+)
+@commands.guild_only()
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
+async def sync_commands_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Administrator permission required to sync commands.", delete_after=6)
+        return
+
+    msg = await ctx.send("🔄 Syncing application slash commands with Discord...")
+    try:
+        synced = await bot.tree.sync()
+        await msg.edit(content=f"✅ Successfully synced **{len(synced)}** global slash commands with Discord!")
+    except Exception as e:
+        await msg.edit(content=f"⚠️ Error syncing slash commands: `{e}`")
 
 @bot.hybrid_command(
     name="permit",
