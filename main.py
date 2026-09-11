@@ -586,14 +586,18 @@ def create_invoice_embed(
 async def fix_server_roles(guild: discord.Guild) -> Dict[str, Any]:
     """
     Consolidates duplicate Moderator roles into a single Moderator role,
-    migrates members, and removes redundant Staff role.
-    Ensures Founder and Moderator roles are hoisted and mentionable.
+    migrates members, removes redundant Staff role, ensures Founder role
+    is hoisted and assigned to the server owner, unhoists bot roles so
+    the bot never displays above the owner, and adjusts hierarchy positions.
     """
     results = {
         "moderators_merged": 0,
         "staff_role_removed": False,
         "primary_mod_role": None,
         "founder_role": None,
+        "bot_roles_unhoisted": 0,
+        "bot_roles_stripped": 0,
+        "bot_is_top": False,
         "logs": []
     }
     if not guild or not getattr(guild, "me", None):
@@ -667,8 +671,21 @@ async def fix_server_roles(guild: discord.Guild) -> Dict[str, Any]:
             except Exception as e:
                 print(f"⚠️ Error deleting redundant Staff role {s_role.name}: {e}", file=sys.stderr)
 
-    # 3. Ensure Founder role is properly set
+    # 3. Ensure Founder role is properly set & assigned to server owner
     founder_role = get_founder_role(guild)
+    if not founder_role and can_manage:
+        try:
+            founder_role = await guild.create_role(
+                name="Founder",
+                color=discord.Color.gold(),
+                hoist=True,
+                mentionable=True,
+                reason="Created Founder role during role audit"
+            )
+            results["logs"].append("Created new Founder role")
+        except Exception as e:
+            print(f"⚠️ Could not create Founder role: {e}", file=sys.stderr)
+
     if founder_role:
         results["founder_role"] = founder_role.name
         if can_manage and guild.me.top_role > founder_role:
@@ -682,6 +699,54 @@ async def fix_server_roles(guild: discord.Guild) -> Dict[str, Any]:
                     await founder_role.edit(**updates, reason="Ensuring Founder role is hoisted & mentionable")
             except Exception:
                 pass
+
+        if getattr(guild, "owner", None) and can_manage and guild.me.top_role > founder_role:
+            if founder_role not in getattr(guild.owner, "roles", []):
+                try:
+                    await guild.owner.add_roles(founder_role, reason="Assigned Founder role to server owner")
+                    results["logs"].append(f"Assigned Founder role to server owner ({guild.owner})")
+                except Exception as e:
+                    print(f"⚠️ Could not assign Founder role to owner: {e}", file=sys.stderr)
+
+    # 4. Demote & Unhoist Bot Roles so Bot is NEVER displayed above Owner/Founder in member list
+    if can_manage:
+        for r in getattr(guild.me, "roles", []):
+            if r.is_default():
+                continue
+            r_name = r.name.strip().lower()
+            if r_name in ("founder", "owner", "admin", "administrator", "moderator", "mod", "staff", "co-founder"):
+                try:
+                    await guild.me.remove_roles(r, reason="Bot should not possess founder or staff roles")
+                    results["bot_roles_stripped"] += 1
+                    results["logs"].append(f"Stripped {r.name} from bot")
+                except Exception as e:
+                    print(f"⚠️ Error removing role {r.name} from bot: {e}", file=sys.stderr)
+
+        for r in getattr(guild.me, "roles", []):
+            if r.is_default():
+                continue
+            if getattr(r, "hoist", False):
+                try:
+                    await r.edit(hoist=False, reason="Unhoist bot role so it does not display above server owner")
+                    results["bot_roles_unhoisted"] += 1
+                    results["logs"].append(f"Unhoisted bot role {r.name}")
+                except Exception as e:
+                    print(f"⚠️ Notice unhoisting bot role {r.name}: {e}", file=sys.stderr)
+
+    # 5. Elevate Founder role position as high as Discord API allows
+    if founder_role and can_manage:
+        try:
+            target_pos = max(1, getattr(guild.me.top_role, "position", 1) - 1)
+            if getattr(founder_role, "position", 0) < target_pos:
+                await guild.edit_role_positions({founder_role: target_pos}, reason="Elevating Founder role to highest possible position")
+                results["logs"].append(f"Elevated {founder_role.name} position")
+        except Exception as e:
+            print(f"⚠️ Role position elevation notice: {e}", file=sys.stderr)
+
+    owner_top = getattr(guild.owner, "top_role", None) if getattr(guild, "owner", None) else None
+    bot_top = getattr(guild.me, "top_role", None)
+    if owner_top and bot_top:
+        results["bot_is_top"] = (getattr(bot_top, "position", 0) >= getattr(owner_top, "position", 0))
 
     return results
 
@@ -3107,7 +3172,7 @@ class ModWarnModal(discord.ui.Modal, title="⚠️ Issue Member Warning"):
         if not member:
             await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
             return
-        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner and not is_admin_member(interaction.user):
             await interaction.response.send_message("⛔ You cannot warn a member with an equal or higher role than you.", ephemeral=True)
             return
 
@@ -3158,7 +3223,7 @@ class ModTimeoutModal(discord.ui.Modal, title="⏱️ Timeout Member"):
         if not member:
             await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
             return
-        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner and not is_admin_member(interaction.user):
             await interaction.response.send_message("⛔ You cannot timeout a member with an equal or higher role than you.", ephemeral=True)
             return
 
@@ -3207,7 +3272,7 @@ class ModKickModal(discord.ui.Modal, title="👢 Kick Member"):
         if not member:
             await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
             return
-        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner and not is_admin_member(interaction.user):
             await interaction.response.send_message("⛔ You cannot kick a member with an equal or higher role than you.", ephemeral=True)
             return
 
@@ -3253,7 +3318,7 @@ class ModBanModal(discord.ui.Modal, title="🔨 Ban Member"):
         if not member:
             await interaction.response.send_message(f"❌ Could not find member `{self.member_query.value}` in this server.", ephemeral=True)
             return
-        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner:
+        if member.top_role >= interaction.user.top_role and interaction.user != guild.owner and not is_admin_member(interaction.user):
             await interaction.response.send_message("⛔ You cannot ban a member with an equal or higher role than you.", ephemeral=True)
             return
 
@@ -3901,16 +3966,28 @@ class StaffModPanelButtonView(discord.ui.View):
             return
         await interaction.response.defer(ephemeral=True)
         summary = await fix_server_roles(interaction.guild)
-        deleted_mods = len(summary.get("deleted_moderator_roles", []))
-        removed_staff = summary.get("deleted_staff_role", False)
-        migrated = summary.get("members_migrated", 0)
+        deleted_mods = summary.get("moderators_merged", 0)
+        removed_staff = summary.get("staff_role_removed", False)
+        unhoisted = summary.get("bot_roles_unhoisted", 0)
+        stripped = summary.get("bot_roles_stripped", 0)
         desc = (
-            f"Role hierarchy consolidated!\n"
-            f"• Duplicate Moderator Roles Removed: **{deleted_mods}**\n"
-            f"• Redundant Staff Role Removed: **{'Yes' if removed_staff else 'No'}**\n"
-            f"• Members Migrated: **{migrated}**"
+            f"Role hierarchy audit and cleanup complete!\n\n"
+            f"• 🧹 Duplicate Moderator Roles Merged: **{deleted_mods}**\n"
+            f"• 🗑️ Redundant Staff Role Removed: **{'Yes' if removed_staff else 'No'}**\n"
+            f"• 🔽 Bot Roles Lowered / Unhoisted: **{unhoisted}** *(Bot will not display above you)*\n"
+            f"• 🛡️ Staff Roles Stripped from Bot: **{stripped}**\n"
         )
-        embed = discord.Embed(title="👥 Roles Consolidated", description=desc, color=COLOR_SUCCESS)
+        if summary.get("founder_role"):
+            desc += f"• 👑 Active Founder Role: **@{summary['founder_role']}** (Assigned to Server Owner)\n"
+        if summary.get("bot_is_top"):
+            bot_name = interaction.guild.me.display_name if interaction.guild and interaction.guild.me else "Bot"
+            desc += (
+                f"\n> 👑 **Role Hierarchy Tip:**\n"
+                f"> Discord security prevents bots from dragging their own role below other roles via the API.\n"
+                f"> **To place yourself at the very top of Server Settings:**\n"
+                f"> Go to **Server Settings ➔ Roles ➔ Drag @Founder ABOVE @{bot_name}**."
+            )
+        embed = discord.Embed(title="👥 Roles & Hierarchy Repaired", description=desc, color=COLOR_SUCCESS)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Refresh Store", style=discord.ButtonStyle.success, emoji="🌮", custom_id="modpanel_refresh_food", row=2)
@@ -4783,6 +4860,20 @@ async def on_ready():
     except Exception as e:
         print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr, flush=True)
 
+    # Automatically unhoist bot roles so the bot never displays above the server owner/founder
+    for g in bot.guilds:
+        try:
+            if g.me and g.me.guild_permissions.manage_roles:
+                for r in g.me.roles:
+                    if not r.is_default() and getattr(r, "hoist", False):
+                        try:
+                            await r.edit(hoist=False, reason="Auto-unhoisting bot role to ensure server owner stays on top")
+                            print(f"🔽 Auto-unhoisted bot role '{r.name}' in {g.name}", flush=True)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -5038,7 +5129,7 @@ async def dm_command(ctx: commands.Context, user: str, *, message: str, anonymou
 @app_commands.default_permissions(kick_members=True)
 async def kick_member(ctx, member: discord.Member, *, reason: Optional[str] = "No reason provided"):
     await safely_delete_message(ctx)
-    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_admin_member(ctx.author):
         await ctx.send("⛔ You cannot kick a member with an equal or higher role than you.", delete_after=6)
         return
     try:
@@ -5059,7 +5150,7 @@ async def kick_member(ctx, member: discord.Member, *, reason: Optional[str] = "N
 @app_commands.default_permissions(ban_members=True)
 async def ban_member(ctx, member: discord.Member, delete_message_days: Optional[int] = 0, *, reason: Optional[str] = "No reason provided"):
     await safely_delete_message(ctx)
-    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_admin_member(ctx.author):
         await ctx.send("⛔ You cannot ban a member with an equal or higher role than you.", delete_after=6)
         return
     try:
@@ -5107,7 +5198,7 @@ async def unban_user(ctx, *, user_query: str):
 @app_commands.default_permissions(moderate_members=True)
 async def timeout_member(ctx, member: discord.Member, duration: str, *, reason: Optional[str] = "No reason provided"):
     await safely_delete_message(ctx)
-    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_admin_member(ctx.author):
         await ctx.send("⛔ You cannot timeout a member with an equal or higher role than you.", delete_after=6)
         return
     td = parse_duration(duration)
@@ -5137,7 +5228,7 @@ async def timeout_member(ctx, member: discord.Member, duration: str, *, reason: 
 @app_commands.default_permissions(moderate_members=True)
 async def untimeout_member(ctx, member: discord.Member):
     await safely_delete_message(ctx)
-    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_admin_member(ctx.author):
         await ctx.send("⛔ You cannot untimeout a member with an equal or higher role than you.", delete_after=6)
         return
     try:
@@ -5157,7 +5248,7 @@ async def untimeout_member(ctx, member: discord.Member):
 @app_commands.default_permissions(manage_messages=True)
 async def warn_member(ctx, member: discord.Member, *, reason: str):
     await safely_delete_message(ctx)
-    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_admin_member(ctx.author):
         await ctx.send("⛔ You cannot warn a member with an equal or higher role than you.", delete_after=6)
         return
     guild_id = str(ctx.guild.id)
@@ -7381,8 +7472,8 @@ async def clearorder_cmd(ctx: commands.Context, order_id: str):
 # --- ROLE CLEANUP & FIX COMMAND ---
 @bot.hybrid_command(
     name="fixroles",
-    aliases=["cleanroles", "repairroles"],
-    description="Staff command: Deduplicate Moderator roles and remove redundant Staff role"
+    aliases=["cleanroles", "repairroles", "fixhierarchy", "demotebot"],
+    description="Staff command: Audit roles, unhoist bot roles, and repair server hierarchy"
 )
 @commands.guild_only()
 @commands.has_permissions(manage_roles=True)
@@ -7396,7 +7487,7 @@ async def fixroles_cmd(ctx: commands.Context):
     status_msg = await ctx.send("⏳ **Auditing and fixing server roles...** Please wait.")
     results = await fix_server_roles(ctx.guild)
 
-    desc = "Server role audit and cleanup complete!\n\n"
+    desc = "Server role audit and hierarchy cleanup complete!\n\n"
     if results["moderators_merged"] > 0:
         desc += f"• 🧹 **Duplicate Moderator Roles Merged/Deleted:** {results['moderators_merged']}\n"
     else:
@@ -7407,16 +7498,30 @@ async def fixroles_cmd(ctx: commands.Context):
     else:
         desc += "• ✅ **Staff Role:** None present / Already cleaned\n"
 
+    if results.get("bot_roles_unhoisted", 0) > 0:
+        desc += f"• 🔽 **Bot Roles Lowered / Unhoisted:** {results['bot_roles_unhoisted']} *(Bot will not display above you in member list)*\n"
+    if results.get("bot_roles_stripped", 0) > 0:
+        desc += f"• 🛡️ **Roles Stripped from Bot:** Removed {results['bot_roles_stripped']} human staff/founder role(s) from the bot.\n"
+
     founder_role = get_founder_role(ctx.guild)
     mod_role = get_moderator_role(ctx.guild)
     desc += (
         f"\n**Active Server Staff Roles:**\n"
         f"• 👑 **Founder Role:** {founder_role.mention if founder_role else 'None'}\n"
-        f"• 🛡️ **Moderator Role:** {mod_role.mention if mod_role else 'None'}"
+        f"• 🛡️ **Moderator Role:** {mod_role.mention if mod_role else 'None'}\n"
     )
 
+    if results.get("bot_is_top"):
+        bot_name = ctx.guild.me.display_name if ctx.guild and ctx.guild.me else "Bot"
+        desc += (
+            f"\n> 👑 **Role Hierarchy Tip:**\n"
+            f"> Under Discord's security rules, bots cannot move their own integration role below other roles via API.\n"
+            f"> **To place yourself at the very top of Server Settings:**\n"
+            f"> Go to **Server Settings ➔ Roles ➔ Drag @Founder ABOVE @{bot_name}**."
+        )
+
     embed = discord.Embed(
-        title="🛡️ Server Roles Repaired & Cleaned",
+        title="🛡️ Server Roles & Hierarchy Repaired",
         description=desc,
         color=COLOR_SUCCESS
     )

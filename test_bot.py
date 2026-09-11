@@ -1239,6 +1239,93 @@ class TestAIOBot(unittest.TestCase):
         prot_ch = MockProtectedChannel()
         self.assertTrue(main.is_protected_channel(prot_ch))
 
+    def test_fix_server_roles_unhoist_and_hierarchy(self):
+        class MockRoleObj:
+            def __init__(self, name, id=1, hoist=False, position=1, default=False):
+                self.name = name
+                self.id = id
+                self.hoist = hoist
+                self.position = position
+                self._default = default
+                self.mentionable = True
+                self.members = []
+                self.edited = {}
+            def is_default(self):
+                return self._default
+            def __gt__(self, other):
+                return self.position > (getattr(other, "position", 0))
+            def __ge__(self, other):
+                return self.position >= (getattr(other, "position", 0))
+            def __lt__(self, other):
+                return self.position < (getattr(other, "position", 0))
+            def __le__(self, other):
+                return self.position <= (getattr(other, "position", 0))
+            async def edit(self, **kwargs):
+                self.edited.update(kwargs)
+                if "hoist" in kwargs:
+                    self.hoist = kwargs["hoist"]
+            async def delete(self, reason=None):
+                pass
+
+        class MockMemberObj:
+            def __init__(self, name, roles, top_role):
+                self.name = name
+                self.roles = list(roles)
+                self.top_role = top_role
+                self.guild_permissions = MagicMock()
+                self.guild_permissions.manage_roles = True
+                self.removed_roles = []
+                self.added_roles = []
+            async def remove_roles(self, role, reason=None):
+                self.removed_roles.append(role)
+                if role in self.roles:
+                    self.roles.remove(role)
+            async def add_roles(self, role, reason=None):
+                self.added_roles.append(role)
+                if role not in self.roles:
+                    self.roles.append(role)
+
+        bot_role = MockRoleObj("AIO Bot", id=10, hoist=True, position=10)
+        bot_staff_role = MockRoleObj("Staff", id=11, hoist=False, position=5)
+        founder_role = MockRoleObj("Founder", id=20, hoist=True, position=8)
+
+        me = MockMemberObj("AIO Bot", roles=[bot_role, bot_staff_role], top_role=bot_role)
+        owner = MockMemberObj("Owner", roles=[founder_role], top_role=founder_role)
+
+        class MockGuildObj:
+            def __init__(self, me, owner, roles):
+                self.me = me
+                self.owner = owner
+                self.roles = roles
+                self.role_positions = {}
+            async def edit_role_positions(self, positions, reason=None):
+                self.role_positions.update(positions)
+                for r, pos in positions.items():
+                    r.position = pos
+
+        guild = MockGuildObj(me, owner, [bot_role, bot_staff_role, founder_role])
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            results = loop.run_until_complete(main.fix_server_roles(guild))
+        finally:
+            loop.close()
+
+        # Bot hoisted role should be unhoisted so bot is not displayed above owner
+        self.assertFalse(bot_role.hoist)
+        self.assertEqual(results["bot_roles_unhoisted"], 1)
+
+        # Accidental staff role should be stripped from bot
+        self.assertIn(bot_staff_role, me.removed_roles)
+        self.assertEqual(results["bot_roles_stripped"], 1)
+
+        # Check fixroles command aliases
+        fixroles_cmd = main.bot.get_command("fixroles")
+        self.assertIsNotNone(fixroles_cmd)
+        self.assertIn("fixhierarchy", fixroles_cmd.aliases)
+        self.assertIn("demotebot", fixroles_cmd.aliases)
+
 
 if __name__ == '__main__':
     unittest.main()
