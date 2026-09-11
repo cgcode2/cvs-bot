@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock
 import os
 import json
 import time
@@ -6,6 +7,7 @@ import copy
 import asyncio
 from datetime import datetime, timedelta
 
+import discord
 import main
 
 class TestAIOBot(unittest.TestCase):
@@ -164,7 +166,7 @@ class TestAIOBot(unittest.TestCase):
             "balance", "daily", "pay", "leaderboard",
             "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel",
             "revoke", "paid", "complete", "otp", "deliver", "claim", "close",
-            "invoice", "orderstats", "clearorder", "fixroles", "resetchannel"
+            "invoice", "orderstats", "clearorder", "fixroles", "resetchannel", "dm"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -197,6 +199,7 @@ class TestAIOBot(unittest.TestCase):
             "embed": "manage_messages",
             "nukechannel": "manage_channels",
             "purge": "manage_messages",
+            "dm": "manage_messages",
             "kick": "kick_members",
             "ban": "ban_members",
             "unban": "ban_members",
@@ -1071,6 +1074,7 @@ class TestAIOBot(unittest.TestCase):
         # Store, Billing & Hierarchy buttons
         self.assertIn("Create Invoice", labels)
         self.assertIn("Order Stats", labels)
+        self.assertIn("DM Member", labels)
         self.assertIn("Fix Roles", labels)
         self.assertIn("Refresh Store", labels)
 
@@ -1161,6 +1165,79 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Kick", embed.description)
         self.assertIn("Ban", embed.description)
         self.assertIn("Server Lockdown", embed.description)
+
+    def test_dm_and_purge_modals_and_channel_resolution(self):
+        # Test resolve_channel_from_input
+        ch1 = MagicMock(spec=discord.TextChannel)
+        ch1.id = 1001
+        ch1.name = "💬-general-chat"
+
+        ch2 = MagicMock(spec=discord.TextChannel)
+        ch2.id = 1002
+        ch2.name = "🚨-mod-logs"
+
+        ch3 = MagicMock(spec=discord.TextChannel)
+        ch3.id = 1003
+        ch3.name = "food-rewards"
+
+        class MockGuildWithGet:
+            def __init__(self, channels):
+                self.text_channels = channels
+                self._map = {c.id: c for c in channels}
+            def get_channel(self, cid):
+                return self._map.get(cid)
+
+        mock_guild = MockGuildWithGet([ch1, ch2, ch3])
+
+        # Resolve mention
+        self.assertEqual(main.resolve_channel_from_input(mock_guild, "<#1001>"), ch1)
+        # Resolve numeric ID
+        self.assertEqual(main.resolve_channel_from_input(mock_guild, "1002"), ch2)
+        # Resolve exact name
+        self.assertEqual(main.resolve_channel_from_input(mock_guild, "💬-general-chat"), ch1)
+        # Resolve stripped name
+        self.assertEqual(main.resolve_channel_from_input(mock_guild, "#general-chat"), ch1)
+        # Resolve normalized name (ignoring hyphens and emojis)
+        self.assertEqual(main.resolve_channel_from_input(mock_guild, "modlogs"), ch2)
+        # Resolve partial match
+        self.assertEqual(main.resolve_channel_from_input(mock_guild, "rewards"), ch3)
+        # Unknown channel returns None
+        self.assertIsNone(main.resolve_channel_from_input(mock_guild, "nonexistent-room"))
+        self.assertIsNone(main.resolve_channel_from_input(None, "general"))
+
+        # Test ModPurgeModal inputs
+        purge_modal = main.ModPurgeModal()
+        self.assertTrue(hasattr(purge_modal, "channel_query"))
+        self.assertTrue(hasattr(purge_modal, "count"))
+        self.assertEqual(purge_modal.count.default, "25")
+
+        # Test ModSlowmodeModal inputs
+        slowmode_modal = main.ModSlowmodeModal()
+        self.assertTrue(hasattr(slowmode_modal, "channel_query"))
+        self.assertTrue(hasattr(slowmode_modal, "seconds"))
+
+        # Test ModDMModal inputs
+        dm_modal = main.ModDMModal()
+        self.assertTrue(hasattr(dm_modal, "user_query"))
+        self.assertTrue(hasattr(dm_modal, "message"))
+        self.assertTrue(hasattr(dm_modal, "anonymous"))
+        self.assertIn("Direct Message", dm_modal.title)
+
+        # Test dm hybrid command
+        dm_cmd = main.bot.get_command("dm")
+        self.assertIsNotNone(dm_cmd)
+        self.assertIn("directmessage", dm_cmd.aliases)
+        self.assertIn("senddm", dm_cmd.aliases)
+        self.assertIn("msg", dm_cmd.aliases)
+
+    def test_purge_modal_rejects_protected_channel(self):
+        class MockProtectedChannel:
+            name = "form-automation"
+            id = 9999
+            mention = "<#9999>"
+
+        prot_ch = MockProtectedChannel()
+        self.assertTrue(main.is_protected_channel(prot_ch))
 
 
 if __name__ == '__main__':

@@ -312,6 +312,51 @@ def resolve_member_from_input(guild: Optional[discord.Guild], query: str) -> Opt
             return m
     return None
 
+def resolve_channel_from_input(guild: Optional[discord.Guild], query: str) -> Optional[discord.TextChannel]:
+    """Resolves a guild text channel from mention (<#123>), channel ID (123), or channel name."""
+    if not guild or not query:
+        return None
+    cleaned = query.strip().lstrip("<#").rstrip(">").strip()
+    if cleaned.isdigit():
+        ch = guild.get_channel(int(cleaned))
+        if isinstance(ch, discord.TextChannel):
+            return ch
+    q_clean = query.strip().lower().lstrip("#").strip()
+    for ch in guild.text_channels:
+        if ch.name.lower() == q_clean:
+            return ch
+    q_alpha = re.sub(r'[^a-zA-Z0-9]', '', q_clean)
+    if q_alpha:
+        for ch in guild.text_channels:
+            ch_alpha = re.sub(r'[^a-zA-Z0-9]', '', ch.name.lower())
+            if ch_alpha == q_alpha:
+                return ch
+    for ch in guild.text_channels:
+        if q_clean in ch.name.lower():
+            return ch
+    if q_alpha:
+        for ch in guild.text_channels:
+            ch_alpha = re.sub(r'[^a-zA-Z0-9]', '', ch.name.lower())
+            if q_alpha in ch_alpha:
+                return ch
+    return None
+
+async def resolve_user_or_member(guild: Optional[discord.Guild], query: str) -> Optional[Union[discord.Member, discord.User]]:
+    """Resolves a member or user from guild members, or fetches user directly via bot API."""
+    if not query:
+        return None
+    if guild:
+        mem = resolve_member_from_input(guild, query)
+        if mem:
+            return mem
+    cleaned = query.strip().lstrip("<@!").rstrip(">").strip()
+    if cleaned.isdigit():
+        try:
+            return await bot.fetch_user(int(cleaned))
+        except Exception:
+            pass
+    return None
+
 def get_channel_mention(guild: Optional[discord.Guild], name: str, fallback: Optional[str] = None) -> str:
     """Finds a channel by name or partial match and returns a clickable <#channel_id> mention."""
     if not guild:
@@ -2426,7 +2471,7 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Staff Private Notes", value="`/note add [@member] [note]` / `/note view` / `/note clear` — staff internal records", inline=False)
             embed.add_field(name="Member Discipline", value="`/kick` or `!kick [@member] [reason]`\n`/ban` or `!ban [@member] [reason]`\n`/unban` or `!unban [user_id_or_name]`\n`/timeout` or `!timeout [@member] [duration]` (e.g. `10m`, `1h`, `1d`)\n`/untimeout` or `!untimeout [@member]`", inline=False)
             embed.add_field(name="Warnings System", value="`/warn` or `!warn [@member] [reason]` — log a warning\n`/warnings` or `!warnings [@member]` — view warning record\n`/clearwarnings` or `!clearwarnings [@member]` — wipe records", inline=False)
-            embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/ticketpanel` or `!tickets` — deploy interactive support ticket panel\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
+            embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/ticketpanel` or `!tickets` — deploy interactive support ticket panel\n`/dm [user] [msg]` or `!dm` — direct message member from bot\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount] [member] [channel]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
         elif cat == "games":
             embed.title = "🎮 AIO Bot — Arcade, Casino & Economy"
             embed.description = "Interactive Discord mini-games and coin economy system powered by Discord UI Buttons! Run using either `!` or `/`."
@@ -3232,6 +3277,11 @@ class ModBanModal(discord.ui.Modal, title="🔨 Ban Member"):
 
 
 class ModPurgeModal(discord.ui.Modal, title="🧹 Bulk Purge Messages"):
+    channel_query = discord.ui.TextInput(
+        label="Target Channel (#channel, name, or blank)",
+        placeholder="e.g. #general-chat, general, or leave blank for here",
+        required=False
+    )
     count = discord.ui.TextInput(
         label="Message Count (1-100)",
         placeholder="25",
@@ -3240,21 +3290,66 @@ class ModPurgeModal(discord.ui.Modal, title="🧹 Bulk Purge Messages"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        channel = interaction.channel
-        if is_protected_channel(channel):
-            await interaction.response.send_message("❌ Cannot purge messages in a protected channel (#form-automation).", ephemeral=True)
-            return
-        try:
-            limit_val = max(1, min(100, int(self.count.value)))
-        except ValueError:
-            await interaction.response.send_message("❌ Please enter a valid integer between 1 and 100.", ephemeral=True)
+        guild = interaction.guild
+        ch_val = (self.channel_query.value or "").strip()
+        if ch_val and ch_val.lower() != "here":
+            target_ch = resolve_channel_from_input(guild, ch_val)
+            if not target_ch:
+                await interaction.response.send_message(
+                    f"❌ Could not find text channel matching `{ch_val}` in this server. Please enter a channel mention (<#channel>), name, or ID.",
+                    ephemeral=True
+                )
+                return
+        else:
+            target_ch = interaction.channel
+
+        if not isinstance(target_ch, discord.TextChannel):
+            await interaction.response.send_message("❌ Target channel is not a valid text channel.", ephemeral=True)
             return
 
-        deleted = await channel.purge(limit=limit_val)
-        await interaction.response.send_message(f"🧹 Purged **{len(deleted)}** messages from {channel.mention}!", ephemeral=True)
+        if is_protected_channel(target_ch):
+            await interaction.response.send_message("❌ Cannot purge messages in a protected channel (#form-automation).", ephemeral=True)
+            return
+
+        count_str = (self.count.value or "").strip()
+        try:
+            limit_val = max(1, min(100, int(count_str or "25")))
+        except ValueError:
+            await interaction.response.send_message("❌ Please enter a valid message count between 1 and 100.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            deleted = await target_ch.purge(limit=limit_val)
+            case_id = log_mod_case(
+                guild_id=guild.id if guild else None,
+                action="Purge",
+                target=target_ch.mention,
+                moderator=str(interaction.user),
+                reason=f"Purged {len(deleted)} messages via Mod Panel"
+            )
+            await interaction.followup.send(
+                f"🧹 Successfully purged **{len(deleted)}** message(s) from {target_ch.mention}! *(Case `#CASE-{case_id:04d}`)*",
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"❌ Bot is missing permissions to delete messages in {target_ch.mention}.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error purging messages in {target_ch.mention}: {e}",
+                ephemeral=True
+            )
 
 
 class ModSlowmodeModal(discord.ui.Modal, title="⏳ Set Channel Slowmode"):
+    channel_query = discord.ui.TextInput(
+        label="Target Channel (#channel, name, or blank)",
+        placeholder="e.g. #general-chat, general, or leave blank for here",
+        required=False
+    )
     seconds = discord.ui.TextInput(
         label="Slowmode Delay (Seconds, 0 to disable)",
         placeholder="5",
@@ -3263,18 +3358,127 @@ class ModSlowmodeModal(discord.ui.Modal, title="⏳ Set Channel Slowmode"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        channel = interaction.channel
+        guild = interaction.guild
+        ch_val = (self.channel_query.value or "").strip()
+        if ch_val and ch_val.lower() != "here":
+            target_ch = resolve_channel_from_input(guild, ch_val)
+            if not target_ch:
+                await interaction.response.send_message(
+                    f"❌ Could not find text channel matching `{ch_val}` in this server.",
+                    ephemeral=True
+                )
+                return
+        else:
+            target_ch = interaction.channel
+
+        if not isinstance(target_ch, discord.TextChannel):
+            await interaction.response.send_message("❌ Target channel is not a valid text channel.", ephemeral=True)
+            return
+
+        if is_protected_channel(target_ch):
+            await interaction.response.send_message("❌ Cannot set slowmode on protected channel (#form-automation).", ephemeral=True)
+            return
+
         try:
-            sec_val = max(0, min(21600, int(self.seconds.value)))
+            sec_val = max(0, min(21600, int(self.seconds.value.strip())))
         except ValueError:
             await interaction.response.send_message("❌ Please enter a valid number of seconds (0 to 21600).", ephemeral=True)
             return
 
-        await channel.edit(slowmode_delay=sec_val, reason=f"Slowmode updated via Mod Panel by {interaction.user}")
-        if sec_val == 0:
-            await interaction.response.send_message(f"⚡ Slowmode **disabled** for {channel.mention}.", ephemeral=True)
+        try:
+            await target_ch.edit(slowmode_delay=sec_val, reason=f"Slowmode updated via Mod Panel by {interaction.user}")
+            if sec_val == 0:
+                await interaction.response.send_message(f"⚡ Slowmode **disabled** for {target_ch.mention}.", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⏳ Slowmode set to **{sec_val} seconds** for {target_ch.mention}.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message(f"❌ Bot is missing permissions to edit {target_ch.mention}.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error updating slowmode on {target_ch.mention}: {e}", ephemeral=True)
+
+
+class ModDMModal(discord.ui.Modal, title="📬 Send Direct Message (DM)"):
+    user_query = discord.ui.TextInput(
+        label="Recipient (Mention, Username, or ID)",
+        placeholder="e.g. @username, username, or 1234567890",
+        required=True
+    )
+    message = discord.ui.TextInput(
+        label="Message to Send",
+        placeholder="Type your message here...",
+        style=discord.TextStyle.paragraph,
+        required=True
+    )
+    anonymous = discord.ui.TextInput(
+        label="Anonymous? (yes / no)",
+        placeholder="no (default: shows your staff name)",
+        default="no",
+        required=False
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        target = await resolve_user_or_member(guild, self.user_query.value.strip())
+        if not target:
+            await interaction.response.send_message(
+                f"❌ Could not find user `{self.user_query.value}`. Please provide a valid mention (@username), username, or User ID.",
+                ephemeral=True
+            )
+            return
+
+        is_anon = (self.anonymous.value or "").strip().lower() in ("yes", "true", "1", "y")
+        msg_text = self.message.value.strip()
+
+        embed = discord.Embed(
+            title=f"📬 Direct Message from {guild.name if guild else 'Server Staff'}",
+            description=msg_text,
+            color=COLOR_PRIMARY
+        )
+        if not is_anon:
+            embed.set_author(
+                name=f"Sent by {interaction.user.display_name}",
+                icon_url=interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
+            )
         else:
-            await interaction.response.send_message(f"⏳ Slowmode set to **{sec_val} seconds** for {channel.mention}.", ephemeral=True)
+            embed.set_author(
+                name=f"Official Server Communication • {guild.name if guild else 'AIO Bot'}",
+                icon_url=guild.icon.url if guild and guild.icon else None
+            )
+        embed.set_footer(text="AIO Bot Direct Messaging • Reply in server tickets if you need assistance")
+
+        try:
+            await target.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"❌ Could not deliver DM to **{target}** (`{target.id}`). Their direct messages are disabled for server members or they have blocked the bot.",
+                ephemeral=True
+            )
+            return
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Failed to send DM to **{target}**: {e}",
+                ephemeral=True
+            )
+            return
+
+        case_id = log_mod_case(
+            guild_id=guild.id if guild else None,
+            action="Direct Message",
+            target=str(target),
+            moderator=str(interaction.user),
+            reason=msg_text[:100]
+        )
+
+        confirm_embed = discord.Embed(
+            title="✅ Direct Message Sent",
+            description=f"Successfully delivered direct message to {target.mention} (`{target.id}`).",
+            color=COLOR_SUCCESS
+        )
+        confirm_embed.add_field(name="Recipient", value=f"**{target}** (`{target.id}`)", inline=True)
+        confirm_embed.add_field(name="Sent By", value=interaction.user.mention if not is_anon else "*Anonymous Staff*", inline=True)
+        confirm_embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        confirm_embed.add_field(name="Message", value=f">>> {msg_text[:1000]}", inline=False)
+        await interaction.response.send_message(embed=confirm_embed, ephemeral=True)
 
 
 class ModInvoiceModal(discord.ui.Modal, title="💵 Create & Send Customer Invoice"):
@@ -3535,20 +3739,21 @@ def build_staff_modpanel_embed() -> discord.Embed:
         title="🎛️ Staff Control Center & Moderation Panel",
         description=(
             "Welcome to the **Staff Command Hub**. Execute server moderation, channel controls, "
-            "order billing, and system refreshes directly using the interactive buttons below.\n\n"
+            "order billing, direct messaging, and system refreshes directly using the interactive buttons below.\n\n"
             "**🛡️ Member Discipline:**\n"
             "• **⚠️ Warn:** Issue an official logged warning to a member\n"
             "• **⏱️ Timeout:** Temporarily mute/timeout a member\n"
             "• **👢 Kick:** *(Admin Only)* Remove a member from the server\n"
             "• **🔨 Ban:** *(Admin Only)* Ban a member and optionally purge messages\n"
-            "• **🧹 Purge:** Clean up recent messages in this channel\n\n"
+            "• **🧹 Purge:** Clean up recent messages in any specified channel\n\n"
             "**🔒 Channel & Server Security:**\n"
             "• **🔒 Lock / 🔓 Unlock:** Restrict or restore messaging in this channel\n"
             "• **⏳ Slowmode:** Configure channel message cooldown\n"
             "• **🚨 Server Lockdown:** *(Admin Only)* Emergency freeze across text channels\n\n"
-            "**💵 Store, Billing & Hierarchy:**\n"
+            "**💵 Store, Billing & Member Outreach:**\n"
             "• **💵 Create Invoice:** Generate official bill with CashApp / Venmo links\n"
             "• **📈 Order Stats:** View completed sales, revenue & order log\n"
+            "• **📬 DM Member:** Send an official direct message from the bot\n"
             "• **👥 Fix Roles:** *(Admin Only)* Consolidate Moderator roles & remove redundant Staff\n"
             "• **🌮 Refresh Store:** *(Admin Only)* Update `#🌮🍕-food-rewards` with latest stock\n\n"
             "**🎟️ Panels & Server Info:**\n"
@@ -3684,6 +3889,10 @@ class StaffModPanelButtonView(discord.ui.View):
     async def btn_orderstats(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = build_order_stats_embed(interaction.guild)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="DM Member", style=discord.ButtonStyle.primary, emoji="📬", custom_id="modpanel_dm", row=2)
+    async def btn_dm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModDMModal())
 
     @discord.ui.button(label="Fix Roles", style=discord.ButtonStyle.primary, emoji="👥", custom_id="modpanel_fixroles", row=2)
     async def btn_fixroles(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4736,25 +4945,92 @@ async def nuke_channel(ctx, channel: Optional[discord.TextChannel] = None):
     embed.set_footer(text="AIO Bot • Channel Cleanup Complete")
     await new_channel.send(embed=embed)
 
-@bot.hybrid_command(name="purge", aliases=["clean", "clear_messages", "prune"], description="Bulk delete messages in this channel (optional member filter)")
+@bot.hybrid_command(name="purge", aliases=["clean", "clear_messages", "prune"], description="Bulk delete messages (optional member or channel filter)")
 @commands.guild_only()
 @commands.has_permissions(manage_messages=True)
 @app_commands.default_permissions(manage_messages=True)
-async def purge_messages(ctx, amount: int, member: Optional[discord.Member] = None):
+async def purge_messages(ctx, amount: int, member: Optional[discord.Member] = None, channel: Optional[discord.TextChannel] = None):
     await safely_delete_message(ctx)
+    target_ch = channel or ctx.channel
+    if is_protected_channel(target_ch):
+        await ctx.send(f"⛔ {target_ch.mention} is a protected core channel and cannot be purged.", delete_after=6)
+        return
     if amount <= 0:
         await ctx.send("❌ Provide a number greater than 0.", delete_after=6)
         return
     limit = min(amount, 100)
 
-    if member:
-        def check(m):
-            return m.author.id == member.id
-        deleted = await ctx.channel.purge(limit=limit, check=check)
-        await ctx.send(f"🧹 Purged **{len(deleted)}** message(s) from **{member.display_name}**.", delete_after=6)
+    try:
+        if member:
+            def check(m):
+                return m.author.id == member.id
+            deleted = await target_ch.purge(limit=limit, check=check)
+            await ctx.send(f"🧹 Purged **{len(deleted)}** message(s) from **{member.display_name}** in {target_ch.mention}.", delete_after=6)
+        else:
+            deleted = await target_ch.purge(limit=limit)
+            await ctx.send(f"🧹 Purged **{len(deleted)}** message(s) in {target_ch.mention}.", delete_after=6)
+    except discord.Forbidden:
+        await ctx.send(f"❌ Bot lacks permissions to purge messages in {target_ch.mention}.", delete_after=6)
+    except Exception as e:
+        await ctx.send(f"❌ Error purging messages in {target_ch.mention}: {e}", delete_after=6)
+
+@bot.hybrid_command(name="dm", aliases=["directmessage", "senddm", "msg"], description="Staff command: Send a direct message (DM) to a member from the bot")
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+async def dm_command(ctx: commands.Context, user: str, *, message: str, anonymous: Optional[bool] = False):
+    await safely_delete_message(ctx)
+    guild = ctx.guild
+    target = await resolve_user_or_member(guild, user.strip())
+    if not target:
+        await ctx.send(f"❌ Could not find user `{user}`. Please provide a valid mention (@user), username, or User ID.", delete_after=8)
+        return
+
+    msg_text = message.strip()
+    embed = discord.Embed(
+        title=f"📬 Direct Message from {guild.name if guild else 'Server Staff'}",
+        description=msg_text,
+        color=COLOR_PRIMARY
+    )
+    if not anonymous:
+        embed.set_author(
+            name=f"Sent by {ctx.author.display_name}",
+            icon_url=ctx.author.display_avatar.url if hasattr(ctx.author, 'display_avatar') else None
+        )
     else:
-        deleted = await ctx.channel.purge(limit=limit)
-        await ctx.send(f"🧹 Purged **{len(deleted)}** message(s).", delete_after=6)
+        embed.set_author(
+            name=f"Official Server Communication • {guild.name if guild else 'AIO Bot'}",
+            icon_url=guild.icon.url if guild and guild.icon else None
+        )
+    embed.set_footer(text="AIO Bot Direct Messaging • Reply in server tickets if you need assistance")
+
+    try:
+        await target.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send(f"❌ Could not deliver DM to **{target}** (`{target.id}`). Their direct messages are disabled for server members or they have blocked the bot.", delete_after=10)
+        return
+    except Exception as e:
+        await ctx.send(f"❌ Failed to send DM to **{target}**: {e}", delete_after=8)
+        return
+
+    case_id = log_mod_case(
+        guild_id=guild.id if guild else None,
+        action="Direct Message",
+        target=str(target),
+        moderator=str(ctx.author),
+        reason=msg_text[:100]
+    )
+
+    confirm_embed = discord.Embed(
+        title="✅ Direct Message Sent",
+        description=f"Successfully delivered direct message to {target.mention} (`{target.id}`).",
+        color=COLOR_SUCCESS
+    )
+    confirm_embed.add_field(name="Recipient", value=f"**{target}** (`{target.id}`)", inline=True)
+    confirm_embed.add_field(name="Sent By", value=ctx.author.mention if not anonymous else "*Anonymous Staff*", inline=True)
+    confirm_embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+    confirm_embed.add_field(name="Message", value=f">>> {msg_text[:1000]}", inline=False)
+    await ctx.send(embed=confirm_embed, delete_after=12)
 
 @bot.hybrid_command(name="kick", description="Kick a member from the server")
 @commands.guild_only()
