@@ -5,6 +5,7 @@ import json
 import time
 import copy
 import asyncio
+import re
 from datetime import datetime, timedelta
 
 import discord
@@ -1387,6 +1388,142 @@ class TestAIOBot(unittest.TestCase):
         # 4. Test CouponRoomControlView protected channel safety
         view = main.CouponRoomControlView(5555)
         self.assertTrue(hasattr(view, "btn_close"))
+
+    def test_vouches_system(self):
+        # Reset test vouches db
+        orig_vouches = main.vouches_db.copy()
+        try:
+            main.vouches_db = {"vouches": []}
+            v1 = main.add_vouch(
+                guild_id=101,
+                user_id=201,
+                user_name="customer_one",
+                rating=5,
+                comment="Incredible service and lightning fast delivery!",
+                staff_id=301
+            )
+            self.assertEqual(v1["rating"], 5)
+            self.assertEqual(v1["id"], 1)
+
+            v2 = main.add_vouch(
+                guild_id=101,
+                user_id=202,
+                user_name="customer_two",
+                rating=4,
+                comment="Good experience, fast answers."
+            )
+            self.assertEqual(v2["rating"], 4)
+
+            stats = main.get_vouch_stats(guild_id=101)
+            self.assertEqual(stats["total"], 2)
+            self.assertEqual(stats["average"], 4.5)
+            self.assertIn("⭐", stats["stars_str"])
+
+            embed = main.build_vouch_embed(v1)
+            self.assertIn("5/5 Stars", embed.title)
+            self.assertEqual(embed.color.value, 0xF1C40F)
+        finally:
+            main.vouches_db = orig_vouches
+            if os.path.exists("vouches.json"):
+                try:
+                    os.remove("vouches.json")
+                except Exception:
+                    pass
+
+    def test_giveaways_and_requirements(self):
+        # 1. Test parse_giveaway_duration
+        self.assertEqual(main.parse_giveaway_duration("15m"), 900)
+        self.assertEqual(main.parse_giveaway_duration("2h"), 7200)
+        self.assertEqual(main.parse_giveaway_duration("1d"), 86400)
+        self.assertEqual(main.parse_giveaway_duration("30s"), 30)
+        self.assertIsNone(main.parse_giveaway_duration("invalid_duration"))
+
+        # 2. Test check_giveaway_eligibility
+        class MockRole:
+            def __init__(self, id, name):
+                self.id = id
+                self.name = name
+
+        class MockMemberWithRoles:
+            def __init__(self, id, roles):
+                self.id = id
+                self.roles = roles
+
+        # Customer only giveaway
+        gw_cust = {"customer_only": True, "required_role_id": None}
+        
+        # User who has Customer role
+        cust_role = MockRole(777, "Verified Customer")
+        mem_with_role = MockMemberWithRoles(1001, [cust_role])
+        eligible, _ = main.check_giveaway_eligibility(gw_cust, mem_with_role)
+        self.assertTrue(eligible)
+
+        # User with no customer role and no orders
+        regular_role = MockRole(888, "Member")
+        mem_regular = MockMemberWithRoles(1002, [regular_role])
+        eligible, reason = main.check_giveaway_eligibility(gw_cust, mem_regular)
+        self.assertFalse(eligible)
+        self.assertIn("Customer Exclusive", reason)
+
+        # Role required giveaway
+        gw_role = {"customer_only": False, "required_role_id": 999}
+        vip_role = MockRole(999, "VIP")
+        mem_vip = MockMemberWithRoles(1003, [vip_role])
+        eligible, _ = main.check_giveaway_eligibility(gw_role, mem_vip)
+        self.assertTrue(eligible)
+
+        mem_non_vip = MockMemberWithRoles(1004, [regular_role])
+        eligible, reason = main.check_giveaway_eligibility(gw_role, mem_non_vip)
+        self.assertFalse(eligible)
+        self.assertIn("Role Required", reason)
+
+        # View button
+        view = main.GiveawayEntryView(count=5)
+        self.assertEqual(view.btn_enter.custom_id, "aio_giveaway_enter_btn")
+        self.assertEqual(view.btn_enter.label, "🎉 Enter (5)")
+
+    def test_automod_shields(self):
+        # 1. Invite pattern testing
+        invite_pattern = r"(?:https?://)?(?:www\.)?(?:discord\.(?:gg|io|me|li)|discord(?:app)?\.com/invite)/[a-zA-Z0-9_-]+"
+        self.assertTrue(bool(re.search(invite_pattern, "Join our server: https://discord.gg/coolserver")))
+        self.assertTrue(bool(re.search(invite_pattern, "check out discord.gg/xyz123 today!")))
+        self.assertTrue(bool(re.search(invite_pattern, "https://discord.com/invite/community")))
+        self.assertFalse(bool(re.search(invite_pattern, "Hey check out https://google.com or normal chat")))
+
+        # 2. Scam/phishing pattern testing
+        scam_pattern = r"(?:https?://)?(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]*(?:discorcl|dlscord|disord|discord-app|discord-nitro|nitro-gift|steamcommunlty|steamcommunity-trade|gift-nitro)[a-zA-Z0-9-]*\.[a-zA-Z]{2,}"
+        self.assertTrue(bool(re.search(scam_pattern, "Free nitro here: http://discord-nitro.ru/gift")))
+        self.assertTrue(bool(re.search(scam_pattern, "Check out discorcl-app.info/login")))
+        self.assertTrue(bool(re.search(scam_pattern, "Trade on steamcommunlty.com/tradeoffer")))
+        self.assertFalse(bool(re.search(scam_pattern, "Join discord.com or steamcommunity.com")))
+
+    def test_transcripts_and_reviews_views(self):
+        # 1. Ticket transcript formatting
+        class MockMsg:
+            def __init__(self, author_name, content, attachments=None):
+                self.author = author_name
+                self.clean_content = content
+                self.content = content
+                self.created_at = datetime(2026, 9, 11, 12, 0, 0)
+                self.attachments = attachments or []
+
+        class MockAtt:
+            def __init__(self, filename, url):
+                self.filename = filename
+                self.url = url
+
+        m1 = MockMsg("TestCustomer", "Hello, I need help.")
+        m2 = MockMsg("TestStaff", "Sure, here is your order.", [MockAtt("account.txt", "https://example.com/account.txt")])
+        
+        txt = main.format_ticket_transcript([m1, m2], ticket_id=42, owner_id=12345)
+        self.assertIn("Ticket Number: #0042", txt)
+        self.assertIn("TestCustomer: Hello, I need help.", txt)
+        self.assertIn("account.txt", txt)
+        self.assertIn("=== END OF TRANSCRIPT ===", txt)
+
+        # 2. TicketReviewLaunchView
+        review_view = main.TicketReviewLaunchView(guild_id=123, staff_id=456)
+        self.assertEqual(review_view.btn_review.custom_id, "aio_ticket_leave_review_btn")
 
 
 if __name__ == '__main__':

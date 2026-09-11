@@ -3,7 +3,7 @@ import io
 import urllib.parse
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Set, Callable
 import asyncio
 import itertools
@@ -144,10 +144,34 @@ def get_cvs_account(query: str) -> Optional[Dict[str, Any]]:
 FILTERS_FILE = "automod_filters.json"
 MOD_CASES_FILE = "mod_cases.json"
 MOD_NOTES_FILE = "mod_notes.json"
+AUTOMOD_CONFIG_FILE = "automod_config.json"
+VOUCHES_FILE = "vouches.json"
+GIVEAWAYS_FILE = "giveaways.json"
 
 filters_db: Dict[str, List[str]] = load_json_file(FILTERS_FILE, {})
 mod_cases_db: Dict[str, Any] = load_json_file(MOD_CASES_FILE, {"next_id": 1, "cases": []})
 mod_notes_db: Dict[str, Dict[str, List[Dict[str, Any]]]] = load_json_file(MOD_NOTES_FILE, {})
+automod_config_db: Dict[str, Any] = load_json_file(AUTOMOD_CONFIG_FILE, {"invites_blocked": True, "scams_blocked": True})
+vouches_db: Dict[str, Any] = load_json_file(VOUCHES_FILE, {"vouches": []})
+giveaways_db: Dict[str, Any] = load_json_file(GIVEAWAYS_FILE, {})
+
+def save_automod_config(data: Optional[Dict[str, Any]] = None) -> None:
+    global automod_config_db
+    if data is not None:
+        automod_config_db = data
+    save_json_file(AUTOMOD_CONFIG_FILE, automod_config_db)
+
+def save_vouches(data: Optional[Dict[str, Any]] = None) -> None:
+    global vouches_db
+    if data is not None:
+        vouches_db = data
+    save_json_file(VOUCHES_FILE, vouches_db)
+
+def save_giveaways(data: Optional[Dict[str, Any]] = None) -> None:
+    global giveaways_db
+    if data is not None:
+        giveaways_db = data
+    save_json_file(GIVEAWAYS_FILE, giveaways_db)
 
 # --- STRICT CHANNEL PROTECTION GUARDRAIL ---
 def is_protected_channel(channel: Any) -> bool:
@@ -498,6 +522,12 @@ def build_order_stats_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         value=f"🌮 Taco Bell: **{taco_count}**\n🍕 Pizza Hut: **{pizza_count}**" + (f"\n✨ Other: **{other_count}**" if other_count > 0 else ""),
         inline=True
     )
+    vstats = get_vouch_stats(guild.id if guild else None)
+    embed.add_field(
+        name="⭐ Customer Reviews",
+        value=f"**{vstats['total']} Vouches** • {vstats['stars_str']} (**{vstats['average']}/5.0**)",
+        inline=False
+    )
 
     if guild_orders:
         recent = guild_orders[-8:]
@@ -792,6 +822,132 @@ def format_ticket_transcript(messages: List[discord.Message], ticket_id: int, ow
                 lines.append(f"    [Attachment: {att.filename} ({att.url})]")
     lines.append("\n=== END OF TRANSCRIPT ===")
     return "\n".join(lines)
+
+def get_ticket_logs_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """Finds existing ticket logs channel in the guild."""
+    for ch in guild.text_channels:
+        clean = ch.name.lower().replace("-", "").replace("_", "").replace(" ", "")
+        if "ticketlog" in clean or "transcript" in clean:
+            return ch
+    return None
+
+def get_vouches_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """Finds existing vouches/reviews channel in the guild."""
+    for ch in guild.text_channels:
+        clean = ch.name.lower().replace("-", "").replace("_", "").replace(" ", "")
+        if "vouch" in clean or "review" in clean:
+            return ch
+    return None
+
+def add_vouch(
+    guild_id: int,
+    user_id: int,
+    user_name: str,
+    rating: int,
+    comment: str,
+    staff_id: Optional[int] = None,
+    proof_url: Optional[str] = None
+) -> Dict[str, Any]:
+    rating = max(1, min(5, rating))
+    vouch_entry = {
+        "id": len(vouches_db.get("vouches", [])) + 1,
+        "guild_id": guild_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "staff_id": staff_id,
+        "rating": rating,
+        "comment": comment.strip(),
+        "proof_url": proof_url,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "ts_unix": int(datetime.now(timezone.utc).timestamp())
+    }
+    vouches_db.setdefault("vouches", []).append(vouch_entry)
+    save_vouches()
+    return vouch_entry
+
+def get_vouch_stats(guild_id: Optional[int] = None) -> Dict[str, Any]:
+    all_v = vouches_db.get("vouches", [])
+    if guild_id:
+        v_list = [v for v in all_v if v.get("guild_id") == guild_id or not v.get("guild_id")]
+    else:
+        v_list = all_v
+    count = len(v_list)
+    if count == 0:
+        return {"total": 0, "average": 0.0, "stars_str": "☆☆☆☆☆", "breakdown": {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}}
+    avg = sum(v.get("rating", 5) for v in v_list) / count
+    bd = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    for v in v_list:
+        r = v.get("rating", 5)
+        if r in bd:
+            bd[r] += 1
+    full_stars = int(round(avg))
+    stars_str = "⭐" * full_stars + "☆" * (5 - full_stars)
+    return {"total": count, "average": round(avg, 2), "stars_str": stars_str, "breakdown": bd}
+
+def build_vouch_embed(vouch: Dict[str, Any], user: Optional[Union[discord.User, discord.Member]] = None) -> discord.Embed:
+    rating = vouch.get("rating", 5)
+    stars = "⭐" * rating
+    embed = discord.Embed(
+        title=f"{stars} ({rating}/5 Stars)",
+        description=f"💬 *\"{vouch.get('comment', 'Great service!')}\"*",
+        color=0xF1C40F,
+        timestamp=datetime.now(timezone.utc)
+    )
+    author_tag = f"<@{vouch.get('user_id')}>"
+    embed.add_field(name="👤 Customer", value=author_tag, inline=True)
+    if vouch.get("staff_id"):
+        embed.add_field(name="🛡️ Staff Member", value=f"<@{vouch.get('staff_id')}>", inline=True)
+    embed.add_field(name="🆔 Review ID", value=f"`#{vouch.get('id', 1):03d}`", inline=True)
+    if vouch.get("proof_url"):
+        embed.set_image(url=vouch["proof_url"])
+    if user and hasattr(user, "display_avatar"):
+        embed.set_author(name=f"Vouch from {getattr(user, 'display_name', str(user))}", icon_url=user.display_avatar.url)
+    embed.set_footer(text="Verified Customer Review • Thank you for your support!")
+    return embed
+
+def parse_giveaway_duration(duration_str: str) -> Optional[int]:
+    """Parses strings like '10s', '5m', '2h', '1d', '3days' into total seconds."""
+    if not duration_str:
+        return None
+    s = duration_str.strip().lower()
+    total_seconds = 0
+    matches = re.findall(r'(\d+)\s*([smhdw]|sec|secs|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours|d|day|days|w|week|weeks)', s)
+    if not matches:
+        if s.isdigit():
+            return int(s) * 60
+        return None
+    for val, unit in matches:
+        v = int(val)
+        u = unit.lower()
+        if u.startswith('s'):
+            total_seconds += v
+        elif u.startswith('m'):
+            total_seconds += v * 60
+        elif u.startswith('h'):
+            total_seconds += v * 3600
+        elif u.startswith('d'):
+            total_seconds += v * 86400
+        elif u.startswith('w'):
+            total_seconds += v * 604800
+    return total_seconds if total_seconds > 0 else None
+
+def check_giveaway_eligibility(giveaway: Dict[str, Any], member: Union[discord.Member, discord.User]) -> Tuple[bool, str]:
+    """Checks if member meets requirements (customer_only, required_role) to enter giveaway."""
+    if giveaway.get("customer_only"):
+        completed = tickets_db.get("completed_orders", [])
+        is_order_customer = any(o.get("customer_id") == member.id for o in completed)
+        roles = getattr(member, "roles", [])
+        has_cust_role = any("customer" in r.name.lower() or "buyer" in r.name.lower() for r in roles)
+        if not (is_order_customer or has_cust_role):
+            return False, "⛔ **Customer Exclusive:** This giveaway is reserved for verified customers who have completed a purchase."
+
+    req_role_id = giveaway.get("required_role_id")
+    if req_role_id:
+        roles = getattr(member, "roles", [])
+        if req_role_id not in [r.id for r in roles]:
+            return False, f"⛔ **Role Required:** You must have the <@&{req_role_id}> role to enter this giveaway."
+
+    return True, ""
 
 def save_session_channels(data: Dict[str, int]) -> None:
     save_json_file(SESSION_CHANNELS_FILE, data)
@@ -2600,6 +2756,132 @@ class HelpMenuView(discord.ui.View):
         self.add_item(HelpCategorySelect(author_perms, is_owner))
 
 
+class VouchModal(discord.ui.Modal, title="Submit a Review / Vouch"):
+    rating_input = discord.ui.TextInput(
+        label="Rating (1 to 5 Stars)",
+        placeholder="5",
+        default="5",
+        min_length=1,
+        max_length=1,
+        required=True
+    )
+    comment_input = discord.ui.TextInput(
+        label="Your Review / Feedback",
+        placeholder="How was your order and customer service experience?",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True
+    )
+
+    def __init__(self, guild_id: int, staff_id: Optional[int] = None):
+        super().__init__()
+        self.guild_id = guild_id
+        self.staff_id = staff_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            val = int(self.rating_input.value.strip())
+            rating = max(1, min(5, val))
+        except ValueError:
+            rating = 5
+
+        comment = self.comment_input.value.strip()
+        vouch = add_vouch(
+            guild_id=self.guild_id,
+            user_id=interaction.user.id,
+            user_name=str(interaction.user),
+            rating=rating,
+            comment=comment,
+            staff_id=self.staff_id
+        )
+
+        guild = bot.get_guild(self.guild_id) if self.guild_id else interaction.guild
+        if guild:
+            ch = get_vouches_channel(guild)
+            if ch:
+                embed = build_vouch_embed(vouch, interaction.user)
+                try:
+                    await ch.send(embed=embed)
+                except Exception as e:
+                    print(f"⚠️ Error posting vouch to channel: {e}", file=sys.stderr)
+
+        await interaction.response.send_message(
+            f"⭐ **Thank you for your feedback!** Your {rating}/5 star review has been posted to our reviews channel.",
+            ephemeral=True
+        )
+
+
+class TicketReviewLaunchView(discord.ui.View):
+    def __init__(self, guild_id: int = 0, staff_id: Optional[int] = None):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.staff_id = staff_id
+
+    @discord.ui.button(label="Leave a Review", style=discord.ButtonStyle.success, emoji="⭐", custom_id="aio_ticket_leave_review_btn")
+    async def btn_review(self, interaction: discord.Interaction, button: discord.ui.Button):
+        target_guild_id = self.guild_id or (interaction.guild.id if interaction.guild else 0)
+        await interaction.response.send_modal(VouchModal(guild_id=target_guild_id, staff_id=self.staff_id))
+
+
+class GiveawayEntryView(discord.ui.View):
+    def __init__(self, count: int = 0):
+        super().__init__(timeout=None)
+        self.btn_enter.label = f"🎉 Enter ({count})"
+
+    @discord.ui.button(label="🎉 Enter (0)", style=discord.ButtonStyle.primary, custom_id="aio_giveaway_enter_btn")
+    async def btn_enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Giveaways can only be entered inside server channels.", ephemeral=True)
+            return
+
+        msg_id_str = str(interaction.message.id) if interaction.message else ""
+        giveaway = giveaways_db.get(msg_id_str)
+        if not giveaway:
+            for k, v in giveaways_db.items():
+                if v.get("channel_id") == interaction.channel_id and not v.get("ended"):
+                    giveaway = v
+                    msg_id_str = k
+                    break
+
+        if not giveaway:
+            await interaction.response.send_message("❌ This giveaway is no longer active in our records.", ephemeral=True)
+            return
+
+        if giveaway.get("ended", False):
+            await interaction.response.send_message("⏳ This giveaway has already ended!", ephemeral=True)
+            return
+
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        if now_ts >= giveaway.get("end_time", 0):
+            await interaction.response.send_message("⏳ This giveaway has concluded and is drawing winners.", ephemeral=True)
+            return
+
+        eligible, reason = check_giveaway_eligibility(giveaway, interaction.user)
+        if not eligible:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+
+        participants = giveaway.setdefault("participants", [])
+        if interaction.user.id in participants:
+            participants.remove(interaction.user.id)
+            save_giveaways()
+            button.label = f"🎉 Enter ({len(participants)})"
+            try:
+                await interaction.response.edit_message(view=self)
+            except Exception:
+                pass
+            await interaction.followup.send("❌ You left the giveaway.", ephemeral=True)
+        else:
+            participants.append(interaction.user.id)
+            save_giveaways()
+            button.label = f"🎉 Enter ({len(participants)})"
+            try:
+                await interaction.response.edit_message(view=self)
+            except Exception:
+                pass
+            await interaction.followup.send("🎉 **You're entered!** Best of luck!", ephemeral=True)
+
+
 class TicketCloseConfirmView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
@@ -2619,8 +2901,82 @@ class TicketCloseConfirmView(discord.ui.View):
             child.disabled = True
         await interaction.response.edit_message(view=self)
 
+        info = tickets_db.get("tickets", {}).get(str(channel.id), {})
+        t_id = info.get("id", 0)
+        owner_id = info.get("owner_id", 0)
+
+        # 1. Compile conversation transcript
+        messages = []
+        try:
+            messages = [m async for m in channel.history(limit=500, oldest_first=True)]
+            transcript_txt = format_ticket_transcript(messages, t_id, owner_id)
+        except Exception as e:
+            print(f"⚠️ Error compiling ticket transcript: {e}", file=sys.stderr)
+            transcript_txt = f"AIO BOT TRANSCRIPT\nTicket #{t_id:04d}\nError generating transcript: {e}"
+        file_bytes = transcript_txt.encode("utf-8")
+
+        # 2. Archive transcript to #📁-ticket-logs
+        if channel.guild:
+            log_ch = get_ticket_logs_channel(channel.guild)
+            if not log_ch:
+                staff_cat = discord.utils.get(channel.guild.categories, name="🛡️ STAFF ZONE")
+                founder_r = get_founder_role(channel.guild)
+                mod_r = get_moderator_role(channel.guild)
+                overwrites = {
+                    channel.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    channel.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
+                }
+                if founder_r:
+                    overwrites[founder_r] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
+                if mod_r:
+                    overwrites[mod_r] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
+                try:
+                    log_ch = await channel.guild.create_text_channel("📁-ticket-logs", category=staff_cat, overwrites=overwrites)
+                except Exception:
+                    log_ch = None
+            if log_ch:
+                try:
+                    log_file = discord.File(io.BytesIO(file_bytes), filename=f"transcript-ticket-{t_id:04d}.txt")
+                    log_embed = discord.Embed(
+                        title=f"📁 Ticket #{t_id:04d} Closed & Archived",
+                        color=COLOR_PRIMARY,
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    log_embed.add_field(name="🏷️ Channel", value=f"`#{channel.name}`", inline=True)
+                    log_embed.add_field(name="👤 Customer", value=f"<@{owner_id}>", inline=True)
+                    log_embed.add_field(name="🛡️ Closed By", value=interaction.user.mention, inline=True)
+                    log_embed.add_field(name="💬 Total Messages", value=str(len(messages)), inline=True)
+                    await log_ch.send(embed=log_embed, file=log_file)
+                except Exception as e:
+                    print(f"⚠️ Error posting to ticket-logs: {e}", file=sys.stderr)
+
+        # 3. Direct message customer with transcript and review button
+        if channel.guild and owner_id:
+            try:
+                owner = channel.guild.get_member(owner_id)
+                if not owner:
+                    owner = await bot.fetch_user(owner_id)
+                if owner and not getattr(owner, "bot", False):
+                    dm_file = discord.File(io.BytesIO(file_bytes), filename=f"transcript-ticket-{t_id:04d}.txt")
+                    dm_embed = discord.Embed(
+                        title="🎟️ Ticket Closed & Conversation Transcript",
+                        description=(
+                            f"Your support ticket **#{t_id:04d}** in **{channel.guild.name}** has been closed.\n\n"
+                            f"📄 Attached is your full conversation transcript for your records.\n"
+                            f"⭐ We value your feedback! Click **Leave a Review** below to share your experience with us!"
+                        ),
+                        color=COLOR_SUCCESS
+                    )
+                    await owner.send(
+                        embed=dm_embed,
+                        file=dm_file,
+                        view=TicketReviewLaunchView(guild_id=channel.guild.id, staff_id=interaction.user.id)
+                    )
+            except Exception as e:
+                print(f"ℹ️ Could not DM ticket owner {owner_id}: {e}", file=sys.stderr)
+
         close_ticket_record(channel.id)
-        await interaction.followup.send(f"🔒 **Ticket closed by {interaction.user.mention}.** This channel will be deleted in 5 seconds...")
+        await interaction.followup.send(f"🔒 **Ticket closed by {interaction.user.mention}.** Channel deleting in 5 seconds...")
         await asyncio.sleep(5)
         if not is_protected_channel(channel):
             try:
@@ -3037,6 +3393,7 @@ FORMAT_SERVER_BLUEPRINT = [
         "category": "🛍️ SAVINGS & REWARDS",
         "channels": [
             {"name": "🌮🍕-food-rewards", "type": "text", "topic": "Preloaded Taco Bell & Pizza Hut rewards accounts store. Order below!"},
+            {"name": "⭐-vouches", "type": "text", "topic": "Customer reviews, feedback, and 5-star ratings."},
             {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."},
             {"name": "🧾-receipt-brags", "type": "text", "topic": "Post your receipt savings and coupon hauls!"}
         ]
@@ -3060,6 +3417,7 @@ FORMAT_SERVER_BLUEPRINT = [
         "channels": [
             {"name": "🛡️-staff-chat", "type": "text", "topic": "Private discussions for server staff and admins."},
             {"name": "📜-mod-logs", "type": "text", "topic": "Audit logs, moderation actions, and security alerts."},
+            {"name": "📁-ticket-logs", "type": "text", "topic": "Archived support ticket logs and conversation transcripts."},
             {"name": "🎛️-mod-panel", "type": "text", "topic": "Staff control center: execute moderation, billing, role fixes, and panel refreshes via buttons."}
         ]
     }
@@ -4859,6 +5217,87 @@ def build_userinfo_embed(member: discord.Member) -> discord.Embed:
     embed.add_field(name=f"🏷️ Roles ({len(roles)})", value=role_str, inline=False)
     return embed
 
+# --- GIVEAWAYS BACKGROUND RUNNER ---
+async def finish_giveaway(msg_id_str: str) -> None:
+    giveaway = giveaways_db.get(msg_id_str)
+    if not giveaway or giveaway.get("ended", False):
+        return
+
+    giveaway["ended"] = True
+    save_giveaways()
+
+    channel_id = giveaway.get("channel_id")
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            channel = None
+
+    participants = list(set(giveaway.get("participants", [])))
+    winners_count = max(1, giveaway.get("winners_count", 1))
+    prize = giveaway.get("prize", "Prize")
+
+    if participants:
+        chosen_winners = random.sample(participants, min(winners_count, len(participants)))
+    else:
+        chosen_winners = []
+
+    giveaway["winners"] = chosen_winners
+    save_giveaways()
+
+    if channel:
+        try:
+            msg = await channel.fetch_message(int(msg_id_str))
+        except Exception:
+            msg = None
+
+        if chosen_winners:
+            winners_pings = ", ".join(f"<@{uid}>" for uid in chosen_winners)
+            winners_desc = "\n".join(f"• <@{uid}>" for uid in chosen_winners)
+        else:
+            winners_pings = "No valid entries."
+            winners_desc = "*No one entered this giveaway.*"
+
+        if msg and msg.embeds:
+            ended_embed = discord.Embed(
+                title=f"🎉 GIVEAWAY ENDED: {prize}",
+                description=f"**Prize:** {prize}\n**Hosted By:** <@{giveaway.get('host_id')}>\n\n🏆 **Winner(s):**\n{winners_desc}",
+                color=0x2B2D31,
+                timestamp=datetime.now(timezone.utc)
+            )
+            ended_embed.set_footer(text="Giveaway has concluded")
+            disabled_view = GiveawayEntryView(len(participants))
+            for child in disabled_view.children:
+                child.disabled = True
+            try:
+                await msg.edit(embed=ended_embed, view=disabled_view)
+            except Exception:
+                pass
+
+        if chosen_winners:
+            try:
+                await channel.send(
+                    f"🎊 **Congratulations {winners_pings}!** You won the giveaway for **{prize}**! 🎁\n*Please open a ticket or contact staff to claim your prize.*"
+                )
+            except Exception:
+                pass
+
+
+@tasks.loop(seconds=15)
+async def check_giveaways_loop():
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    for msg_id_str, g in list(giveaways_db.items()):
+        if g.get("ended", False):
+            continue
+        end_ts = g.get("end_time", 0)
+        if now_ts >= end_ts:
+            try:
+                await finish_giveaway(msg_id_str)
+            except Exception as e:
+                print(f"⚠️ Error concluding giveaway {msg_id_str}: {e}", file=sys.stderr)
+
+
 # 5. CORE EVENTS & COMMANDS
 
 @bot.event
@@ -4873,9 +5312,18 @@ async def on_ready():
         bot.add_view(CouponHubLaunchView())
         bot.add_view(CouponRoomControlView())
         bot.add_view(StaffModPanelButtonView())
+        bot.add_view(TicketReviewLaunchView())
+        bot.add_view(GiveawayEntryView())
         print('✅ Persistent interactive views registered successfully.', flush=True)
     except Exception as e:
         print(f"ℹ️ Note on persistent views registration: {e}", file=sys.stderr, flush=True)
+
+    # Start background giveaway monitoring loop
+    try:
+        if not check_giveaways_loop.is_running():
+            check_giveaways_loop.start()
+    except Exception as e:
+        print(f"⚠️ Note on giveaways background loop: {e}", file=sys.stderr, flush=True)
 
     # Global slash command tree sync
     try:
@@ -4904,9 +5352,86 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # Auto-Mod Word Filter Inspection
+    is_staff = (
+        is_staff_or_admin(message.author) or
+        getattr(message.author.guild_permissions, "manage_messages", False) or
+        getattr(message.author.guild_permissions, "administrator", False)
+    )
+    channel_protected = is_protected_channel(message.channel)
+
+    # Auto-Mod Protection Shield (Non-staff & Non-protected channels)
+    if not is_staff and not channel_protected:
+        # 1. Discord Invite Link Blocker
+        if automod_config_db.get("invites_blocked", True):
+            invite_pattern = r"(?:https?://)?(?:www\.)?(?:discord\.(?:gg|io|me|li)|discord(?:app)?\.com/invite)/[a-zA-Z0-9_-]+"
+            if re.search(invite_pattern, message.content, re.IGNORECASE):
+                try:
+                    await message.delete()
+                    case_id = log_mod_case(
+                        guild_id=message.guild.id,
+                        action="AutoMod Invite Blocker",
+                        target=str(message.author),
+                        moderator="AIO AutoMod 🛡️",
+                        reason="Posted unauthorized Discord invite link",
+                        details=f"Content: {message.content[:100]}"
+                    )
+                    await message.channel.send(
+                        f"⚠️ {message.author.mention}, posting Discord server invite links is not permitted.",
+                        delete_after=6
+                    )
+                    log_ch = get_mod_logs_channel(message.guild)
+                    if log_ch:
+                        alert_embed = discord.Embed(
+                            title="🛡️ AutoMod: Invite Link Removed",
+                            color=COLOR_ERROR,
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        alert_embed.add_field(name="User", value=f"{message.author.mention} (`{message.author.id}`)", inline=True)
+                        alert_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+                        alert_embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+                        alert_embed.add_field(name="Deleted Content", value=f"`{message.content[:300]}`", inline=False)
+                        await log_ch.send(embed=alert_embed)
+                    return
+                except Exception as e:
+                    print(f"⚠️ Error handling invite block: {e}", file=sys.stderr)
+
+        # 2. Phishing & Scam Link Blocker
+        if automod_config_db.get("scams_blocked", True):
+            scam_pattern = r"(?:https?://)?(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]*(?:discorcl|dlscord|disord|discord-app|discord-nitro|nitro-gift|steamcommunlty|steamcommunity-trade|gift-nitro)[a-zA-Z0-9-]*\.[a-zA-Z]{2,}"
+            if re.search(scam_pattern, message.content, re.IGNORECASE):
+                try:
+                    await message.delete()
+                    case_id = log_mod_case(
+                        guild_id=message.guild.id,
+                        action="AutoMod Scam Blocker",
+                        target=str(message.author),
+                        moderator="AIO AutoMod 🛡️",
+                        reason="Posted suspected phishing/Nitro scam link",
+                        details=f"Content: {message.content[:100]}"
+                    )
+                    await message.channel.send(
+                        f"🛡️ {message.author.mention}, suspicious or malicious links are strictly prohibited.",
+                        delete_after=6
+                    )
+                    log_ch = get_mod_logs_channel(message.guild)
+                    if log_ch:
+                        alert_embed = discord.Embed(
+                            title="🚨 AutoMod: Phishing/Scam Link Removed",
+                            color=COLOR_ERROR,
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        alert_embed.add_field(name="User", value=f"{message.author.mention} (`{message.author.id}`)", inline=True)
+                        alert_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+                        alert_embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+                        alert_embed.add_field(name="Flagged Link", value=f"`{message.content[:300]}`", inline=False)
+                        await log_ch.send(embed=alert_embed)
+                    return
+                except Exception as e:
+                    print(f"⚠️ Error handling scam block: {e}", file=sys.stderr)
+
+    # 3. Auto-Mod Word Filter Inspection
     filter_words = get_filter_words(message.guild.id)
-    if filter_words and not (message.author.guild_permissions.manage_messages or message.author.guild_permissions.administrator):
+    if filter_words and not is_staff and not channel_protected:
         content_lower = message.content.lower()
         for bad_word in filter_words:
             pattern = rf"\b{re.escape(bad_word)}\b"
@@ -7661,6 +8186,319 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.response.send_message(msg, ephemeral=True)
     except Exception:
         pass
+
+
+# --- VOUCHES & REVIEWS COMMANDS ---
+@bot.hybrid_command(
+    name="vouch",
+    aliases=["review", "addvouch"],
+    description="Leave an official customer review / vouch with star rating"
+)
+@commands.guild_only()
+@app_commands.describe(
+    rating="Star rating from 1 to 5",
+    comment="Your review or feedback message",
+    staff="Staff member who assisted you (optional)",
+    proof="Screenshot proof or receipt attachment (optional)"
+)
+async def vouch_cmd(
+    ctx: commands.Context,
+    rating: int,
+    comment: str,
+    staff: Optional[discord.Member] = None,
+    proof: Optional[discord.Attachment] = None
+):
+    await safely_delete_message(ctx)
+    if rating < 1 or rating > 5:
+        await ctx.send("❌ Rating must be an integer between 1 and 5 stars.", delete_after=6)
+        return
+
+    proof_url = proof.url if proof else None
+    vouch = add_vouch(
+        guild_id=ctx.guild.id,
+        user_id=ctx.author.id,
+        user_name=str(ctx.author),
+        rating=rating,
+        comment=comment,
+        staff_id=staff.id if staff else None,
+        proof_url=proof_url
+    )
+
+    ch = get_vouches_channel(ctx.guild)
+    if not ch:
+        cat = discord.utils.get(ctx.guild.categories, name="🛍️ SAVINGS & REWARDS") or discord.utils.get(ctx.guild.categories, name="💬 COMMUNITY")
+        try:
+            ch = await ctx.guild.create_text_channel("⭐-vouches", category=cat, topic="Customer reviews, feedback, and 5-star ratings.")
+        except Exception:
+            ch = None
+
+    embed = build_vouch_embed(vouch, ctx.author)
+    if ch:
+        try:
+            await ch.send(embed=embed)
+        except Exception as e:
+            print(f"⚠️ Error posting to vouches channel: {e}", file=sys.stderr)
+
+    stars = "⭐" * rating
+    await ctx.send(
+        f"✅ **Thank you, {ctx.author.mention}!** Your {stars} ({rating}/5) review has been recorded." + (f" View it in {ch.mention}!" if ch else ""),
+        delete_after=8
+    )
+
+
+# --- GIVEAWAY COMMANDS ---
+@bot.hybrid_group(
+    name="giveaway",
+    aliases=["gw"],
+    description="Host and manage server giveaways with customer & role requirements"
+)
+@commands.guild_only()
+async def giveaway_group(ctx: commands.Context):
+    if ctx.invoked_subcommand is None:
+        await ctx.send_help(ctx.command)
+
+
+@giveaway_group.command(
+    name="start",
+    description="Launch a new interactive giveaway with optional customer or role requirements"
+)
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(
+    prize="Prize to give away (e.g. $25 Domino's Account, Free Food Drop)",
+    duration="Duration before drawing winners (e.g. 15m, 1h, 24h, 3d)",
+    winners="Number of winners to draw (default 1)",
+    customer_only="Whether only members with completed purchases / customer role can enter (default False)",
+    required_role="Specific role required to enter (optional)",
+    channel="Channel to host the giveaway in (defaults to current channel)"
+)
+async def giveaway_start_cmd(
+    ctx: commands.Context,
+    prize: str,
+    duration: str,
+    winners: int = 1,
+    customer_only: bool = False,
+    required_role: Optional[discord.Role] = None,
+    channel: Optional[discord.TextChannel] = None
+):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only staff or admins can create giveaways.", delete_after=6)
+        return
+
+    sec = parse_giveaway_duration(duration)
+    if not sec or sec < 10 or sec > 86400 * 30:
+        await ctx.send("❌ Invalid duration. Please provide a duration between 10s and 30d (e.g. `15m`, `2h`, `1d`).", delete_after=8)
+        return
+
+    target_ch = channel or ctx.channel
+    if not isinstance(target_ch, discord.TextChannel):
+        await ctx.send("❌ Giveaways can only be hosted in text channels.", delete_after=6)
+        return
+
+    if is_protected_channel(target_ch):
+        await ctx.send("🛡️ **Protected Channel:** Giveaways cannot be hosted in `#form-automation`.", delete_after=6)
+        return
+
+    winners_count = max(1, min(20, winners))
+    end_unix = int(datetime.now(timezone.utc).timestamp()) + sec
+
+    embed = discord.Embed(
+        title=f"🎉 GIVEAWAY: {prize}",
+        description=(
+            f"Click the **Enter** button below to participate!\n\n"
+            f"🎁 **Prize:** {prize}\n"
+            f"🏆 **Winners:** {winners_count}\n"
+            f"⏳ **Ends:** <t:{end_unix}:R> (<t:{end_unix}:f>)\n"
+            f"👤 **Hosted By:** {ctx.author.mention}\n"
+        ),
+        color=0xF1C40F,
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    reqs = []
+    if customer_only:
+        reqs.append("⭐ **Verified Customers Only** (Completed order or Customer role)")
+    if required_role:
+        reqs.append(f"🏷️ Must have {required_role.mention}")
+    if reqs:
+        embed.add_field(name="🔒 Entry Requirements", value="\n".join(reqs), inline=False)
+    else:
+        embed.add_field(name="👥 Entry Requirements", value="Open to everyone!", inline=False)
+
+    embed.set_footer(text="AIO Bot Giveaway System")
+
+    view = GiveawayEntryView(count=0)
+    msg = await target_ch.send(embed=embed, view=view)
+
+    giveaways_db[str(msg.id)] = {
+        "channel_id": target_ch.id,
+        "guild_id": ctx.guild.id,
+        "prize": prize,
+        "winners_count": winners_count,
+        "end_time": end_unix,
+        "host_id": ctx.author.id,
+        "customer_only": customer_only,
+        "required_role_id": required_role.id if required_role else None,
+        "participants": [],
+        "ended": False
+    }
+    save_giveaways()
+
+    if target_ch.id != ctx.channel.id:
+        await ctx.send(f"✅ Giveaway created in {target_ch.mention}!", delete_after=6)
+
+
+@giveaway_group.command(
+    name="end",
+    description="Instantly end a giveaway and draw winners"
+)
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(message_id="Message ID of the giveaway to end (optional, defaults to latest in channel)")
+async def giveaway_end_cmd(ctx: commands.Context, message_id: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only staff can manage giveaways.", delete_after=6)
+        return
+
+    target_id = message_id
+    if not target_id:
+        for mid, g in reversed(list(giveaways_db.items())):
+            if g.get("channel_id") == ctx.channel.id and not g.get("ended"):
+                target_id = mid
+                break
+
+    if not target_id or target_id not in giveaways_db:
+        await ctx.send("❌ No active giveaway found matching that message ID.", delete_after=6)
+        return
+
+    await finish_giveaway(target_id)
+    await ctx.send("✅ Giveaway ended and winners drawn!", delete_after=6)
+
+
+@giveaway_group.command(
+    name="reroll",
+    description="Reroll a new winner for an ended giveaway"
+)
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(message_id="Message ID of the giveaway to reroll (optional, defaults to latest in channel)")
+async def giveaway_reroll_cmd(ctx: commands.Context, message_id: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only staff can manage giveaways.", delete_after=6)
+        return
+
+    target_id = message_id
+    if not target_id:
+        for mid, g in reversed(list(giveaways_db.items())):
+            if g.get("channel_id") == ctx.channel.id:
+                target_id = mid
+                break
+
+    if not target_id or target_id not in giveaways_db:
+        await ctx.send("❌ No giveaway found for that ID.", delete_after=6)
+        return
+
+    g = giveaways_db[target_id]
+    participants = list(set(g.get("participants", [])))
+    if not participants:
+        await ctx.send("❌ No participants entered this giveaway to reroll from.", delete_after=6)
+        return
+
+    new_winner_id = random.choice(participants)
+    prize = g.get("prize", "Prize")
+    await ctx.send(
+        f"🎲 **Reroll Winner:** Congratulations <@{new_winner_id}>! You are the new winner of **{prize}**! 🎁"
+    )
+
+
+# --- AUTOMOD SHIELD COMMANDS ---
+@bot.hybrid_group(
+    name="automod",
+    aliases=["shield"],
+    description="Staff command: Manage auto-moderation filters and shields"
+)
+@commands.guild_only()
+async def automod_group(ctx: commands.Context):
+    if ctx.invoked_subcommand is None:
+        await ctx.send_help(ctx.command)
+
+
+@automod_group.command(
+    name="status",
+    description="View active auto-moderation protection status"
+)
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+async def automod_status_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only staff can view automod configuration.", delete_after=6)
+        return
+
+    invites = automod_config_db.get("invites_blocked", True)
+    scams = automod_config_db.get("scams_blocked", True)
+    words = get_filter_words(ctx.guild.id)
+
+    embed = discord.Embed(
+        title="🛡️ Server Auto-Mod Protection Shield",
+        description="Real-time status of automated security and anti-raid filters:",
+        color=COLOR_PRIMARY,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(
+        name="🔗 Discord Invite Blocker",
+        value="🟢 **Enabled** (Unauthorized invites auto-deleted)" if invites else "🔴 **Disabled**",
+        inline=True
+    )
+    embed.add_field(
+        name="🚨 Phishing & Scam Link Shield",
+        value="🟢 **Enabled** (Suspicious links auto-deleted)" if scams else "🔴 **Disabled**",
+        inline=True
+    )
+    embed.add_field(
+        name="🚫 Blacklisted Word Filter",
+        value=f"🟢 **Active** ({len(words)} blacklisted terms)" if words else "⚪ **No custom words set**",
+        inline=True
+    )
+    embed.add_field(
+        name="🛡️ Protected Channels",
+        value="`#form-automation` and staff channels are strictly exempted from all auto-mod deletions.",
+        inline=False
+    )
+    embed.set_footer(text="Use /automod toggle [invites|scams] to modify settings")
+    await ctx.send(embed=embed)
+
+
+@automod_group.command(
+    name="toggle",
+    description="Enable or disable a specific auto-mod shield filter"
+)
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(setting="Filter to toggle: 'invites' or 'scams'")
+async def automod_toggle_cmd(ctx: commands.Context, setting: Literal["invites", "scams"]):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only staff can configure automod settings.", delete_after=6)
+        return
+
+    s = setting.lower().strip()
+    if s == "invites":
+        new_val = not automod_config_db.get("invites_blocked", True)
+        automod_config_db["invites_blocked"] = new_val
+        save_automod_config()
+        state_str = "🟢 **Enabled**" if new_val else "🔴 **Disabled**"
+        await ctx.send(f"🛡️ Discord invite link blocker is now {state_str}.", delete_after=8)
+    elif s == "scams":
+        new_val = not automod_config_db.get("scams_blocked", True)
+        automod_config_db["scams_blocked"] = new_val
+        save_automod_config()
+        state_str = "🟢 **Enabled**" if new_val else "🔴 **Disabled**"
+        await ctx.send(f"🚨 Phishing/scam link blocker is now {state_str}.", delete_after=8)
+
 
 def main():
     keep_alive()
