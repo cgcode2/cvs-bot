@@ -103,11 +103,20 @@ def load_json_file(filename: str, default: Any) -> Any:
     return copy.deepcopy(default)
 
 def save_json_file(filename: str, data: Any) -> None:
+    temp_file = f"{filename}.tmp.{os.getpid()}"
     try:
-        with open(filename, "w", encoding="utf-8") as f:
+        with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, filename)
     except Exception as e:
         print(f"⚠️ Failed to save {filename}: {e}", file=sys.stderr)
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
 
 session_channels: Dict[str, int] = load_json_file(SESSION_CHANNELS_FILE, {})
 warnings_db: Dict[str, List[Dict[str, Any]]] = load_json_file(WARNINGS_FILE, {})
@@ -148,17 +157,25 @@ def is_protected_channel(channel: Any) -> bool:
     if channel is None:
         return False
     if isinstance(channel, str):
-        name = channel
-    else:
-        name = getattr(channel, "name", "")
-        # Also check parent category if applicable
-        parent_cat = getattr(channel, "category", None)
-        if parent_cat is not None and is_protected_channel(parent_cat):
+        clean_name = channel.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
+        return "formautomation" in clean_name
+
+    name = getattr(channel, "name", "")
+    if isinstance(name, str):
+        clean_name = name.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
+        if "formautomation" in clean_name:
             return True
-    if not isinstance(name, str):
-        return False
-    clean_name = name.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
-    return "formautomation" in clean_name
+
+    # Also check parent category if applicable
+    parent_cat = getattr(channel, "category", None)
+    if parent_cat is not None and parent_cat is not channel:
+        cat_name = getattr(parent_cat, "name", "")
+        if isinstance(cat_name, str):
+            clean_cat = cat_name.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
+            if "formautomation" in clean_cat:
+                return True
+
+    return False
 
 # --- TICKETS PERSISTENCE ---
 TICKETS_FILE = "tickets_data.json"
@@ -298,12 +315,12 @@ def resolve_member_from_input(guild: Optional[discord.Guild], query: str) -> Opt
     """Resolves a guild member from mention (<@123>), user ID (123), or username / nickname."""
     if not guild or not query:
         return None
-    cleaned = query.strip().lstrip("<@!").rstrip(">")
+    cleaned = query.strip().lstrip("<@!&").rstrip(">")
     if cleaned.isdigit():
         mem = guild.get_member(int(cleaned))
         if mem:
             return mem
-    q_lower = query.strip().lower()
+    q_lower = query.strip().lower().lstrip("@")
     for m in guild.members:
         if m.name.lower() == q_lower or m.display_name.lower() == q_lower:
             return m
@@ -349,10 +366,14 @@ async def resolve_user_or_member(guild: Optional[discord.Guild], query: str) -> 
         mem = resolve_member_from_input(guild, query)
         if mem:
             return mem
-    cleaned = query.strip().lstrip("<@!").rstrip(">").strip()
+    cleaned = query.strip().lstrip("<@!&").rstrip(">").strip()
     if cleaned.isdigit():
+        uid = int(cleaned)
+        cached = bot.get_user(uid)
+        if cached:
+            return cached
         try:
-            return await bot.fetch_user(int(cleaned))
+            return await bot.fetch_user(uid)
         except Exception:
             pass
     return None
@@ -3786,6 +3807,9 @@ class CouponRoomControlView(discord.ui.View):
 
     @discord.ui.button(label="Close Room", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="croom_close", row=2)
     async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if is_protected_channel(interaction.channel):
+            await interaction.response.send_message("🛡️ **Protected Channel:** This channel is protected and cannot be closed or deleted!", ephemeral=True)
+            return
         if not self._is_owner_or_staff(interaction.user, interaction.channel):
             await interaction.response.send_message("❌ Only the room owner or server staff can close this room.", ephemeral=True)
             return
@@ -5033,8 +5057,13 @@ async def nuke_channel(ctx, channel: Optional[discord.TextChannel] = None):
     embed.add_field(name="💬 Channel", value=f"#{new_channel.name}", inline=True)
     embed.add_field(name="⏰ Time", value=f"<t:{ts}:R>", inline=True)
     embed.set_image(url="https://media.giphy.com/media/HhTXt43zEJbNYTX32f/giphy.gif")
-    embed.set_footer(text="AIO Bot • Channel Cleanup Complete")
     await new_channel.send(embed=embed)
+
+    # If the nuked channel was a recognized blueprint panel, restore its interactive panel
+    try:
+        await refresh_channel_content(new_channel, ctx.author.id, clear_history=False)
+    except Exception:
+        pass
 
 @bot.hybrid_command(name="purge", aliases=["clean", "clear_messages", "prune"], description="Bulk delete messages (optional member or channel filter)")
 @commands.guild_only()
@@ -5171,12 +5200,18 @@ async def ban_member(ctx, member: discord.Member, delete_message_days: Optional[
 @app_commands.default_permissions(ban_members=True)
 async def unban_user(ctx, *, user_query: str):
     await safely_delete_message(ctx)
+    clean_query = user_query.strip().lstrip("<@!").rstrip(">")
     bans = [entry async for entry in ctx.guild.bans()]
     target_user = None
 
     for ban_entry in bans:
         u = ban_entry.user
-        if str(u.id) == user_query.strip() or u.name.lower() == user_query.strip().lower() or f"{u.name}#{u.discriminator}" == user_query.strip():
+        if (
+            str(u.id) == clean_query
+            or u.name.lower() == clean_query.lower()
+            or f"{u.name}#{u.discriminator}" == clean_query
+            or (hasattr(u, "global_name") and u.global_name and u.global_name.lower() == clean_query.lower())
+        ):
             target_user = u
             break
 
@@ -5184,13 +5219,18 @@ async def unban_user(ctx, *, user_query: str):
         await ctx.send(f"❌ Could not find a banned user matching `{user_query}`.", delete_after=6)
         return
 
-    await ctx.guild.unban(target_user, reason=f"Unbanned by {ctx.author}")
-    case_id = log_mod_case(ctx.guild.id, "Unban", str(target_user), str(ctx.author), "Unbanned user")
-    embed = discord.Embed(title="🕊️ User Unbanned", color=COLOR_SUCCESS)
-    embed.add_field(name="User", value=f"**{target_user}** (`{target_user.id}`)", inline=True)
-    embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
-    embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
-    await ctx.send(embed=embed)
+    try:
+        await ctx.guild.unban(target_user, reason=f"Unbanned by {ctx.author}")
+        case_id = log_mod_case(ctx.guild.id, "Unban", str(target_user), str(ctx.author), "Unbanned user")
+        embed = discord.Embed(title="🕊️ User Unbanned", color=COLOR_SUCCESS)
+        embed.add_field(name="User", value=f"**{target_user}** (`{target_user.id}`)", inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        await ctx.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("❌ Bot lacks permission to unban users.", delete_after=6)
+    except Exception as e:
+        await ctx.send(f"❌ Error unbanning user: {e}", delete_after=6)
 
 @bot.hybrid_command(name="timeout", aliases=["mute"], description="Timeout/mute a member for a set duration (e.g. 5m, 1h, 1d)")
 @commands.guild_only()
@@ -5313,8 +5353,16 @@ async def clear_warnings(ctx, member: discord.Member):
 async def lock_channel(ctx, channel: Optional[discord.TextChannel] = None):
     await safely_delete_message(ctx)
     target = channel or ctx.channel
-    await target.set_permissions(ctx.guild.default_role, send_messages=False, reason=f"Locked by {ctx.author}")
-    await ctx.send(f"🔒 **{target.mention}** is now locked.", delete_after=6)
+    if is_protected_channel(target):
+        await ctx.send("🛡️ **Protected Channel:** `#form-automation` is strictly protected and cannot be locked.", delete_after=6)
+        return
+    try:
+        await target.set_permissions(ctx.guild.default_role, send_messages=False, reason=f"Locked by {ctx.author}")
+        await ctx.send(f"🔒 **{target.mention}** is now locked.", delete_after=6)
+    except discord.Forbidden:
+        await ctx.send(f"❌ Bot is missing permissions to lock {target.mention}.", delete_after=6)
+    except Exception as e:
+        await ctx.send(f"❌ Error locking {target.mention}: {e}", delete_after=6)
 
 @bot.hybrid_command(name="unlock", description="Unlock a channel to allow regular members to send messages")
 @commands.guild_only()
@@ -5323,8 +5371,16 @@ async def lock_channel(ctx, channel: Optional[discord.TextChannel] = None):
 async def unlock_channel(ctx, channel: Optional[discord.TextChannel] = None):
     await safely_delete_message(ctx)
     target = channel or ctx.channel
-    await target.set_permissions(ctx.guild.default_role, send_messages=None, reason=f"Unlocked by {ctx.author}")
-    await ctx.send(f"🔓 **{target.mention}** is now unlocked.", delete_after=6)
+    if is_protected_channel(target):
+        await ctx.send("🛡️ **Protected Channel:** `#form-automation` is strictly protected and cannot be modified.", delete_after=6)
+        return
+    try:
+        await target.set_permissions(ctx.guild.default_role, send_messages=None, reason=f"Unlocked by {ctx.author}")
+        await ctx.send(f"🔓 **{target.mention}** is now unlocked.", delete_after=6)
+    except discord.Forbidden:
+        await ctx.send(f"❌ Bot is missing permissions to unlock {target.mention}.", delete_after=6)
+    except Exception as e:
+        await ctx.send(f"❌ Error unlocking {target.mention}: {e}", delete_after=6)
 
 @bot.hybrid_command(name="slowmode", description="Set channel slowmode cooldown (e.g. 5s, 1m, 0)")
 @commands.guild_only()
@@ -5333,6 +5389,9 @@ async def unlock_channel(ctx, channel: Optional[discord.TextChannel] = None):
 async def set_slowmode(ctx, duration: str, channel: Optional[discord.TextChannel] = None):
     await safely_delete_message(ctx)
     target = channel or ctx.channel
+    if is_protected_channel(target):
+        await ctx.send("🛡️ **Protected Channel:** `#form-automation` is strictly protected and slowmode cannot be changed.", delete_after=6)
+        return
     if duration.strip() in ("0", "off", "none"):
         seconds = 0
     else:
@@ -5350,11 +5409,16 @@ async def set_slowmode(ctx, duration: str, channel: Optional[discord.TextChannel
         await ctx.send("❌ Slowmode must be between 0 seconds and 6 hours (21600s).", delete_after=6)
         return
 
-    await target.edit(slowmode_delay=seconds, reason=f"Slowmode set by {ctx.author}")
-    if seconds == 0:
-        await ctx.send(f"⚡ Slowmode disabled for {target.mention}.", delete_after=6)
-    else:
-        await ctx.send(f"⏳ Set slowmode for {target.mention} to **{seconds}s**.", delete_after=6)
+    try:
+        await target.edit(slowmode_delay=seconds, reason=f"Slowmode set by {ctx.author}")
+        if seconds == 0:
+            await ctx.send(f"⚡ Slowmode disabled for {target.mention}.", delete_after=6)
+        else:
+            await ctx.send(f"⏳ Set slowmode for {target.mention} to **{seconds}s**.", delete_after=6)
+    except discord.Forbidden:
+        await ctx.send(f"❌ Bot is missing permissions to edit slowmode on {target.mention}.", delete_after=6)
+    except Exception as e:
+        await ctx.send(f"❌ Error updating slowmode on {target.mention}: {e}", delete_after=6)
 
 @bot.hybrid_command(name="serverinfo", description="Display detailed server stats and information")
 @commands.guild_only()
@@ -7576,9 +7640,7 @@ async def on_command_error(ctx, error):
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CheckFailure):
-        msg = "⛔ Security Error: Only the bot application owner can run this operator command."
-    elif isinstance(error, app_commands.MissingPermissions):
+    if isinstance(error, app_commands.MissingPermissions):
         missing = ", ".join(p.replace('_', ' ').title() for p in error.missing_permissions)
         msg = f"⛔ You need the **{missing}** permission to run that."
     elif isinstance(error, app_commands.BotMissingPermissions):
@@ -7586,6 +7648,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         msg = f"❌ The bot needs the **{missing}** permission to execute this."
     elif isinstance(error, app_commands.NoPrivateMessage):
         msg = "⛔ This command can only be used inside a server channel."
+    elif isinstance(error, app_commands.CheckFailure):
+        msg = "⛔ Permission Error: You do not meet the permission requirements for this command."
     else:
         print(f"❌ App Command Error in '/{interaction.command.name if interaction.command else 'unknown'}': {type(error).__name__} | Details: {error}", file=sys.stderr)
         msg = f"❌ Error: `{type(error).__name__}: {error}`"

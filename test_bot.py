@@ -1326,6 +1326,68 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("fixhierarchy", fixroles_cmd.aliases)
         self.assertIn("demotebot", fixroles_cmd.aliases)
 
+    def test_system_reliability_and_bugfixes(self):
+        # 1. Test atomic JSON save
+        test_file = "test_atomic_save.json"
+        test_data = {"status": "ok", "count": 42}
+        try:
+            main.save_json_file(test_file, test_data)
+            loaded = main.load_json_file(test_file, {})
+            self.assertEqual(loaded, test_data)
+            # Ensure no orphaned temp files
+            tmp_files = [f for f in os.listdir(".") if f.startswith(f"{test_file}.tmp")]
+            self.assertEqual(len(tmp_files), 0)
+        finally:
+            if os.path.exists(test_file):
+                os.remove(test_file)
+
+        # 2. Test resolve_member_from_input with @ prefix and mention
+        class MockMemberForResolve:
+            def __init__(self, id, name, display_name):
+                self.id = id
+                self.name = name
+                self.display_name = display_name
+
+        mem = MockMemberForResolve(5555, "codygordon", "Cody")
+        class MockGuildMembers:
+            def __init__(self, members):
+                self.members = members
+            def get_member(self, mid):
+                for m in self.members:
+                    if m.id == mid:
+                        return m
+                return None
+
+        mg = MockGuildMembers([mem])
+        # Test leading @
+        self.assertEqual(main.resolve_member_from_input(mg, "@codygordon"), mem)
+        # Test mention format
+        self.assertEqual(main.resolve_member_from_input(mg, "<@5555>"), mem)
+        self.assertEqual(main.resolve_member_from_input(mg, "<@!5555>"), mem)
+
+        # 3. Test protected channel checks
+        prot_ch = MagicMock(spec=discord.TextChannel)
+        prot_ch.name = "form-automation"
+        self.assertTrue(main.is_protected_channel(prot_ch))
+
+        # Check channel with protected parent category
+        child_ch = MagicMock(spec=discord.TextChannel)
+        child_ch.name = "general"
+        parent_cat = MagicMock(spec=discord.CategoryChannel)
+        parent_cat.name = "Form-Automation Category"
+        child_ch.category = parent_cat
+        self.assertTrue(main.is_protected_channel(child_ch))
+
+        # Regular channel
+        normal_ch = MagicMock(spec=discord.TextChannel)
+        normal_ch.name = "general-chat"
+        normal_ch.category = None
+        self.assertFalse(main.is_protected_channel(normal_ch))
+
+        # 4. Test CouponRoomControlView protected channel safety
+        view = main.CouponRoomControlView(5555)
+        self.assertTrue(hasattr(view, "btn_close"))
+
 
 if __name__ == '__main__':
     unittest.main()
