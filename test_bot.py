@@ -1525,6 +1525,34 @@ class TestAIOBot(unittest.TestCase):
         review_view = main.TicketReviewLaunchView(guild_id=123, staff_id=456)
         self.assertEqual(review_view.btn_review.custom_id, "aio_ticket_leave_review_btn")
 
+    def test_giveaway_channel_creation(self):
+        # 1. Test get_giveaways_channel
+        class MockChannel:
+            def __init__(self, name):
+                self.name = name
+
+        class MockGuildWithChannels:
+            def __init__(self, text_channels):
+                self.text_channels = text_channels
+
+        ch1 = MockChannel("general")
+        ch2 = MockChannel("🎉-giveaways")
+        mg = MockGuildWithChannels([ch1, ch2])
+        self.assertEqual(main.get_giveaways_channel(mg), ch2)
+
+        mg_empty = MockGuildWithChannels([ch1])
+        self.assertIsNone(main.get_giveaways_channel(mg_empty))
+
+        # 2. Verify command registration and aliases
+        setup_gw_cmd = main.bot.get_command("setup-giveaways")
+        self.assertIsNotNone(setup_gw_cmd)
+        self.assertIn("creategiveawaychannel", setup_gw_cmd.aliases)
+        self.assertIn("setupgiveaways", setup_gw_cmd.aliases)
+
+        gw_cmd = main.bot.get_command("giveaway")
+        self.assertIsNotNone(gw_cmd)
+        self.assertIn("channel", [c.name for c in gw_cmd.commands])
+
 
 if __name__ == '__main__':
     unittest.main()

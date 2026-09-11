@@ -839,6 +839,84 @@ def get_vouches_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
             return ch
     return None
 
+def get_giveaways_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """Finds existing giveaways channel in the guild."""
+    for ch in guild.text_channels:
+        clean = ch.name.lower().replace("-", "").replace("_", "").replace(" ", "")
+        if "giveaway" in clean:
+            return ch
+    return None
+
+async def setup_giveaways_channel(guild: discord.Guild) -> Tuple[Optional[discord.TextChannel], bool]:
+    """Creates or configures a dedicated #🎉-giveaways channel with read-only permissions for members."""
+    existing = get_giveaways_channel(guild)
+    if existing:
+        return existing, False
+
+    cat = (
+        discord.utils.get(guild.categories, name="💬 COMMUNITY") or
+        discord.utils.get(guild.categories, name="🛍️ SAVINGS & REWARDS") or
+        discord.utils.get(guild.categories, name="🎉 GIVEAWAYS")
+    )
+    if not cat:
+        try:
+            cat = await guild.create_category("💬 COMMUNITY")
+        except Exception:
+            cat = None
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=False,
+            add_reactions=True,
+            read_message_history=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            embed_links=True,
+            attach_files=True,
+            manage_messages=True,
+            manage_channels=True
+        )
+    }
+    founder_r = get_founder_role(guild)
+    mod_r = get_moderator_role(guild)
+    if founder_r:
+        overwrites[founder_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    if mod_r:
+        overwrites[mod_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+    try:
+        new_ch = await guild.create_text_channel(
+            "🎉-giveaways",
+            category=cat,
+            topic="Official server giveaways and rewards! Enter active drops below.",
+            overwrites=overwrites
+        )
+    except Exception as e:
+        print(f"⚠️ Error creating giveaways channel: {e}", file=sys.stderr)
+        return None, False
+
+    welcome_embed = discord.Embed(
+        title="🎉 Official Server Giveaways Hub",
+        description=(
+            "Welcome to the official giveaways channel! 🎁\n\n"
+            "• **How to Enter:** When a giveaway is active, simply click the **Enter** button on the giveaway embed.\n"
+            "• **Requirements:** Some exclusive drops may require purchase history (Customer Only) or specific roles.\n"
+            "• **Winners:** Drawn automatically by the bot at timer expiration.\n\n"
+            "*Turn on notifications for this channel so you never miss a drop!*"
+        ),
+        color=0xF1C40F
+    )
+    welcome_embed.set_footer(text="AIO Bot Giveaway System")
+    try:
+        await new_ch.send(embed=welcome_embed)
+    except Exception:
+        pass
+
+    return new_ch, True
+
 def add_vouch(
     guild_id: int,
     user_id: int,
@@ -3378,6 +3456,7 @@ FORMAT_SERVER_BLUEPRINT = [
         "category": "💬 COMMUNITY",
         "channels": [
             {"name": "💬-general-chat", "type": "text", "topic": "Main hangout and general conversation."},
+            {"name": "🎉-giveaways", "type": "text", "topic": "Official server giveaways and rewards! Enter active drops below."},
             {"name": "🤖-bot-commands", "type": "text", "topic": "Run bot commands and mini-games here!"},
             {"name": "💡-suggestions", "type": "text", "topic": "Share ideas and feedback for the server."}
         ]
@@ -8291,7 +8370,7 @@ async def giveaway_start_cmd(
         await ctx.send("❌ Invalid duration. Please provide a duration between 10s and 30d (e.g. `15m`, `2h`, `1d`).", delete_after=8)
         return
 
-    target_ch = channel or ctx.channel
+    target_ch = channel or (get_giveaways_channel(ctx.guild) if ctx.guild else None) or ctx.channel
     if not isinstance(target_ch, discord.TextChannel):
         await ctx.send("❌ Giveaways can only be hosted in text channels.", delete_after=6)
         return
@@ -8412,6 +8491,61 @@ async def giveaway_reroll_cmd(ctx: commands.Context, message_id: Optional[str] =
     await ctx.send(
         f"🎲 **Reroll Winner:** Congratulations <@{new_winner_id}>! You are the new winner of **{prize}**! 🎁"
     )
+
+
+@giveaway_group.command(
+    name="channel",
+    aliases=["createchannel", "setupchannel", "makechannel"],
+    description="Staff command: Automatically create and configure the dedicated #🎉-giveaways channel"
+)
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def giveaway_channel_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to create channels.", delete_after=6)
+        return
+
+    if not ctx.guild:
+        return
+
+    ch, created = await setup_giveaways_channel(ctx.guild)
+    if not ch:
+        await ctx.send("❌ Error creating giveaways channel. Please verify the bot has Manage Channels permission.", delete_after=8)
+        return
+
+    if created:
+        await ctx.send(f"🎉 **Dedicated Giveaways Channel Ready:** {ch.mention} has been created with read-only permissions for members!", delete_after=10)
+    else:
+        await ctx.send(f"ℹ️ Giveaways channel already exists at {ch.mention}.", delete_after=8)
+
+
+@bot.hybrid_command(
+    name="setup-giveaways",
+    aliases=["setupgiveaways", "creategiveawaychannel", "giveawaychannel", "makegiveawaychannel"],
+    description="Staff command: Automatically create and configure the dedicated #🎉-giveaways channel"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_giveaways_standalone_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to create channels.", delete_after=6)
+        return
+
+    if not ctx.guild:
+        return
+
+    ch, created = await setup_giveaways_channel(ctx.guild)
+    if not ch:
+        await ctx.send("❌ Error creating giveaways channel. Please verify the bot has Manage Channels permission.", delete_after=8)
+        return
+
+    if created:
+        await ctx.send(f"🎉 **Dedicated Giveaways Channel Ready:** {ch.mention} has been created with read-only permissions for members!", delete_after=10)
+    else:
+        await ctx.send(f"ℹ️ Giveaways channel already exists at {ch.mention}.", delete_after=8)
 
 
 # --- AUTOMOD SHIELD COMMANDS ---
