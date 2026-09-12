@@ -1553,6 +1553,74 @@ class TestAIOBot(unittest.TestCase):
         self.assertIsNotNone(gw_cmd)
         self.assertIn("channel", [c.name for c in gw_cmd.commands])
 
+    def test_used_coupon_command_and_button(self):
+        # 1. Test mark_coupon_used and unmark_coupon_used
+        orig_accounts = [dict(acc) for acc in main.cvs_accounts_db]
+        orig_save = main.save_cvs_accounts
+        main.save_cvs_accounts = lambda *args, **kwargs: None
+        try:
+            test_acc = {
+                "id": 9999,
+                "name": "Test Couponer",
+                "extraCareNumber": "4999999999999",
+                "coupons": ["$4 off $20 Colgate", "40% off single item", "$10 CarePass"],
+                "notes": "Loaded with $4 off $20 Colgate"
+            }
+            main.cvs_accounts_db.append(test_acc)
+
+            # Mark coupon used with savings
+            success, msg, acc = main.mark_coupon_used(
+                account_query=9999,
+                coupon_name="$4 off $20 Colgate",
+                savings=4.0,
+                user_tag="StaffTester"
+            )
+            self.assertTrue(success)
+            self.assertIsNotNone(acc)
+            self.assertNotIn("$4 off $20 Colgate", acc.get("coupons", []))
+            self.assertEqual(len(acc.get("used_coupons", [])), 1)
+            used_entry = acc["used_coupons"][0]
+            self.assertEqual(used_entry["coupon"], "$4 off $20 Colgate")
+            self.assertEqual(used_entry["savings"], 4.0)
+            self.assertEqual(used_entry["marked_by"], "StaffTester")
+            self.assertIn("~~$4 off $20 Colgate~~ *(Used)*", acc.get("notes", ""))
+
+            # Format card and verify embed displays active and used coupons
+            embed, file = main.format_account_card(acc)
+            field_names = [f.name for f in embed.fields]
+            self.assertTrue(any("Active Coupons" in fn for fn in field_names))
+            self.assertTrue(any("Used / Redeemed Coupons" in fn for fn in field_names))
+
+            # Test unmark_coupon_used
+            un_success, un_msg, un_acc = main.unmark_coupon_used(
+                account_query=9999,
+                coupon_name="$4 off $20 Colgate"
+            )
+            self.assertTrue(un_success)
+            self.assertIn("$4 off $20 Colgate", un_acc.get("coupons", []))
+            self.assertEqual(len(un_acc.get("used_coupons", [])), 0)
+
+            # 2. Test buttons on CVSAccountsPaginationView
+            view = main.CVSAccountsPaginationView(current_idx=0)
+            labels = [getattr(item, "label", "") for item in view.children]
+            self.assertIn("Use Coupon", labels)
+            self.assertIn("Add Coupon", labels)
+
+            # 3. Test command registration and aliases
+            used_cmd = main.bot.get_command("used")
+            self.assertIsNotNone(used_cmd)
+            self.assertIn("usecoupon", used_cmd.aliases)
+            self.assertIn("usedcoupon", used_cmd.aliases)
+            self.assertIn("markused", used_cmd.aliases)
+            self.assertIn("markcouponused", used_cmd.aliases)
+
+            unuse_cmd = main.bot.get_command("unusecoupon")
+            self.assertIsNotNone(unuse_cmd)
+            self.assertIn("undocoupon", unuse_cmd.aliases)
+        finally:
+            main.cvs_accounts_db = orig_accounts
+            main.save_cvs_accounts = orig_save
+
 
 if __name__ == '__main__':
     unittest.main()

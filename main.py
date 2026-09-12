@@ -141,6 +141,127 @@ def get_cvs_account(query: str) -> Optional[Dict[str, Any]]:
             return acc
     return None
 
+def mark_coupon_used(
+    account_query: Optional[Union[int, str, Dict[str, Any]]] = None,
+    coupon_name: str = "",
+    savings: Optional[float] = None,
+    notes: Optional[str] = None,
+    user_tag: Optional[str] = None
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """Marks a coupon as used/redeemed on a CVS account, updating active and used coupon lists."""
+    if not cvs_accounts_db:
+        return False, "No CVS accounts currently in database.", None
+
+    target_acc = None
+    if isinstance(account_query, dict):
+        target_acc = account_query
+    elif isinstance(account_query, int):
+        for acc in cvs_accounts_db:
+            if acc.get("id") == account_query:
+                target_acc = acc
+                break
+    elif isinstance(account_query, str) and account_query.strip():
+        clean_q = account_query.strip()
+        if clean_q.isdigit():
+            aid = int(clean_q)
+            for acc in cvs_accounts_db:
+                if acc.get("id") == aid:
+                    target_acc = acc
+                    break
+        if not target_acc:
+            target_acc = get_cvs_account(clean_q)
+    else:
+        # If no account specified, try finding one that has this coupon loaded
+        c_lower = coupon_name.lower().strip()
+        if c_lower:
+            for acc in cvs_accounts_db:
+                for c in acc.get("coupons", []):
+                    if c_lower in str(c).lower():
+                        target_acc = acc
+                        break
+                if target_acc:
+                    break
+        if not target_acc:
+            target_acc = cvs_accounts_db[0]
+
+    if not target_acc:
+        return False, f"Could not find CVS account matching '{account_query}'.", None
+
+    clean_coupon = coupon_name.strip()
+    if not clean_coupon:
+        return False, "Coupon name/description cannot be empty.", None
+
+    c_lower = clean_coupon.lower()
+
+    # 1. Remove from active coupons if present
+    if "coupons" in target_acc and isinstance(target_acc["coupons"], list):
+        remaining = []
+        matched = False
+        for c in target_acc["coupons"]:
+            if not matched and (c_lower in str(c).lower() or str(c).lower() in c_lower):
+                matched = True
+                clean_coupon = str(c)
+            else:
+                remaining.append(c)
+        target_acc["coupons"] = remaining
+
+    # 2. Add to used_coupons list
+    used_entry = {
+        "coupon": clean_coupon,
+        "savings": float(savings) if savings is not None else 0.0,
+        "notes": notes,
+        "used_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "date": datetime.now(timezone.utc).strftime("%b %d, %Y"),
+        "marked_by": user_tag or "Staff"
+    }
+    target_acc.setdefault("used_coupons", []).append(used_entry)
+
+    # 3. Strike through if present in notes
+    if target_acc.get("notes") and clean_coupon in target_acc["notes"]:
+        target_acc["notes"] = target_acc["notes"].replace(clean_coupon, f"~~{clean_coupon}~~ *(Used)*")
+
+    save_cvs_accounts(cvs_accounts_db)
+    return True, f"Successfully marked '{clean_coupon}' as used.", target_acc
+
+def unmark_coupon_used(
+    account_query: Optional[Union[int, str]] = None,
+    coupon_name: str = ""
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """Restores a used coupon back to active coupons on an account."""
+    if not cvs_accounts_db:
+        return False, "No CVS accounts in database.", None
+
+    target_acc = None
+    if isinstance(account_query, int) or (isinstance(account_query, str) and account_query.strip().isdigit()):
+        aid = int(account_query)
+        for acc in cvs_accounts_db:
+            if acc.get("id") == aid:
+                target_acc = acc
+                break
+    if not target_acc and isinstance(account_query, str):
+        target_acc = get_cvs_account(account_query)
+    if not target_acc:
+        target_acc = cvs_accounts_db[0]
+
+    c_lower = coupon_name.lower().strip()
+    used_list = target_acc.get("used_coupons", [])
+    restored_coupon = None
+    new_used = []
+    for u in used_list:
+        name = u.get("coupon", "") if isinstance(u, dict) else str(u)
+        if not restored_coupon and (c_lower in name.lower() or name.lower() in c_lower):
+            restored_coupon = name
+        else:
+            new_used.append(u)
+
+    if not restored_coupon:
+        return False, f"Coupon '{coupon_name}' was not found in used coupons for Account #{target_acc['id']}.", target_acc
+
+    target_acc["used_coupons"] = new_used
+    target_acc.setdefault("coupons", []).append(restored_coupon)
+    save_cvs_accounts(cvs_accounts_db)
+    return True, f"Restored '{restored_coupon}' back to active coupons.", target_acc
+
 FILTERS_FILE = "automod_filters.json"
 MOD_CASES_FILE = "mod_cases.json"
 MOD_NOTES_FILE = "mod_notes.json"
@@ -1772,8 +1893,27 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     if val:
         embed.add_field(name="🔐 Credentials", value=val, inline=False)
 
+    active_coupons = acc.get("coupons", [])
+    if active_coupons:
+        c_lines = "\n".join(f"• 🎟️ **{c}**" for c in active_coupons)
+        embed.add_field(name=f"🎟️ Loaded Active Coupons ({len(active_coupons)})", value=c_lines[:1024], inline=False)
+
+    used_coupons = acc.get("used_coupons", [])
+    if used_coupons:
+        u_lines = []
+        for u in used_coupons[-6:]:
+            if isinstance(u, dict):
+                cname = u.get("coupon", "Coupon")
+                dt = u.get("date", "")
+                sav = u.get("savings", 0.0)
+                sav_str = f" (${sav:.2f})" if sav > 0 else ""
+                u_lines.append(f"• ~~{cname}~~{sav_str}" + (f" *({dt})*" if dt else ""))
+            else:
+                u_lines.append(f"• ~~{u}~~")
+        embed.add_field(name=f"✅ Used / Redeemed Coupons ({len(used_coupons)})", value="\n".join(u_lines)[:1024], inline=False)
+
     if acc.get("notes"):
-        embed.add_field(name="🎟️ Loaded Coupons & Notes", value=acc['notes'], inline=False)
+        embed.add_field(name="📝 Account Notes", value=acc['notes'][:1024], inline=False)
 
     embed.set_image(url="attachment://cvs_barcode.png")
     embed.set_footer(text=f"AIO Bot CVS Account Manager • Account #{acc_id} of {len(cvs_accounts_db)}")
@@ -1810,9 +1950,9 @@ class CVSAccountsPaginationView(discord.ui.View):
         self.add_item(self.dropdown)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if await bot.is_owner(interaction.user):
+        if await bot.is_owner(interaction.user) or is_staff_or_admin(interaction.user):
             return True
-        await interaction.response.send_message("⛔ Security Error: Only the bot application owner can view CVS accounts.", ephemeral=True)
+        await interaction.response.send_message("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
@@ -1835,9 +1975,143 @@ class CVSAccountsPaginationView(discord.ui.View):
         self.update_select()
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
+    @discord.ui.button(label="Use Coupon", style=discord.ButtonStyle.success, emoji="🏷️", row=1)
+    async def use_coupon_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not cvs_accounts_db:
+            await interaction.response.send_message("No accounts found!", ephemeral=True)
+            return
+        acc = cvs_accounts_db[self.current_idx]
+        await interaction.response.send_modal(MarkCouponUsedModal(account_id=acc["id"], parent_view=self))
+
+    @discord.ui.button(label="Add Coupon", style=discord.ButtonStyle.secondary, emoji="➕", row=1)
+    async def add_coupon_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not cvs_accounts_db:
+            await interaction.response.send_message("No accounts found!", ephemeral=True)
+            return
+        acc = cvs_accounts_db[self.current_idx]
+        await interaction.response.send_modal(AddCouponModal(account_id=acc["id"], parent_view=self))
+
     @discord.ui.button(label="Custom Barcode", style=discord.ButtonStyle.secondary, emoji="💳", row=1)
     async def custom_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CVSAccountModal())
+
+
+class MarkCouponUsedModal(discord.ui.Modal):
+    coupon_input = discord.ui.TextInput(
+        label="Coupon Name / Description Used",
+        placeholder="e.g. $4 off $20 Crest, 40% off 1 item, $8 off $40",
+        required=True,
+        max_length=150
+    )
+    savings_input = discord.ui.TextInput(
+        label="Amount Saved ($) (Optional)",
+        placeholder="e.g. 4.00, 8.50",
+        required=False,
+        max_length=20
+    )
+    notes_input = discord.ui.TextInput(
+        label="Purchase / Register Notes (Optional)",
+        placeholder="e.g. Used at self-checkout on Colgate toothpaste",
+        required=False,
+        max_length=200
+    )
+
+    def __init__(self, account_id: int, parent_view: Optional[Any] = None):
+        super().__init__(title=f"🏷️ Mark Coupon Used — #{account_id}")
+        self.account_id = account_id
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        c_name = self.coupon_input.value.strip()
+        sav_raw = self.savings_input.value.strip().replace("$", "")
+        sav_val = None
+        if sav_raw:
+            try:
+                sav_val = float(sav_raw)
+            except ValueError:
+                pass
+
+        notes = self.notes_input.value.strip() or None
+        success, msg, acc = mark_coupon_used(
+            account_query=self.account_id,
+            coupon_name=c_name,
+            savings=sav_val,
+            notes=notes,
+            user_tag=str(interaction.user)
+        )
+
+        if not success or not acc:
+            await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
+            return
+
+        if self.parent_view:
+            embed, file = format_account_card(acc)
+            try:
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self.parent_view)
+                sav_text = f" (Saved ${sav_val:.2f})" if sav_val else ""
+                await interaction.followup.send(
+                    f"✅ **Coupon Marked Used:** '{c_name}' recorded for Account #{acc['id']} **{acc.get('name')}**!{sav_text}",
+                    ephemeral=True
+                )
+                return
+            except Exception:
+                pass
+
+        sav_text = f" (Saved ${sav_val:.2f})" if sav_val else ""
+        await interaction.response.send_message(
+            f"✅ **Coupon Marked Used:** '{c_name}' recorded for Account #{acc['id']} **{acc.get('name')}**!{sav_text}",
+            ephemeral=True
+        )
+
+
+class AddCouponModal(discord.ui.Modal):
+    coupon_input = discord.ui.TextInput(
+        label="Coupon Name / Description to Load",
+        placeholder="e.g. $4 off $20 Colgate, 40% off 1 item, $10 CarePass",
+        required=True,
+        max_length=150
+    )
+    notes_input = discord.ui.TextInput(
+        label="Expiration / Details (Optional)",
+        placeholder="e.g. Expires Sep 20, digital sent to card",
+        required=False,
+        max_length=150
+    )
+
+    def __init__(self, account_id: int, parent_view: Optional[Any] = None):
+        super().__init__(title=f"➕ Load Coupon — #{account_id}")
+        self.account_id = account_id
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        c_name = self.coupon_input.value.strip()
+        details = self.notes_input.value.strip()
+        full_desc = f"{c_name} ({details})" if details else c_name
+
+        acc = get_cvs_account(str(self.account_id))
+        if not acc:
+            await interaction.response.send_message("❌ Account not found.", ephemeral=True)
+            return
+
+        acc.setdefault("coupons", []).append(full_desc)
+        save_cvs_accounts(cvs_accounts_db)
+
+        if self.parent_view:
+            embed, file = format_account_card(acc)
+            try:
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=self.parent_view)
+                await interaction.followup.send(
+                    f"✅ **Coupon Added:** Loaded '{full_desc}' to Account #{acc['id']} **{acc.get('name')}**!",
+                    ephemeral=True
+                )
+                return
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"✅ **Coupon Added:** Loaded '{full_desc}' to Account #{acc['id']} **{acc.get('name')}**!",
+            ephemeral=True
+        )
 
 class CVSAccountModal(discord.ui.Modal, title="💳 CVS ExtraCare® Card Formatter"):
     card_num = discord.ui.TextInput(
@@ -7109,10 +7383,14 @@ async def roll_cmd(ctx, dice: Optional[str] = "1d6"):
     aliases=["cvsaccounts", "myaccounts", "cards", "cvsaccount", "cvscard", "extracare", "barcode"],
     description="Browse or search imported CVS ExtraCare accounts with barcodes & pagination"
 )
-@commands.is_owner()
+@commands.guild_only()
 @app_commands.default_permissions(administrator=True)
 async def list_accounts_cmd(ctx, query: Optional[str] = None):
     await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", delete_after=6)
+        return
+
     if not cvs_accounts_db:
         await ctx.send("📭 No CVS accounts currently loaded.", delete_after=8)
         return
@@ -7128,6 +7406,97 @@ async def list_accounts_cmd(ctx, query: Optional[str] = None):
     view = CVSAccountsPaginationView(current_idx=idx)
     embed, file = format_account_card(cvs_accounts_db[idx])
     await ctx.send(embed=embed, file=file, view=view)
+
+
+@bot.hybrid_command(
+    name="used",
+    aliases=["usecoupon", "usedcoupon", "markused", "markcouponused", "redeemcoupon"],
+    description="Mark a coupon as used/redeemed on a CVS account from /accounts"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    coupon="The coupon name or description that was used (e.g. $4 off Colgate, 40% off 1 item)",
+    account="Account ID, Name, or ExtraCare Number (optional, defaults to matched or first account)",
+    savings="Dollar amount saved by this coupon (optional, e.g. 4.00, 10.50)"
+)
+async def used_cmd(
+    ctx: commands.Context,
+    coupon: str,
+    account: Optional[str] = None,
+    savings: Optional[str] = None
+):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can manage accounts.", delete_after=6)
+        return
+
+    if not cvs_accounts_db:
+        await ctx.send("📭 No CVS accounts currently loaded.", delete_after=8)
+        return
+
+    sav_val = None
+    if savings:
+        try:
+            sav_val = float(savings.replace("$", "").strip())
+        except ValueError:
+            pass
+
+    success, msg, acc = mark_coupon_used(
+        account_query=account,
+        coupon_name=coupon,
+        savings=sav_val,
+        user_tag=str(ctx.author)
+    )
+
+    if not success or not acc:
+        await ctx.send(f"❌ {msg}", delete_after=8)
+        return
+
+    embed = discord.Embed(
+        title="✅ Coupon Marked as Used",
+        description=f"Successfully recorded **'{coupon}'** as redeemed!",
+        color=COLOR_SUCCESS,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="💳 Account", value=f"#{acc['id']} **{acc.get('name', 'Cardholder')}**", inline=True)
+    embed.add_field(name="🔢 ExtraCare Number", value=f"`{acc.get('extraCareNumber', '—')}`", inline=True)
+    if sav_val:
+        embed.add_field(name="💰 Savings Logged", value=f"**${sav_val:.2f}**", inline=True)
+
+    rem = acc.get("coupons", [])
+    if rem:
+        embed.add_field(name=f"🎟️ Remaining Active Coupons ({len(rem)})", value="\n".join(f"• {c}" for c in rem[:5]), inline=False)
+
+    embed.set_footer(text=f"Marked by {ctx.author.display_name} • View updated card with /accounts")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="unusecoupon",
+    aliases=["undocoupon", "unmarkused"],
+    description="Revert a used coupon back to active on a CVS account"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    coupon="The coupon name/description to revert back to active",
+    account="Account ID, Name, or ExtraCare Number (optional)"
+)
+async def unusecoupon_cmd(ctx: commands.Context, coupon: str, account: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can manage accounts.", delete_after=6)
+        return
+
+    success, msg, acc = unmark_coupon_used(account_query=account or 1, coupon_name=coupon)
+    if not success or not acc:
+        await ctx.send(f"❌ {msg}", delete_after=8)
+        return
+
+    await ctx.send(f"✅ Reverted coupon **'{coupon}'** back to active for Account #{acc['id']} **{acc.get('name')}**!", delete_after=8)
 
 
 # --- SETUP & CHANNELS ---
