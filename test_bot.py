@@ -1860,10 +1860,15 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("StaffMod", embed_closed.footer.text)
 
     def test_find_and_update_shop_status(self):
+        class MockCategory:
+            def __init__(self, name):
+                self.name = name
+
         class MockTextChannel:
-            def __init__(self, id_val, name):
+            def __init__(self, id_val, name, category=None):
                 self.id = id_val
                 self.name = name
+                self.category = category
                 self.mention = f"<#{id_val}>"
                 self.sent_messages = []
                 self.renamed_to = []
@@ -1878,11 +1883,25 @@ class TestAIOBot(unittest.TestCase):
 
         class MockGuild:
             def __init__(self):
+                self.categories = [MockCategory("🛒 Food & Rewards")]
+                self.mod_logs_channel = MockTextChannel(99, "📜-mod-logs")
+                self.staff_channel = MockTextChannel(98, "🛡️-staff-chat")
+                self.status_channel = MockTextChannel(2, "🔴-shop-closed")
+                self.food_channel = MockTextChannel(3, "🌮🍕-food-rewards")
                 self.text_channels = [
+                    self.mod_logs_channel,
+                    self.staff_channel,
                     MockTextChannel(1, "general-chat"),
-                    MockTextChannel(2, "🔴-shop-closed"),
-                    MockTextChannel(3, "🌮🍕-food-rewards")
+                    self.status_channel,
+                    self.food_channel
                 ]
+                self.created_channels = []
+
+            async def create_text_channel(self, name, category=None, topic=None):
+                ch = MockTextChannel(len(self.text_channels) + 1, name, category=category)
+                self.text_channels.append(ch)
+                self.created_channels.append(ch)
+                return ch
 
         class MockAuthor:
             display_name = "OwnerCody"
@@ -1892,12 +1911,13 @@ class TestAIOBot(unittest.TestCase):
         guild = MockGuild()
         author = MockAuthor()
 
-        # Find status channel
+        # 1. Ensure find_shop_status_channel finds the status channel and strictly ignores mod-logs and staff chat
         status_ch = main.find_shop_status_channel(guild)
         self.assertIsNotNone(status_ch)
         self.assertEqual(status_ch.name, "🔴-shop-closed")
+        self.assertNotEqual(status_ch.name, "📜-mod-logs")
 
-        # Run update_shop_status async
+        # 2. Run update_shop_status async: ensure mod-logs is 100% UNTOUCHED and ONLY status channel is updated
         loop = asyncio.new_event_loop()
         try:
             success, summary, target_ch, embed = loop.run_until_complete(
@@ -1905,8 +1925,7 @@ class TestAIOBot(unittest.TestCase):
                     guild=guild,
                     is_open=True,
                     author=author,
-                    message="Dinner rush open!",
-                    target_channel=status_ch
+                    message="Dinner rush open!"
                 )
             )
             self.assertTrue(success)
@@ -1915,6 +1934,32 @@ class TestAIOBot(unittest.TestCase):
             self.assertEqual(len(target_ch.sent_messages), 1)
             self.assertIn("<#3>", embed.description)
             self.assertIn("Dinner rush open!", str(embed.fields))
+
+            # CRITICAL CHECK: Verify #📜-mod-logs and staff chat were NOT renamed or posted into
+            self.assertEqual(guild.mod_logs_channel.name, "📜-mod-logs")
+            self.assertEqual(len(guild.mod_logs_channel.sent_messages), 0)
+            self.assertEqual(len(guild.mod_logs_channel.renamed_to), 0)
+            self.assertEqual(guild.staff_channel.name, "🛡️-staff-chat")
+            self.assertEqual(len(guild.staff_channel.sent_messages), 0)
+
+            # 3. Test automatic status channel creation if none exists in guild
+            guild_no_status = MockGuild()
+            guild_no_status.text_channels = [guild_no_status.mod_logs_channel, guild_no_status.food_channel]
+            self.assertIsNone(main.find_shop_status_channel(guild_no_status))
+
+            success2, summary2, target_ch2, embed2 = loop.run_until_complete(
+                main.update_shop_status(
+                    guild=guild_no_status,
+                    is_open=True,
+                    author=author,
+                    message="Freshly initialized status channel!"
+                )
+            )
+            self.assertTrue(success2)
+            self.assertIsNotNone(target_ch2)
+            self.assertEqual(target_ch2.name, "🟢-shop-open")
+            self.assertEqual(guild_no_status.mod_logs_channel.name, "📜-mod-logs")
+            self.assertEqual(len(guild_no_status.mod_logs_channel.sent_messages), 0)
         finally:
             loop.close()
 
@@ -1936,20 +1981,35 @@ class TestAIOBot(unittest.TestCase):
         self.assertIsNotNone(setup_cmd)
         self.assertIn("setupstatus", setup_cmd.aliases)
 
-        # 3. Verify ModShopStatusModal
-        modal = main.ModShopStatusModal()
-        self.assertEqual(modal.title, "🏪 Update Shop Status")
-        self.assertIsNotNone(modal.status_input)
-        self.assertIsNotNone(modal.message_input)
+        # 3. Verify ModOpenShopModal and ModCloseShopModal
+        open_modal = main.ModOpenShopModal()
+        self.assertEqual(open_modal.title, "🟢 Open Shop")
+        self.assertIsNotNone(open_modal.message_input)
 
-        # 4. Verify Shop Status button on StaffModPanelButtonView row 3
+        close_modal = main.ModCloseShopModal()
+        self.assertEqual(close_modal.title, "🔴 Close Shop")
+        self.assertIsNotNone(close_modal.message_input)
+
+        # 4. Verify Open Shop and Close Shop buttons on StaffModPanelButtonView row 3
         panel_view = main.StaffModPanelButtonView()
-        btn = discord.utils.get(panel_view.children, custom_id="modpanel_shop_status")
-        self.assertIsNotNone(btn)
-        self.assertEqual(btn.label, "Shop Status")
-        self.assertEqual(btn.row, 3)
+        btn_open = discord.utils.get(panel_view.children, custom_id="modpanel_open_shop")
+        self.assertIsNotNone(btn_open)
+        self.assertEqual(btn_open.label, "Open Shop")
+        self.assertEqual(btn_open.row, 3)
 
-        # 5. Verify is_preserved_channel protects status channels
+        btn_close = discord.utils.get(panel_view.children, custom_id="modpanel_close_shop")
+        self.assertIsNotNone(btn_close)
+        self.assertEqual(btn_close.label, "Close Shop")
+        self.assertEqual(btn_close.row, 3)
+
+        row3_buttons = [b for b in panel_view.children if getattr(b, "row", None) == 3]
+        self.assertEqual(len(row3_buttons), 5)
+
+        # 5. Verify build_staff_modpanel_embed contains Open Shop / Close Shop
+        embed = main.build_staff_modpanel_embed()
+        self.assertIn("🟢 Open Shop / 🔴 Close Shop", embed.description)
+
+        # 6. Verify is_preserved_channel protects status channels
         class MockCh:
             name = "🟢-shop-open"
         self.assertTrue(main.is_preserved_channel(MockCh()))
