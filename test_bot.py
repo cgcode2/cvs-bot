@@ -167,7 +167,7 @@ class TestAIOBot(unittest.TestCase):
             "balance", "daily", "pay", "leaderboard",
             "formatserver", "deletechannels", "ticketpanel", "say", "foodpanel",
             "revoke", "paid", "complete", "otp", "deliver", "claim", "close",
-            "invoice", "orderstats", "clearorder", "fixroles", "resetchannel", "dm"
+            "invoice", "orderstats", "clearorder", "addorder", "fixroles", "resetchannel", "dm"
         ]
         for cmd in expected_commands:
             self.assertIn(cmd, registered_commands, f"Command '{cmd}' is missing from bot registration!")
@@ -1074,6 +1074,7 @@ class TestAIOBot(unittest.TestCase):
 
         # Store, Billing & Hierarchy buttons
         self.assertIn("Create Invoice", labels)
+        self.assertIn("Add Order", labels)
         self.assertIn("Order Stats", labels)
         self.assertIn("DM Member", labels)
         self.assertNotIn("Fix Roles", labels)
@@ -1088,6 +1089,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Staff Control Center", embed.title)
         self.assertIn("Member Discipline", embed.description)
         self.assertIn("Channel & Server Security", embed.description)
+        self.assertIn("Add Order", embed.description)
         self.assertNotIn("Fix Roles", embed.description)
 
     def test_dedicated_setup_commands(self):
@@ -1723,6 +1725,97 @@ class TestAIOBot(unittest.TestCase):
         setup_wel_cmd = main.bot.get_command("setup-welcome")
         self.assertIsNotNone(setup_wel_cmd)
         self.assertIn("setupwelcome", setup_wel_cmd.aliases)
+
+    def test_manual_order_recording_and_commands(self):
+        saved_db = copy.deepcopy(main.tickets_db)
+        try:
+            main.tickets_db["completed_orders"] = []
+
+            # 1. Test record_completed_order and collision-safe order_id increment
+            o1 = main.record_completed_order(
+                guild_id=200,
+                ticket_id=1,
+                channel_id=101,
+                channel_name="order-0001",
+                customer_id=1001,
+                customer_name="CustomerOne",
+                completed_by_id=999,
+                completed_by_name="StaffMod",
+                brand="Taco Bell",
+                amount=12.50
+            )
+            self.assertEqual(o1["order_id"], 1)
+
+            o2 = main.record_completed_order(
+                guild_id=200,
+                ticket_id=2,
+                channel_id=102,
+                channel_name="order-0002",
+                customer_id=1002,
+                customer_name="CustomerTwo",
+                completed_by_id=999,
+                completed_by_name="StaffMod",
+                brand="Pizza Hut",
+                amount=24.00
+            )
+            self.assertEqual(o2["order_id"], 2)
+
+            # Remove order 1
+            removed = main.remove_completed_order(1, guild_id=200)
+            self.assertIsNotNone(removed)
+            self.assertEqual(removed["order_id"], 1)
+
+            # 2. Record a manual order and verify ID collision safety (order_id should be 3, not colliding with existing 2)
+            o3 = main.record_manual_order(
+                guild_id=200,
+                customer_input="<@1003>",
+                price=18.75,
+                item="2x Accounts",
+                completed_by_id=999,
+                completed_by_name="StaffMod",
+                notes="Paid via CashApp manual backfill"
+            )
+            self.assertEqual(o3["order_id"], 3)
+            self.assertEqual(o3["customer_id"], 1003)
+            self.assertEqual(o3["brand"], "2x Accounts")
+            self.assertEqual(o3["amount"], 18.75)
+            self.assertEqual(o3["notes"], "Paid via CashApp manual backfill")
+            self.assertEqual(len(main.tickets_db["completed_orders"]), 2)
+
+            # 3. Test build_order_stats_embed with manual orders
+            class MockGuild:
+                id = 200
+                name = "Test Optimizer Guild"
+
+            embed = main.build_order_stats_embed(MockGuild())
+            self.assertIn("Completed Orders & Sales Tracker", embed.title)
+            # Check description totals (Orders Fulfilled: 2, Gross Revenue: 24.00 + 18.75 = 42.75)
+            self.assertIn("`2`", embed.description)
+            self.assertIn("$42.75", embed.description)
+            # Other count displayed because '2x Accounts' is not taco/pizza
+            self.assertIn("Other", embed.description)
+            self.assertNotIn("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", embed.description)
+            self.assertIn("/addorder", embed.footer.text)
+
+            # 4. Verify /addorder command registration and aliases
+            add_cmd = main.bot.get_command("addorder")
+            self.assertIsNotNone(add_cmd)
+            self.assertIn("orderadd", add_cmd.aliases)
+            self.assertIn("recordorder", add_cmd.aliases)
+            self.assertIn("logorder", add_cmd.aliases)
+            self.assertIn("neworder", add_cmd.aliases)
+
+            # 5. Verify ModAddOrderModal fields
+            modal = main.ModAddOrderModal()
+            self.assertEqual(modal.title, "➕ Record Completed Order")
+            self.assertIsNotNone(modal.customer)
+            self.assertIsNotNone(modal.price)
+            self.assertIsNotNone(modal.item)
+            self.assertIsNotNone(modal.notes)
+        finally:
+            main.tickets_db.clear()
+            main.tickets_db.update(saved_db)
+            main.save_tickets()
 
 
 if __name__ == '__main__':

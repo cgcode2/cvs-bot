@@ -605,7 +605,8 @@ def record_completed_order(
     if "completed_orders" not in tickets_db:
         tickets_db["completed_orders"] = []
     
-    order_num = len(tickets_db["completed_orders"]) + 1
+    existing_ids = [o.get("order_id", 0) for o in tickets_db["completed_orders"] if isinstance(o.get("order_id"), int)]
+    order_num = (max(existing_ids) + 1) if existing_ids else (len(tickets_db["completed_orders"]) + 1)
     now_iso = datetime.now(timezone.utc).isoformat()
     record = {
         "order_id": order_num,
@@ -626,15 +627,63 @@ def record_completed_order(
     save_tickets()
     return record
 
+def record_manual_order(
+    guild_id: int,
+    customer_input: str,
+    price: float,
+    item: str,
+    completed_by_id: int,
+    completed_by_name: str,
+    notes: Optional[str] = None,
+    guild: Optional[discord.Guild] = None
+) -> Dict[str, Any]:
+    cust_mem = resolve_member_from_input(guild, customer_input) if guild else None
+    if cust_mem:
+        customer_id = cust_mem.id
+        customer_name = str(cust_mem)
+    else:
+        clean_input = customer_input.strip().lstrip("<@!").rstrip(">")
+        if clean_input.isdigit():
+            customer_id = int(clean_input)
+            customer_name = f"User-{clean_input}"
+        else:
+            customer_id = 0
+            customer_name = customer_input.strip()
+
+    return record_completed_order(
+        guild_id=guild_id,
+        ticket_id=0,
+        channel_id=0,
+        channel_name="manual-entry",
+        customer_id=customer_id,
+        customer_name=customer_name,
+        completed_by_id=completed_by_id,
+        completed_by_name=completed_by_name,
+        brand=item.strip() or "Custom Order",
+        amount=price,
+        notes=notes
+    )
+
 def remove_completed_order(order_or_ticket_id: int, guild_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     orders = tickets_db.get("completed_orders", [])
+    # 1. Primary pass: match exact order_id
     for idx, order in enumerate(orders):
         if guild_id and order.get("guild_id") and order.get("guild_id") != guild_id:
             continue
-        if order.get("order_id") == order_or_ticket_id or order.get("ticket_id") == order_or_ticket_id:
+        if order.get("order_id") == order_or_ticket_id:
             removed = orders.pop(idx)
             save_tickets()
             return removed
+
+    # 2. Fallback pass: match ticket_id (if non-zero)
+    if order_or_ticket_id > 0:
+        for idx, order in enumerate(orders):
+            if guild_id and order.get("guild_id") and order.get("guild_id") != guild_id:
+                continue
+            if order.get("ticket_id") == order_or_ticket_id:
+                removed = orders.pop(idx)
+                save_tickets()
+                return removed
     return None
 
 def clear_completed_orders(guild_id: Optional[int] = None) -> int:
@@ -681,6 +730,10 @@ def build_order_stats_embed(guild: Optional[discord.Guild]) -> discord.Embed:
     pizza_count = sum(1 for o in guild_orders if "pizza" in o.get("brand", "").lower())
     other_count = total_count - (taco_count + pizza_count)
 
+    breakdown = f"├ 🌮 **Taco Bell:** `{taco_count}` ⏐ 🍕 **Pizza Hut:** `{pizza_count}`"
+    if other_count > 0:
+        breakdown += f" ⏐ 📦 **Other:** `{other_count}`"
+
     gname = guild.name if guild else "AIO Bot"
     vstats = get_vouch_stats(guild.id if guild else None)
     embed = discord.Embed(
@@ -688,7 +741,7 @@ def build_order_stats_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         description=(
             f"╭ 🏆 **Orders Fulfilled:** `{total_count}`\n"
             f"├ 💰 **Gross Revenue:** `${total_rev:.2f}`\n"
-            f"├ 🌮 **Taco Bell:** `{taco_count}` ⏐ 🍕 **Pizza Hut:** `{pizza_count}`\n"
+            f"{breakdown}\n"
             f"╰ ⭐ **Rating:** {vstats['stars_str']} ({vstats['average']}/5.0 • {vstats['total']} vouches)"
         ),
         color=COLOR_SUCCESS,
@@ -701,15 +754,16 @@ def build_order_stats_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         for idx, o in enumerate(reversed(recent)):
             p = "╰" if idx == len(recent) - 1 else "├"
             oid = o.get("order_id", o.get("ticket_id", "?"))
+            oid_str = f"#{oid:02d}" if isinstance(oid, int) else f"#{oid}"
             brand = o.get("brand", "Order")
             amt = o.get("amount", 0.0)
             cust = o.get("customer_name") or f"<@{o.get('customer_id', '')}>"
-            lines.append(f"{p} `#{oid:02d}` **{brand}** — `${amt:.2f}` ({cust})")
+            lines.append(f"{p} `{oid_str}` **{brand}** — `${amt:.2f}` ({cust})")
         embed.add_field(name="📋 Recent Orders", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="📋 Recent Orders", value="╰ *No orders tracked yet.*", inline=False)
 
-    embed.set_footer(text="AIO Sales Tracker")
+    embed.set_footer(text="AIO Sales Tracker • Use /addorder to manually log an order")
     return embed
 
 def create_invoice_embed(
@@ -4494,6 +4548,79 @@ class ModInvoiceModal(discord.ui.Modal, title="💵 Create & Send Customer Invoi
         await interaction.response.send_message("✅ Invoice created and sent to this channel!", ephemeral=True)
 
 
+class ModAddOrderModal(discord.ui.Modal, title="➕ Record Completed Order"):
+    customer = discord.ui.TextInput(
+        label="Customer (Mention, ID, or Username)",
+        placeholder="e.g. @customer or 1234567890",
+        required=True
+    )
+    price = discord.ui.TextInput(
+        label="Price / Order Amount",
+        placeholder="e.g. 10.00 or $15",
+        required=True
+    )
+    item = discord.ui.TextInput(
+        label="Item / Brand",
+        placeholder="e.g. Taco Bell, Pizza Hut, 2x Accounts",
+        default="Taco Bell",
+        required=True
+    )
+    notes = discord.ui.TextInput(
+        label="Notes (Optional)",
+        placeholder="e.g. Paid via CashApp, manual backfill",
+        required=False,
+        style=discord.TextStyle.paragraph
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        clean_price = self.price.value.replace("$", "").replace(",", "").strip()
+        try:
+            val = float(clean_price)
+            if val < 0:
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid price. Please enter a valid dollar amount (e.g. `10.00` or `$15`).", ephemeral=True)
+            return
+
+        rec = record_manual_order(
+            guild_id=guild.id if guild else 0,
+            customer_input=self.customer.value,
+            price=val,
+            item=self.item.value,
+            completed_by_id=interaction.user.id,
+            completed_by_name=str(interaction.user),
+            notes=self.notes.value or None,
+            guild=guild
+        )
+
+        cust_display = f"<@{rec['customer_id']}>" if rec.get('customer_id') else rec.get('customer_name', 'Customer')
+        desc_lines = [
+            f"╭ 🆔 **Order ID:** `#{rec['order_id']:02d}`",
+            f"├ 👤 **Customer:** {cust_display}",
+            f"├ 📦 **Item:** **{rec['brand']}**",
+            f"├ 💵 **Amount:** `${rec['amount']:.2f}`",
+            f"├ 🛡️ **Logged By:** {interaction.user.mention}"
+        ]
+        if self.notes.value:
+            desc_lines.append(f"╰ 📝 **Notes:** {self.notes.value.strip()}")
+        else:
+            desc_lines[-1] = desc_lines[-1].replace("├", "╰")
+
+        embed = discord.Embed(
+            title="✅ Order Manually Recorded",
+            description="\n".join(desc_lines),
+            color=COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_footer(text="AIO Sales Tracker • View all stats with /orderstats")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            await interaction.channel.send(embed=embed)
+        except Exception:
+            pass
+
+
 # --- COUPON OPTIMIZER HUB & PRIVATE ROOM VIEWS ---
 
 def build_coupon_hub_embed() -> discord.Embed:
@@ -4730,6 +4857,7 @@ def build_staff_modpanel_embed() -> discord.Embed:
             "╰ 🚨 **Server Lockdown:** *(Admin Only)* Emergency freeze\n\n"
             "**💵 Store & Billing:**\n"
             "╭ 💵 **Create Invoice:** Create CashApp / Venmo bill\n"
+            "├ ➕ **Add Order:** Manually record an order\n"
             "├ 📈 **Order Stats:** View sales & revenue log\n"
             "├ 📬 **DM Member:** Send official direct message\n"
             "╰ 🌮 **Refresh Store:** *(Admin Only)* Update stock\n\n"
@@ -4888,6 +5016,10 @@ class StaffModPanelButtonView(discord.ui.View):
     @discord.ui.button(label="Create Invoice", style=discord.ButtonStyle.success, emoji="💵", custom_id="modpanel_invoice", row=2)
     async def btn_invoice(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModInvoiceModal())
+
+    @discord.ui.button(label="Add Order", style=discord.ButtonStyle.success, emoji="➕", custom_id="modpanel_addorder", row=2)
+    async def btn_addorder(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModAddOrderModal())
 
     @discord.ui.button(label="Order Stats", style=discord.ButtonStyle.primary, emoji="📈", custom_id="modpanel_orderstats", row=2)
     async def btn_orderstats(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -8714,7 +8846,93 @@ async def orderstats_cmd(ctx: commands.Context, action: Optional[str] = "view"):
         await ctx.send(embed=embed)
         return
 
+    if act in ("add", "new", "record", "create"):
+        embed = discord.Embed(
+            title="➕ Add Order Stats",
+            description=(
+                "To manually record an order into the sales tracker:\n\n"
+                "╭ 💬 **Via Command:**\n"
+                "├ `/addorder customer:@user price:15.00 item:Taco Bell notes:Paid`\n"
+                "├\n"
+                "╰ 🎛️ **Via Staff Control Center:**\n"
+                "   Click the **➕ Add Order** button in `🎛️-mod-panel` to open the modal!"
+            ),
+            color=COLOR_PRIMARY
+        )
+        await ctx.send(embed=embed)
+        return
+
     embed = build_order_stats_embed(ctx.guild)
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="addorder",
+    aliases=["orderadd", "recordorder", "logorder", "neworder"],
+    description="Staff command: Manually record an order in the completed sales tracker"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    customer="The customer (@mention, username, or user ID)",
+    price="Order price/amount (e.g. 10.00, $15, 25.50)",
+    item="Item or brand (e.g. Taco Bell, Pizza Hut, 2x Accounts)",
+    notes="Optional order notes or payment reference (e.g. Paid via CashApp)"
+)
+async def addorder_cmd(
+    ctx: commands.Context,
+    customer: str,
+    price: str,
+    item: str,
+    *,
+    notes: Optional[str] = None
+):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or founders can record orders.", delete_after=6)
+        return
+
+    clean_price = price.replace("$", "").replace(",", "").strip()
+    try:
+        val = float(clean_price)
+        if val < 0:
+            raise ValueError()
+    except ValueError:
+        await ctx.send("❌ Invalid price. Please enter a valid dollar amount (e.g. `10.00` or `$15`).", delete_after=6)
+        return
+
+    rec = record_manual_order(
+        guild_id=ctx.guild.id if ctx.guild else 0,
+        customer_input=customer,
+        price=val,
+        item=item,
+        completed_by_id=ctx.author.id,
+        completed_by_name=str(ctx.author),
+        notes=notes,
+        guild=ctx.guild
+    )
+
+    cust_display = f"<@{rec['customer_id']}>" if rec.get('customer_id') else rec.get('customer_name', 'Customer')
+    desc_lines = [
+        f"╭ 🆔 **Order ID:** `#{rec['order_id']:02d}`",
+        f"├ 👤 **Customer:** {cust_display}",
+        f"├ 📦 **Item:** **{rec['brand']}**",
+        f"├ 💵 **Amount:** `${rec['amount']:.2f}`",
+        f"├ 🛡️ **Logged By:** {ctx.author.mention}"
+    ]
+    if notes:
+        desc_lines.append(f"╰ 📝 **Notes:** {notes.strip()}")
+    else:
+        desc_lines[-1] = desc_lines[-1].replace("├", "╰")
+
+    embed = discord.Embed(
+        title="✅ Order Manually Recorded",
+        description="\n".join(desc_lines),
+        color=COLOR_SUCCESS,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_footer(text="AIO Sales Tracker • View all stats with /orderstats")
     await ctx.send(embed=embed)
 
 
