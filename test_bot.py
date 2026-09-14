@@ -1964,19 +1964,23 @@ class TestAIOBot(unittest.TestCase):
             loop.close()
 
     def test_shop_status_commands_and_views(self):
-        # 1. Verify shopstatus, shop, and status command registrations
-        cmd = main.bot.get_command("shopstatus")
-        self.assertIsNotNone(cmd)
-        self.assertIn("shop-status", cmd.aliases)
-        self.assertIn("storestatus", cmd.aliases)
-
+        # 1. Verify single unified shop command and aliases (no duplicate slash commands)
         shop_cmd = main.bot.get_command("shop")
         self.assertIsNotNone(shop_cmd)
+        self.assertEqual(shop_cmd.name, "shop")
+        self.assertIn("shopstatus", shop_cmd.aliases)
+        self.assertIn("shop-status", shop_cmd.aliases)
+        self.assertIn("storestatus", shop_cmd.aliases)
+        self.assertIn("status", shop_cmd.aliases)
+        self.assertEqual(main.bot.get_command("shopstatus"), shop_cmd)
 
-        status_cmd = main.bot.get_command("status")
-        self.assertIsNotNone(status_cmd)
+        # 2. Verify fix-channels command registration
+        fix_cmd = main.bot.get_command("fix-channels")
+        self.assertIsNotNone(fix_cmd)
+        self.assertIn("fixchannels", fix_cmd.aliases)
+        self.assertIn("fix-mod-logs", fix_cmd.aliases)
 
-        # 2. Verify setup-status-channel command registration
+        # 3. Verify setup-status-channel command registration
         setup_cmd = main.bot.get_command("setup-status-channel")
         self.assertIsNotNone(setup_cmd)
         self.assertIn("setupstatus", setup_cmd.aliases)
@@ -2019,6 +2023,43 @@ class TestAIOBot(unittest.TestCase):
         class MockCh3:
             name = "shop-status"
         self.assertTrue(main.is_preserved_channel(MockCh3()))
+
+    def test_fix_channels_command(self):
+        class MockChannel:
+            def __init__(self, name):
+                self.name = name
+                self.renamed_to = []
+
+            async def edit(self, name=None, reason=None):
+                if name:
+                    self.renamed_to.append(name)
+                    self.name = name
+
+        class MockGuild:
+            def __init__(self):
+                self.text_channels = [
+                    MockChannel("mod-logs-open"),
+                    MockChannel("ticket-logs-closed"),
+                    MockChannel("🛡️-staff-chat"),
+                    MockChannel("general-chat")
+                ]
+
+        guild = MockGuild()
+        loop = asyncio.new_event_loop()
+        try:
+            for ch in guild.text_channels:
+                cname = ch.name.lower()
+                if ("mod" in cname and "log" in cname) and (any(k in cname for k in ("open", "closed", "🟢", "🔴")) or ch.name != "📜-mod-logs"):
+                    loop.run_until_complete(ch.edit(name="📜-mod-logs", reason="Test repair"))
+                elif ("ticket" in cname and "log" in cname) and (any(k in cname for k in ("open", "closed", "🟢", "🔴")) or ch.name != "📁-ticket-logs"):
+                    loop.run_until_complete(ch.edit(name="📁-ticket-logs", reason="Test repair"))
+
+            self.assertEqual(guild.text_channels[0].name, "📜-mod-logs")
+            self.assertEqual(guild.text_channels[1].name, "📁-ticket-logs")
+            self.assertEqual(guild.text_channels[2].name, "🛡️-staff-chat")
+            self.assertEqual(guild.text_channels[3].name, "general-chat")
+        finally:
+            loop.close()
 
 
 if __name__ == '__main__':

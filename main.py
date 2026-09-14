@@ -6301,6 +6301,26 @@ async def on_ready():
         except Exception:
             pass
 
+    # Auto-repair any accidentally renamed staff/mod channels on startup
+    for g in bot.guilds:
+        try:
+            for ch in g.text_channels:
+                cname = ch.name.lower()
+                if ("mod" in cname and "log" in cname) and (any(k in cname for k in ("open", "closed", "🟢", "🔴")) or ch.name != "📜-mod-logs"):
+                    try:
+                        await ch.edit(name="📜-mod-logs", reason="Auto-repairing corrupted mod-logs channel name on startup")
+                        print(f"🔧 Auto-repaired channel #{ch.name} -> #📜-mod-logs in {g.name}", flush=True)
+                    except Exception as ce:
+                        print(f"ℹ️ Could not auto-rename #{ch.name} in {g.name}: {ce}", file=sys.stderr, flush=True)
+                elif ("ticket" in cname and "log" in cname) and (any(k in cname for k in ("open", "closed", "🟢", "🔴")) or ch.name != "📁-ticket-logs"):
+                    try:
+                        await ch.edit(name="📁-ticket-logs", reason="Auto-repairing corrupted ticket-logs channel name on startup")
+                        print(f"🔧 Auto-repaired channel #{ch.name} -> #📁-ticket-logs in {g.name}", flush=True)
+                    except Exception as ce:
+                        print(f"ℹ️ Could not auto-rename #{ch.name} in {g.name}: {ce}", file=sys.stderr, flush=True)
+        except Exception as ge:
+            print(f"ℹ️ Auto-repair channel scan notice in {g.name}: {ge}", file=sys.stderr, flush=True)
+
 @bot.event
 async def on_member_join(member: discord.Member):
     guild = getattr(member, "guild", None)
@@ -8441,57 +8461,9 @@ async def setup_tickets_cmd(ctx: commands.Context):
     await ctx.send(f"✅ Ticket launch panel ready at {target_ch.mention}!", delete_after=8)
 
 @bot.hybrid_command(
-    name="shopstatus",
-    aliases=["shop-status", "storestatus", "store-status"],
-    description="Update shop status (OPEN/CLOSED), rename status channel with 🟢/🔴, and send notification embed"
-)
-@commands.guild_only()
-@commands.has_permissions(manage_channels=True)
-@app_commands.default_permissions(manage_channels=True)
-@app_commands.describe(
-    status="Choose OPEN (🟢) or CLOSED (🔴)",
-    message="Optional staff announcement, hours, or notice",
-    ping_everyone="Mention @everyone with the notification (default: False)"
-)
-@app_commands.choices(
-    status=[
-        app_commands.Choice(name="🟢 OPEN", value="open"),
-        app_commands.Choice(name="🔴 CLOSED", value="closed"),
-    ]
-)
-async def shopstatus_cmd(
-    ctx: commands.Context,
-    status: str,
-    message: Optional[str] = None,
-    ping_everyone: Optional[bool] = False
-):
-    await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
-        await ctx.send("⛔ Permission Denied: You must be a staff member or administrator to update shop status.", delete_after=6)
-        return
-
-    raw_status = status.strip().lower()
-    if raw_status in ("open", "opened", "on", "yes", "true", "start"):
-        is_open = True
-    elif raw_status in ("closed", "close", "off", "no", "false", "stop"):
-        is_open = False
-    else:
-        await ctx.send("❌ Invalid status. Please specify `open` or `closed`.\n*Example:* `/shopstatus status:open message:Taking orders now!`", delete_after=8)
-        return
-
-    success, summary, target_ch, _ = await update_shop_status(
-        guild=ctx.guild,
-        is_open=is_open,
-        author=ctx.author,
-        message=message,
-        ping_everyone=bool(ping_everyone)
-    )
-
-    await ctx.send(summary, delete_after=8)
-
-@bot.hybrid_command(
     name="shop",
-    description="Update shop status (OPEN/CLOSED) and post announcement"
+    aliases=["shopstatus", "shop-status", "storestatus", "store-status", "status"],
+    description="Update shop status (OPEN/CLOSED), rename status channel with 🟢/🔴, and send notification embed"
 )
 @commands.guild_only()
 @commands.has_permissions(manage_channels=True)
@@ -8513,33 +8485,75 @@ async def shop_cmd(
     message: Optional[str] = None,
     ping_everyone: Optional[bool] = False
 ):
-    await shopstatus_cmd(ctx, status=status, message=message, ping_everyone=ping_everyone)
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You must be a staff member or administrator to update shop status.", delete_after=6)
+        return
+
+    raw_status = status.strip().lower()
+    if raw_status in ("open", "opened", "on", "yes", "true", "start"):
+        is_open = True
+    elif raw_status in ("closed", "close", "off", "no", "false", "stop"):
+        is_open = False
+    else:
+        await ctx.send("❌ Invalid status. Please specify `open` or `closed`.\n*Example:* `/shop status:open message:Taking orders now!`", delete_after=8)
+        return
+
+    success, summary, target_ch, _ = await update_shop_status(
+        guild=ctx.guild,
+        is_open=is_open,
+        author=ctx.author,
+        message=message,
+        ping_everyone=bool(ping_everyone)
+    )
+
+    await ctx.send(summary, delete_after=8)
 
 @bot.hybrid_command(
-    name="status",
-    description="Update shop status (OPEN/CLOSED) and post announcement"
+    name="fix-channels",
+    aliases=["fixchannels", "fix-mod-logs", "fixmodlogs", "restore-mod-logs", "fixmodlog"],
+    description="Staff command: Automatically repair and restore channel names (e.g. #📜-mod-logs)"
 )
 @commands.guild_only()
 @commands.has_permissions(manage_channels=True)
 @app_commands.default_permissions(manage_channels=True)
-@app_commands.describe(
-    status="Choose OPEN (🟢) or CLOSED (🔴)",
-    message="Optional staff announcement, hours, or notice",
-    ping_everyone="Mention @everyone with the notification (default: False)"
-)
-@app_commands.choices(
-    status=[
-        app_commands.Choice(name="🟢 OPEN", value="open"),
-        app_commands.Choice(name="🔴 CLOSED", value="closed"),
-    ]
-)
-async def status_cmd(
-    ctx: commands.Context,
-    status: str,
-    message: Optional[str] = None,
-    ping_everyone: Optional[bool] = False
-):
-    await shopstatus_cmd(ctx, status=status, message=message, ping_everyone=ping_everyone)
+async def fix_channels_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: Staff permissions required to repair channels.", delete_after=6)
+        return
+
+    repaired = []
+    guild = ctx.guild
+    if guild:
+        for ch in guild.text_channels:
+            cname = ch.name.lower()
+            if ("mod" in cname and "log" in cname) and (any(k in cname for k in ("open", "closed", "🟢", "🔴")) or ch.name != "📜-mod-logs"):
+                old = ch.name
+                try:
+                    await ch.edit(name="📜-mod-logs", reason=f"Channel restored by {ctx.author}")
+                    repaired.append(f"#{old} -> #📜-mod-logs")
+                except Exception as e:
+                    repaired.append(f"#{old} (Error: {e})")
+            elif ("ticket" in cname and "log" in cname) and (any(k in cname for k in ("open", "closed", "🟢", "🔴")) or ch.name != "📁-ticket-logs"):
+                old = ch.name
+                try:
+                    await ch.edit(name="📁-ticket-logs", reason=f"Channel restored by {ctx.author}")
+                    repaired.append(f"#{old} -> #📁-ticket-logs")
+                except Exception as e:
+                    repaired.append(f"#{old} (Error: {e})")
+            elif ("staff" in cname and "chat" in cname) and (any(k in cname for k in ("open", "closed", "🟢", "🔴")) or ch.name != "🛡️-staff-chat"):
+                old = ch.name
+                try:
+                    await ch.edit(name="🛡️-staff-chat", reason=f"Channel restored by {ctx.author}")
+                    repaired.append(f"#{old} -> #🛡️-staff-chat")
+                except Exception as e:
+                    repaired.append(f"#{old} (Error: {e})")
+
+    if repaired:
+        await ctx.send(f"✅ Successfully restored channels:\n" + "\n".join(f"• {r}" for r in repaired), delete_after=10)
+    else:
+        await ctx.send("✅ All staff and moderation channels are already properly named (#📜-mod-logs).", delete_after=8)
 
 @bot.hybrid_command(
     name="setup-status-channel",
