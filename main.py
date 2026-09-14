@@ -3973,70 +3973,49 @@ def get_updated_status_channel_name(current_name: str, is_open: bool) -> str:
     return name.strip("-")
 
 
+def find_food_rewards_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """Finds the food rewards store channel in the guild."""
+    for c in guild.text_channels:
+        cname = c.name.lower()
+        if "food" in cname or "rewards" in cname:
+            return c
+    for c in guild.text_channels:
+        cname = c.name.lower()
+        if "shop" in cname and not any(k in cname for k in ("status", "open", "closed", "🟢", "🔴")):
+            return c
+    return None
+
+
 def build_shop_status_embed(
     is_open: bool,
     author_name: str,
     message: Optional[str] = None,
-    ticket_ch_mention: Optional[str] = None
+    shop_ch_mention: Optional[str] = None
 ) -> discord.Embed:
-    """Builds a notification embed announcing whether the shop is OPEN or CLOSED."""
+    """Builds a concise notification embed announcing whether the shop is OPEN or CLOSED, linking to the shop channel."""
+    shop_link = shop_ch_mention or "#🌮🍕-food-rewards"
     if is_open:
         embed = discord.Embed(
             title="🟢 STORE IS NOW OPEN",
             description=(
-                "> ⚡ **We are officially OPEN and accepting new orders!**\n\n"
-                "Staff is on standby and ready to fulfill your orders. Check the menu below and open a ticket to place your order!"
+                "> ⚡ **The shop is officially OPEN and taking orders!**\n\n"
+                f"Head over to {shop_link} to view our menu and place your order."
             ),
             color=COLOR_SUCCESS,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(
-            name="🌮 Taco Bell Rewards",
-            value=(
-                "• **$10.00 each** ⏐ 15 claimed rewards on every account\n"
-                "• `$15 off`, `$10 off`, `$5 off`, free items, Chalupa, Baja Blast"
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="🍕 Pizza Hut Preloaded Accounts",
-            value=(
-                "• **$15.00 each** ⏐ Stackable rewards ready for checkout\n"
-                "• Large & Medium pizzas, Breadsticks, Wings, Drinks & Desserts"
-            ),
-            inline=False
-        )
         if message and message.strip():
-            embed.add_field(name="📢 Staff Announcement", value=f"> {message.strip()}", inline=False)
-
-        ticket_target = ticket_ch_mention or "ticket channel"
-        embed.add_field(
-            name="📱 How to Order",
-            value=(
-                f"• Click the order buttons below or head to {ticket_target} to open your ticket!\n"
-                "• Staff will provide login info and OTP code promptly."
-            ),
-            inline=False
-        )
+            embed.add_field(name="📢 Staff Notice", value=f"> {message.strip()}", inline=False)
         embed.set_footer(text=f"AIO Store Status ⏐ Opened by {author_name}")
     else:
         embed = discord.Embed(
             title="🔴 STORE IS CURRENTLY CLOSED",
             description=(
-                "> 🌙 **We are currently CLOSED and not accepting new orders.**\n\n"
-                "Thank you for stopping by! Orders currently in progress will still be fulfilled by our staff."
+                "> 🌙 **We are currently CLOSED and not taking new orders.**\n\n"
+                f"Orders currently in progress are still being fulfilled. We will announce in {shop_link} once we reopen!"
             ),
             color=COLOR_ERROR,
             timestamp=datetime.now(timezone.utc)
-        )
-        embed.add_field(
-            name="⏱️ Operating Status",
-            value=(
-                "• 🚪 **New Orders:** Temporarily paused\n"
-                "• 🎫 **Active Tickets:** Being completed by on-duty staff\n"
-                "• 🔔 **Reopening:** Notifications will be posted in this channel as soon as we reopen"
-            ),
-            inline=False
         )
         if message and message.strip():
             embed.add_field(name="📢 Staff Notice", value=f"> {message.strip()}", inline=False)
@@ -4083,25 +4062,21 @@ async def update_shop_status(
     Core engine to update shop status:
     1. Resolves status channel.
     2. Renames channel with green (🟢) or red (🔴).
-    3. Sends the announcement embed with action buttons.
+    3. Sends the announcement embed linking to the shop channel.
     Returns (success, result_message, target_channel, embed).
     """
     ch = target_channel or find_shop_status_channel(guild)
     if not ch:
         return False, "❌ Could not find or resolve a status channel in this server.", None, None
 
-    ticket_ch = None
-    for c in guild.text_channels:
-        if "ticket" in c.name.lower() or "open" in c.name.lower():
-            ticket_ch = c
-            break
-    ticket_mention = ticket_ch.mention if ticket_ch else None
+    shop_ch = find_food_rewards_channel(guild)
+    shop_mention = shop_ch.mention if shop_ch else "#🌮🍕-food-rewards"
 
     embed = build_shop_status_embed(
         is_open=is_open,
         author_name=getattr(author, "display_name", str(author)),
         message=message,
-        ticket_ch_mention=ticket_mention
+        shop_ch_mention=shop_mention
     )
 
     old_name = ch.name
@@ -4120,9 +4095,7 @@ async def update_shop_status(
             rename_msg = f" (⚠️ Could not rename channel: {e})"
 
     content = "@everyone" if ping_everyone else None
-    view = FoodAccountPurchaseView() if is_open else None
-
-    await ch.send(content=content, embed=embed, view=view)
+    await ch.send(content=content, embed=embed)
     status_str = "OPEN 🟢" if is_open else "CLOSED 🔴"
     summary = f"✅ Shop status updated to **{status_str}** in {ch.mention}{rename_msg}!"
     return True, summary, ch, embed
@@ -6229,10 +6202,17 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Note on giveaways background loop: {e}", file=sys.stderr, flush=True)
 
-    # Global slash command tree sync
+    # Application slash command tree sync (global + immediate guild push)
     try:
         synced = await bot.tree.sync()
         print(f'✅ Synced {len(synced)} global application slash command(s).', flush=True)
+        for g in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=g)
+                await bot.tree.sync(guild=g)
+                print(f'✅ Instantly pushed slash commands to server: {g.name} ({g.id})', flush=True)
+            except Exception as ge:
+                print(f'ℹ️ Guild slash sync notice for {g.name}: {ge}', file=sys.stderr, flush=True)
     except Exception as e:
         print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr, flush=True)
 
@@ -8391,10 +8371,12 @@ async def setup_tickets_cmd(ctx: commands.Context):
 
 @bot.hybrid_command(
     name="shopstatus",
-    aliases=["shop-status", "storestatus", "store-status", "status", "shop"],
+    aliases=["shop-status", "storestatus", "store-status"],
     description="Update shop status (OPEN/CLOSED), rename status channel with 🟢/🔴, and send notification embed"
 )
 @commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
 @app_commands.describe(
     status="Choose OPEN (🟢) or CLOSED (🔴)",
     message="Optional staff announcement, hours, or notice",
@@ -8438,6 +8420,62 @@ async def shopstatus_cmd(
     )
 
     await ctx.send(summary, delete_after=8)
+
+@bot.hybrid_command(
+    name="shop",
+    description="Update shop status (OPEN/CLOSED) and post announcement"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.describe(
+    status="Choose OPEN (🟢) or CLOSED (🔴)",
+    message="Optional staff announcement, hours, or notice",
+    channel="Specific channel to post status in (defaults to status channel)",
+    ping_everyone="Mention @everyone with the notification (default: False)"
+)
+@app_commands.choices(
+    status=[
+        app_commands.Choice(name="🟢 OPEN", value="open"),
+        app_commands.Choice(name="🔴 CLOSED", value="closed"),
+    ]
+)
+async def shop_cmd(
+    ctx: commands.Context,
+    status: str,
+    message: Optional[str] = None,
+    channel: Optional[discord.TextChannel] = None,
+    ping_everyone: Optional[bool] = False
+):
+    await shopstatus_cmd(ctx, status=status, message=message, channel=channel, ping_everyone=ping_everyone)
+
+@bot.hybrid_command(
+    name="status",
+    description="Update shop status (OPEN/CLOSED) and post announcement"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.describe(
+    status="Choose OPEN (🟢) or CLOSED (🔴)",
+    message="Optional staff announcement, hours, or notice",
+    channel="Specific channel to post status in (defaults to status channel)",
+    ping_everyone="Mention @everyone with the notification (default: False)"
+)
+@app_commands.choices(
+    status=[
+        app_commands.Choice(name="🟢 OPEN", value="open"),
+        app_commands.Choice(name="🔴 CLOSED", value="closed"),
+    ]
+)
+async def status_cmd(
+    ctx: commands.Context,
+    status: str,
+    message: Optional[str] = None,
+    channel: Optional[discord.TextChannel] = None,
+    ping_everyone: Optional[bool] = False
+):
+    await shopstatus_cmd(ctx, status=status, message=message, channel=channel, ping_everyone=ping_everyone)
 
 @bot.hybrid_command(
     name="setup-status-channel",
@@ -8514,8 +8552,16 @@ async def sync_commands_cmd(ctx: commands.Context):
 
     msg = await ctx.send("🔄 Syncing application slash commands with Discord...")
     try:
-        synced = await bot.tree.sync()
-        await msg.edit(content=f"✅ Successfully synced **{len(synced)}** global slash commands with Discord!")
+        synced_global = await bot.tree.sync()
+        guild_count = 0
+        if ctx.guild:
+            try:
+                bot.tree.copy_global_to(guild=ctx.guild)
+                synced_guild = await bot.tree.sync(guild=ctx.guild)
+                guild_count = len(synced_guild)
+            except Exception:
+                pass
+        await msg.edit(content=f"✅ Synced **{len(synced_global)}** global & **{guild_count}** server slash commands with Discord! Active immediately.")
     except Exception as e:
         await msg.edit(content=f"⚠️ Error syncing slash commands: `{e}`")
 

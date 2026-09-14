@@ -1833,28 +1833,29 @@ class TestAIOBot(unittest.TestCase):
         self.assertEqual(main.get_updated_status_channel_name("general-chat", is_open=False), "🔴-general-chat-closed")
 
     def test_build_shop_status_embed(self):
-        # 1. OPEN Embed
+        # 1. OPEN Embed (Clean & concise, links directly to shop channel)
         embed_open = main.build_shop_status_embed(
             is_open=True,
             author_name="StaffMod",
             message="Taking Taco Bell & Pizza Hut orders!",
-            ticket_ch_mention="<#112233>"
+            shop_ch_mention="<#112233>"
         )
         self.assertIn("STORE IS NOW OPEN", embed_open.title)
         self.assertEqual(embed_open.color.value, main.COLOR_SUCCESS)
+        self.assertIn("<#112233>", embed_open.description)
         self.assertIn("Taking Taco Bell & Pizza Hut orders!", str(embed_open.fields))
-        self.assertIn("<#112233>", str(embed_open.fields))
         self.assertIn("StaffMod", embed_open.footer.text)
 
         # 2. CLOSED Embed
         embed_closed = main.build_shop_status_embed(
             is_open=False,
             author_name="StaffMod",
-            message="Back at 9 PM EST!"
+            message="Back at 9 PM EST!",
+            shop_ch_mention="<#112233>"
         )
         self.assertIn("STORE IS CURRENTLY CLOSED", embed_closed.title)
         self.assertEqual(embed_closed.color.value, main.COLOR_ERROR)
-        self.assertIn("Temporarily paused", str(embed_closed.fields))
+        self.assertIn("<#112233>", embed_closed.description)
         self.assertIn("Back at 9 PM EST!", str(embed_closed.fields))
         self.assertIn("StaffMod", embed_closed.footer.text)
 
@@ -1880,7 +1881,7 @@ class TestAIOBot(unittest.TestCase):
                 self.text_channels = [
                     MockTextChannel(1, "general-chat"),
                     MockTextChannel(2, "🔴-shop-closed"),
-                    MockTextChannel(3, "📩-open-a-ticket")
+                    MockTextChannel(3, "🌮🍕-food-rewards")
                 ]
 
         class MockAuthor:
@@ -1912,18 +1913,23 @@ class TestAIOBot(unittest.TestCase):
             self.assertIn("OPEN 🟢", summary)
             self.assertEqual(target_ch.name, "🟢-shop-open")
             self.assertEqual(len(target_ch.sent_messages), 1)
+            self.assertIn("<#3>", embed.description)
             self.assertIn("Dinner rush open!", str(embed.fields))
         finally:
             loop.close()
 
     def test_shop_status_commands_and_views(self):
-        # 1. Verify shopstatus command registration and aliases
+        # 1. Verify shopstatus, shop, and status command registrations
         cmd = main.bot.get_command("shopstatus")
         self.assertIsNotNone(cmd)
         self.assertIn("shop-status", cmd.aliases)
         self.assertIn("storestatus", cmd.aliases)
-        self.assertIn("shop", cmd.aliases)
-        self.assertIn("status", cmd.aliases)
+
+        shop_cmd = main.bot.get_command("shop")
+        self.assertIsNotNone(shop_cmd)
+
+        status_cmd = main.bot.get_command("status")
+        self.assertIsNotNone(status_cmd)
 
         # 2. Verify setup-status-channel command registration
         setup_cmd = main.bot.get_command("setup-status-channel")
