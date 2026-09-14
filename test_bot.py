@@ -1076,7 +1076,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Create Invoice", labels)
         self.assertIn("Order Stats", labels)
         self.assertIn("DM Member", labels)
-        self.assertIn("Fix Roles", labels)
+        self.assertNotIn("Fix Roles", labels)
         self.assertIn("Refresh Store", labels)
 
         # Panels & Info
@@ -1088,6 +1088,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Staff Control Center", embed.title)
         self.assertIn("Member Discipline", embed.description)
         self.assertIn("Channel & Server Security", embed.description)
+        self.assertNotIn("Fix Roles", embed.description)
 
     def test_dedicated_setup_commands(self):
         cmd_names = [c.name for c in main.bot.commands]
@@ -1620,6 +1621,39 @@ class TestAIOBot(unittest.TestCase):
         finally:
             main.cvs_accounts_db = orig_accounts
             main.save_cvs_accounts = orig_save
+
+    def test_coupon_optimizer_transcript_exclusion(self):
+        # 1. Test is_coupon_optimizer_channel detection
+        class MockCat:
+            def __init__(self, name):
+                self.name = name
+
+        class MockCh:
+            def __init__(self, name, category=None, topic=""):
+                self.name = name
+                self.category = category
+                self.topic = topic
+                self.id = 12345
+
+        # Optimizer channels should return True
+        self.assertTrue(main.is_coupon_optimizer_channel("cart-cody"))
+        self.assertTrue(main.is_coupon_optimizer_channel("🛒-coupon-optimizer"))
+        self.assertTrue(main.is_coupon_optimizer_channel(MockCh("cart-alice")))
+        self.assertTrue(main.is_coupon_optimizer_channel(MockCh("cvs-optimizer")))
+        self.assertTrue(main.is_coupon_optimizer_channel(MockCh("my-room", category=MockCat("🔒 PRIVATE CVS"))))
+        self.assertTrue(main.is_coupon_optimizer_channel(MockCh("room-1", topic="Private coupon optimizer room for alice")))
+
+        # Standard tickets and general channels should return False
+        self.assertFalse(main.is_coupon_optimizer_channel("ticket-0001-cody"))
+        self.assertFalse(main.is_coupon_optimizer_channel(MockCh("ticket-0002-bob")))
+        self.assertFalse(main.is_coupon_optimizer_channel(MockCh("tacobell-0001-alice")))
+        self.assertFalse(main.is_coupon_optimizer_channel(MockCh("pizzahut-0001-carol")))
+        self.assertFalse(main.is_coupon_optimizer_channel(MockCh("💬-general-chat")))
+
+        # 2. Test TicketControlView transcript button check
+        view = main.TicketControlView()
+        transcript_btn = next((item for item in view.children if getattr(item, "custom_id", "") == "aio_ticket_transcript_btn"), None)
+        self.assertIsNotNone(transcript_btn)
 
 
 if __name__ == '__main__':

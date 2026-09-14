@@ -322,6 +322,57 @@ def is_protected_channel(channel: Any) -> bool:
 
     return False
 
+def is_coupon_optimizer_channel(channel: Any) -> bool:
+    """Checks if a channel or channel name is a CVS/retail coupon optimizer hub or private shopping cart room."""
+    if channel is None:
+        return False
+    if isinstance(channel, str):
+        clean_name = channel.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
+        if "couponoptimizer" in clean_name or "cvsoptimizer" in clean_name:
+            return True
+        if clean_name.startswith("cart") or "shoppingcart" in clean_name:
+            return True
+        if "coupon" in clean_name and any(k in clean_name for k in ("room", "hub", "opt", "cart")):
+            return True
+        return False
+
+    name = getattr(channel, "name", "")
+    if isinstance(name, str):
+        clean_name = name.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
+        if "couponoptimizer" in clean_name or "cvsoptimizer" in clean_name:
+            return True
+        if clean_name.startswith("cart") or "shoppingcart" in clean_name:
+            return True
+        if "coupon" in clean_name and any(k in clean_name for k in ("room", "hub", "opt", "cart")):
+            return True
+
+    # Check parent category
+    parent_cat = getattr(channel, "category", None)
+    if parent_cat is not None and parent_cat is not channel:
+        cat_name = getattr(parent_cat, "name", "")
+        if isinstance(cat_name, str):
+            clean_cat = cat_name.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
+            if "privatecvs" in clean_cat or "couponoptimizer" in clean_cat or "cvsoptimizer" in clean_cat:
+                return True
+
+    # Check channel topic
+    topic = getattr(channel, "topic", "")
+    if isinstance(topic, str) and topic:
+        t_lower = topic.lower()
+        if any(k in t_lower for k in ("coupon optimizer", "private coupon", "optimizer room", "cvs & retail coupon")):
+            return True
+
+    # Check session_channels dictionary
+    ch_id = getattr(channel, "id", None)
+    if ch_id:
+        try:
+            if int(ch_id) in [int(v) for v in session_channels.values()]:
+                return True
+        except (ValueError, TypeError):
+            pass
+
+    return False
+
 # --- TICKETS PERSISTENCE ---
 TICKETS_FILE = "tickets_data.json"
 tickets_db: Dict[str, Any] = load_json_file(TICKETS_FILE, {"counter": 0, "tickets": {}})
@@ -3257,82 +3308,91 @@ class TicketCloseConfirmView(discord.ui.View):
         t_id = info.get("id", 0)
         owner_id = info.get("owner_id", 0)
 
-        # 1. Compile conversation transcript
-        messages = []
-        try:
-            messages = [m async for m in channel.history(limit=500, oldest_first=True)]
-            transcript_txt = format_ticket_transcript(messages, t_id, owner_id)
-        except Exception as e:
-            print(f"⚠️ Error compiling ticket transcript: {e}", file=sys.stderr)
-            transcript_txt = f"AIO BOT TRANSCRIPT\nTicket #{t_id:04d}\nError generating transcript: {e}"
-        file_bytes = transcript_txt.encode("utf-8")
+        is_optimizer = is_coupon_optimizer_channel(channel)
+        if not is_optimizer:
+            info_name = info.get("channel_name", "")
+            if info_name and is_coupon_optimizer_channel(info_name):
+                is_optimizer = True
 
-        # 2. Archive transcript to #📁-ticket-logs
-        if channel.guild:
-            log_ch = get_ticket_logs_channel(channel.guild)
-            if not log_ch:
-                staff_cat = discord.utils.get(channel.guild.categories, name="🛡️ STAFF ZONE")
-                founder_r = get_founder_role(channel.guild)
-                mod_r = get_moderator_role(channel.guild)
-                overwrites = {
-                    channel.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                    channel.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
-                }
-                if founder_r:
-                    overwrites[founder_r] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
-                if mod_r:
-                    overwrites[mod_r] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
-                try:
-                    log_ch = await channel.guild.create_text_channel("📁-ticket-logs", category=staff_cat, overwrites=overwrites)
-                except Exception:
-                    log_ch = None
-            if log_ch:
-                try:
-                    log_file = discord.File(io.BytesIO(file_bytes), filename=f"transcript-ticket-{t_id:04d}.txt")
-                    log_embed = discord.Embed(
-                        title=f"📁 Ticket #{t_id:04d} Closed & Archived",
-                        color=COLOR_PRIMARY,
-                        timestamp=datetime.now(timezone.utc)
-                    )
-                    log_embed.add_field(name="🏷️ Channel", value=f"`#{channel.name}`", inline=True)
-                    log_embed.add_field(name="👤 Customer", value=f"<@{owner_id}>", inline=True)
-                    log_embed.add_field(name="🛡️ Closed By", value=interaction.user.mention, inline=True)
-                    log_embed.add_field(name="💬 Total Messages", value=str(len(messages)), inline=True)
-                    await log_ch.send(embed=log_embed, file=log_file)
-                except Exception as e:
-                    print(f"⚠️ Error posting to ticket-logs: {e}", file=sys.stderr)
-
-        # 3. Direct message customer with transcript and review button
-        if channel.guild and owner_id:
+        if not is_optimizer:
+            # 1. Compile conversation transcript
+            messages = []
             try:
-                owner = channel.guild.get_member(owner_id)
-                if not owner:
-                    owner = await bot.fetch_user(owner_id)
-                if owner and not getattr(owner, "bot", False):
-                    dm_file = discord.File(io.BytesIO(file_bytes), filename=f"transcript-ticket-{t_id:04d}.txt")
-                    dm_embed = discord.Embed(
-                        title="🎟️ Ticket Closed & Conversation Transcript",
-                        description=(
-                            f"Your support ticket **#{t_id:04d}** in **{channel.guild.name}** has been closed.\n\n"
-                            f"📄 Attached is your full conversation transcript for your records.\n"
-                            f"⭐ We value your feedback! Click **Leave a Review** below to share your experience with us!"
-                        ),
-                        color=COLOR_SUCCESS
-                    )
-                    await owner.send(
-                        embed=dm_embed,
-                        file=dm_file,
-                        view=TicketReviewLaunchView(guild_id=channel.guild.id, staff_id=interaction.user.id)
-                    )
+                messages = [m async for m in channel.history(limit=500, oldest_first=True)]
+                transcript_txt = format_ticket_transcript(messages, t_id, owner_id)
             except Exception as e:
-                print(f"ℹ️ Could not DM ticket owner {owner_id}: {e}", file=sys.stderr)
+                print(f"⚠️ Error compiling ticket transcript: {e}", file=sys.stderr)
+                transcript_txt = f"AIO BOT TRANSCRIPT\nTicket #{t_id:04d}\nError generating transcript: {e}"
+            file_bytes = transcript_txt.encode("utf-8")
+
+            # 2. Archive transcript to #📁-ticket-logs
+            if channel.guild:
+                log_ch = get_ticket_logs_channel(channel.guild)
+                if not log_ch:
+                    staff_cat = discord.utils.get(channel.guild.categories, name="🛡️ STAFF ZONE")
+                    founder_r = get_founder_role(channel.guild)
+                    mod_r = get_moderator_role(channel.guild)
+                    overwrites = {
+                        channel.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                        channel.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
+                    }
+                    if founder_r:
+                        overwrites[founder_r] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
+                    if mod_r:
+                        overwrites[mod_r] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
+                    try:
+                        log_ch = await channel.guild.create_text_channel("📁-ticket-logs", category=staff_cat, overwrites=overwrites)
+                    except Exception:
+                        log_ch = None
+                if log_ch:
+                    try:
+                        log_file = discord.File(io.BytesIO(file_bytes), filename=f"transcript-ticket-{t_id:04d}.txt")
+                        log_embed = discord.Embed(
+                            title=f"📁 Ticket #{t_id:04d} Closed & Archived",
+                            color=COLOR_PRIMARY,
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        log_embed.add_field(name="🏷️ Channel", value=f"`#{channel.name}`", inline=True)
+                        log_embed.add_field(name="👤 Customer", value=f"<@{owner_id}>", inline=True)
+                        log_embed.add_field(name="🛡️ Closed By", value=interaction.user.mention, inline=True)
+                        log_embed.add_field(name="💬 Total Messages", value=str(len(messages)), inline=True)
+                        await log_ch.send(embed=log_embed, file=log_file)
+                    except Exception as e:
+                        print(f"⚠️ Error posting to ticket-logs: {e}", file=sys.stderr)
+
+            # 3. Direct message customer with transcript and review button
+            if channel.guild and owner_id:
+                try:
+                    owner = channel.guild.get_member(owner_id)
+                    if not owner:
+                        owner = await bot.fetch_user(owner_id)
+                    if owner and not getattr(owner, "bot", False):
+                        dm_file = discord.File(io.BytesIO(file_bytes), filename=f"transcript-ticket-{t_id:04d}.txt")
+                        dm_embed = discord.Embed(
+                            title="🎟️ Ticket Closed & Conversation Transcript",
+                            description=(
+                                f"Your support ticket **#{t_id:04d}** in **{channel.guild.name}** has been closed.\n\n"
+                                f"📄 Attached is your full conversation transcript for your records.\n"
+                                f"⭐ We value your feedback! Click **Leave a Review** below to share your experience with us!"
+                            ),
+                            color=COLOR_SUCCESS
+                        )
+                        await owner.send(
+                            embed=dm_embed,
+                            file=dm_file,
+                            view=TicketReviewLaunchView(guild_id=channel.guild.id, staff_id=interaction.user.id)
+                        )
+                except Exception as e:
+                    print(f"ℹ️ Could not DM ticket owner {owner_id}: {e}", file=sys.stderr)
 
         close_ticket_record(channel.id)
-        await interaction.followup.send(f"🔒 **Ticket closed by {interaction.user.mention}.** Channel deleting in 5 seconds...")
+        action_label = "Coupon room closed" if is_optimizer else "Ticket closed"
+        await interaction.followup.send(f"🔒 **{action_label} by {interaction.user.mention}.** Channel deleting in 5 seconds...")
         await asyncio.sleep(5)
         if not is_protected_channel(channel):
             try:
-                await channel.delete(reason=f"Support ticket closed by {interaction.user}")
+                reason_txt = f"Coupon room closed by {interaction.user}" if is_optimizer else f"Support ticket closed by {interaction.user}"
+                await channel.delete(reason=reason_txt)
             except Exception as e:
                 print(f"⚠️ Error deleting ticket channel {channel.id}: {e}", file=sys.stderr)
 
@@ -3362,6 +3422,9 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, emoji="📜", custom_id="aio_ticket_transcript_btn", row=0)
     async def btn_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if is_coupon_optimizer_channel(interaction.channel):
+            await interaction.response.send_message("ℹ️ Transcripts are disabled for coupon optimizer channels.", ephemeral=True)
+            return
         await interaction.response.defer()
         try:
             messages = [m async for m in interaction.channel.history(limit=500, oldest_first=True)]
@@ -4554,7 +4617,6 @@ def build_staff_modpanel_embed() -> discord.Embed:
             "• **💵 Create Invoice:** Generate official bill with CashApp / Venmo links\n"
             "• **📈 Order Stats:** View completed sales, revenue & order log\n"
             "• **📬 DM Member:** Send an official direct message from the bot\n"
-            "• **👥 Fix Roles:** *(Admin Only)* Consolidate Moderator roles & remove redundant Staff\n"
             "• **🌮 Refresh Store:** *(Admin Only)* Update `#🌮🍕-food-rewards` with latest stock\n\n"
             "**🎟️ Panels & Server Info:**\n"
             "• **🎟️ Refresh Tickets:** *(Admin Only)* Refresh the ticket deployment panel\n"
@@ -4693,37 +4755,6 @@ class StaffModPanelButtonView(discord.ui.View):
     @discord.ui.button(label="DM Member", style=discord.ButtonStyle.primary, emoji="📬", custom_id="modpanel_dm", row=2)
     async def btn_dm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ModDMModal())
-
-    @discord.ui.button(label="Fix Roles", style=discord.ButtonStyle.primary, emoji="👥", custom_id="modpanel_fixroles", row=2)
-    async def btn_fixroles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin_member(interaction.user):
-            await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can audit and fix server roles.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        summary = await fix_server_roles(interaction.guild)
-        deleted_mods = summary.get("moderators_merged", 0)
-        removed_staff = summary.get("staff_role_removed", False)
-        unhoisted = summary.get("bot_roles_unhoisted", 0)
-        stripped = summary.get("bot_roles_stripped", 0)
-        desc = (
-            f"Role hierarchy audit and cleanup complete!\n\n"
-            f"• 🧹 Duplicate Moderator Roles Merged: **{deleted_mods}**\n"
-            f"• 🗑️ Redundant Staff Role Removed: **{'Yes' if removed_staff else 'No'}**\n"
-            f"• 🔽 Bot Roles Lowered / Unhoisted: **{unhoisted}** *(Bot will not display above you)*\n"
-            f"• 🛡️ Staff Roles Stripped from Bot: **{stripped}**\n"
-        )
-        if summary.get("founder_role"):
-            desc += f"• 👑 Active Founder Role: **@{summary['founder_role']}** (Assigned to Server Owner)\n"
-        if summary.get("bot_is_top"):
-            bot_name = interaction.guild.me.display_name if interaction.guild and interaction.guild.me else "Bot"
-            desc += (
-                f"\n> 👑 **Role Hierarchy Tip:**\n"
-                f"> Discord security prevents bots from dragging their own role below other roles via the API.\n"
-                f"> **To place yourself at the very top of Server Settings:**\n"
-                f"> Go to **Server Settings ➔ Roles ➔ Drag @Founder ABOVE @{bot_name}**."
-            )
-        embed = discord.Embed(title="👥 Roles & Hierarchy Repaired", description=desc, color=COLOR_SUCCESS)
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Refresh Store", style=discord.ButtonStyle.success, emoji="🌮", custom_id="modpanel_refresh_food", row=2)
     async def btn_refresh_food(self, interaction: discord.Interaction, button: discord.ui.Button):
