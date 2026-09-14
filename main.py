@@ -730,26 +730,33 @@ def build_order_stats_embed(guild: Optional[discord.Guild]) -> discord.Embed:
     pizza_count = sum(1 for o in guild_orders if "pizza" in o.get("brand", "").lower())
     other_count = total_count - (taco_count + pizza_count)
 
-    breakdown = f"• 🌮 **Taco Bell:** `{taco_count}`  |  🍕 **Pizza Hut:** `{pizza_count}`"
-    if other_count > 0:
-        breakdown += f"  |  📦 **Other:** `{other_count}`"
-
     gname = guild.name if guild else "AIO Bot"
-    vstats = get_vouch_stats(guild.id if guild else None)
     embed = discord.Embed(
         title="📊 Completed Orders & Sales Tracker",
         description=(
-            f"• 🏆 **Orders Fulfilled:** `{total_count}`\n"
-            f"• 💰 **Gross Revenue:** `${total_rev:.2f}`\n"
-            f"{breakdown}\n"
-            f"• ⭐ **Rating:** {vstats['stars_str']} ({vstats['average']}/5.0 • {vstats['total']} vouches)"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"> 📈 **Order Fulfillment & Revenue Analytics for {gname}**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
+    embed.add_field(name="🏆 Orders Fulfilled", value=f"**{total_count}** orders", inline=True)
+    embed.add_field(name="💰 Gross Revenue", value=f"**${total_rev:.2f}**", inline=True)
+    embed.add_field(
+        name="🏷️ Brand Distribution",
+        value=f"🌮 Taco Bell: **{taco_count}**\n🍕 Pizza Hut: **{pizza_count}**" + (f"\n✨ Other: **{other_count}**" if other_count > 0 else ""),
+        inline=True
+    )
+    vstats = get_vouch_stats(guild.id if guild else None)
+    embed.add_field(
+        name="⭐ Customer Reviews & Rating",
+        value=f"> **{vstats['total']} Verified Vouches** • {vstats['stars_str']} (**{vstats['average']}/5.0**)",
+        inline=False
+    )
 
     if guild_orders:
-        recent = guild_orders[-6:]
+        recent = guild_orders[-8:]
         lines = []
         for o in reversed(recent):
             oid = o.get("order_id", o.get("ticket_id", "?"))
@@ -757,10 +764,17 @@ def build_order_stats_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             brand = o.get("brand", "Order")
             amt = o.get("amount", 0.0)
             cust = o.get("customer_name") or f"<@{o.get('customer_id', '')}>"
-            lines.append(f"• `{oid_str}` **{brand}** — `${amt:.2f}` ({cust})")
-        embed.add_field(name="📋 Recent Orders", value="\n".join(lines), inline=False)
+            ts = ""
+            if o.get("completed_at"):
+                try:
+                    dt = datetime.fromisoformat(o["completed_at"])
+                    ts = f" · <t:{int(dt.timestamp())}:R>"
+                except Exception:
+                    pass
+            lines.append(f"▸ `{oid_str}` **{brand}** — **${amt:.2f}** ({cust}){ts}")
+        embed.add_field(name="📋 Recent Completed Orders", value="\n".join(lines), inline=False)
     else:
-        embed.add_field(name="📋 Recent Orders", value="• *No orders tracked yet.*", inline=False)
+        embed.add_field(name="📋 Recent Completed Orders", value="*No completed orders tracked yet.*", inline=False)
 
     embed.set_footer(text="AIO Sales Tracker • Use /addorder to manually log an order")
     return embed
@@ -812,42 +826,41 @@ def create_invoice_embed(
         tickets_db["tickets"][ch_id_str]["status"] = "invoiced"
         save_tickets()
 
-    desc_lines = [
-        f"• 👤 **Customer:** {target_cust.mention if target_cust else 'Order'}",
-        f"• 💵 **Amount:** `{price_formatted}`",
-        f"• 📦 **Item:** {item_desc}"
-    ]
-    if ticket_id:
-        desc_lines.append(f"• 🎫 **Ticket:** `#{ticket_id:04d}`")
-    desc_lines.append("• ⏳ **Status:** `🟡 Awaiting Payment`")
-
     embed = discord.Embed(
-        title="🧾 Payment Invoice",
-        description="\n".join(desc_lines),
+        title="🧾 Official Payment Invoice",
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"> 💳 **Payment Requested for {target_cust.mention if target_cust else 'this order'}**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Please complete payment using either **Cash App** or **Venmo** below to proceed."
+        ),
         color=0xF1C40F,
         timestamp=datetime.now(timezone.utc)
     )
+    embed.add_field(name="💵 Amount Due", value=f"**{price_formatted}**", inline=True)
+    embed.add_field(name="📦 Order Item", value=f"**{item_desc}**", inline=True)
+    if ticket_id:
+        embed.add_field(name="🎫 Ticket Reference", value=f"`#{ticket_id:04d}`", inline=True)
 
     pay_methods = []
     if ca_handle:
-        pay_methods.append(f"• 🟢 **Cash App:** [${ca_handle}](https://cash.app/${ca_handle}) (`${ca_handle}`)")
+        pay_methods.append(f"▸ 🟢 **Cash App:** [${ca_handle}](https://cash.app/${ca_handle}) · ` ${ca_handle} `")
     if vm_handle:
-        pay_methods.append(f"• 🔵 **Venmo:** [@{vm_handle}](https://venmo.com/u/{vm_handle}) (`@{vm_handle}`)")
+        pay_methods.append(f"▸ 🔵 **Venmo:** [@{vm_handle}](https://venmo.com/u/{vm_handle}) · ` @{vm_handle} `")
     if not pay_methods:
-        pay_methods.append("• *Contact staff for payment details.*")
-    embed.add_field(name="💳 Payment Methods", value="\n".join(pay_methods), inline=False)
+        pay_methods.append("▸ *Contact staff in this channel for direct payment details.*")
+    embed.add_field(name="💳 Payment Handles", value="\n".join(pay_methods), inline=False)
 
-    embed.add_field(
-        name="📌 Instructions",
-        value=(
-            f"1. Send **{price_formatted}** via Cash App or Venmo above\n"
-            "2. Include your username or ticket in the memo\n"
-            "3. Send a confirmation message or screenshot here!"
-        ),
-        inline=False
+    instructions = (
+        f"**1️⃣ Send Payment:** Transfer exactly **{price_formatted}** to either handle above.\n"
+        "**2️⃣ Payment Note:** Include your Discord username or ticket ID in the memo.\n"
+        "**3️⃣ Confirm in Chat:** Post a message or payment screenshot here once sent.\n"
+        "**4️⃣ Instant Delivery:** Staff will verify payment and deliver your credentials immediately!"
     )
+    embed.add_field(name="📌 Next Steps", value=instructions, inline=False)
+    embed.add_field(name="⏳ Payment Status", value="`🟡 Awaiting Payment`", inline=True)
     author_name = getattr(author, "display_name", str(author))
-    embed.set_footer(text=f"Issued by {author_name}")
+    embed.set_footer(text=f"Issued by {author_name} • Staff: run /paid once payment arrives")
 
     return embed, target_cust, None
 
@@ -1079,6 +1092,10 @@ def build_welcome_embed(member: discord.Member) -> discord.Embed:
     created_ts = int(member.created_at.timestamp())
     embed = discord.Embed(
         title=f"👋 Welcome to {guild.name}!",
+        description=(
+            f"> 🎉 *Welcome {member.mention}! We're thrilled to have you here in our community.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
@@ -1087,36 +1104,31 @@ def build_welcome_embed(member: discord.Member) -> discord.Embed:
     elif hasattr(member, "avatar") and member.avatar:
         embed.set_thumbnail(url=member.avatar.url)
 
-    member_id = getattr(member, "id", None)
-    id_part = f"  |  `{member_id}`" if member_id else ""
-    embed.description = f"Welcome {member.mention} to the server!"
-
-    embed.add_field(name="👤 Member", value=f"• {member.mention}{id_part}", inline=False)
-    embed.add_field(name="🗓️ Account Created", value=f"• <t:{created_ts}:D> (<t:{created_ts}:R>)", inline=False)
-    embed.add_field(name="👥 Member Count", value=f"• `#{getattr(guild, 'member_count', 1):,}`", inline=False)
+    embed.add_field(name="👤 Member", value=f"{member.mention}\n`{member.name}`", inline=True)
+    embed.add_field(name="🗓️ Account Created", value=f"<t:{created_ts}:D>\n*(<t:{created_ts}:R>)*", inline=True)
+    embed.add_field(name="👥 Member Count", value=f"**#{getattr(guild, 'member_count', 1):,}**", inline=True)
 
     links = []
     for ch in getattr(guild, "text_channels", []):
         cname = ch.name.lower()
         if "rule" in cname:
-            links.append(f"📜 Rules: {ch.mention}")
+            links.append(f"• 📜 Read server rules: {ch.mention}")
         elif "coupon" in cname or "optimizer" in cname:
-            links.append(f"🛒 Optimizer: {ch.mention}")
+            links.append(f"• 🛒 Shop & optimize coupons: {ch.mention}")
         elif "ticket" in cname:
-            links.append(f"📩 Support: {ch.mention}")
+            links.append(f"• 📩 Need support? Open a ticket: {ch.mention}")
         elif "food" in cname or "reward" in cname:
-            links.append(f"🌮 Food: {ch.mention}")
+            links.append(f"• 🌮 Check food rewards: {ch.mention}")
         elif "giveaway" in cname:
-            links.append(f"🎉 Giveaways: {ch.mention}")
+            links.append(f"• 🎉 Active giveaways: {ch.mention}")
         if len(links) >= 3:
             break
 
     if links:
-        formatted_links = [f"• {lk}" for lk in links]
-        embed.add_field(name="📌 Quick Links", value="\n".join(formatted_links), inline=False)
+        embed.add_field(name="📌 Quick Links & Getting Started", value="\n".join(links), inline=False)
 
-    icon_url = guild.icon.url if getattr(guild, "icon", None) and hasattr(guild.icon, "url") else None
-    embed.set_footer(text=f"Member #{getattr(guild, 'member_count', 1):,}", icon_url=icon_url)
+    icon_url = guild.icon.url if getattr(guild, "icon", None) else None
+    embed.set_footer(text=f"Member #{getattr(guild, 'member_count', 1):,} • Enjoy your stay!", icon_url=icon_url)
     return embed
 
 async def setup_welcome_channel(guild: discord.Guild) -> Tuple[Optional[discord.TextChannel], bool]:
@@ -1280,25 +1292,26 @@ def get_vouch_stats(guild_id: Optional[int] = None) -> Dict[str, Any]:
 def build_vouch_embed(vouch: Dict[str, Any], user: Optional[Union[discord.User, discord.Member]] = None) -> discord.Embed:
     rating = vouch.get("rating", 5)
     stars = "⭐" * rating
-    author_tag = f"<@{vouch.get('user_id')}>"
-    staff_line = f"• 🛡️ **Staff:** <@{vouch.get('staff_id')}>\n" if vouch.get("staff_id") else ""
-    comment = vouch.get("comment", "Great service!")
     embed = discord.Embed(
         title=f"{stars} ({rating}/5 Stars)",
         description=(
-            f"• 👤 **Customer:** {author_tag}\n"
-            f"{staff_line}"
-            f"• 🆔 **Review:** `#{vouch.get('id', 1):03d}`\n"
-            f"• 💬 **Feedback:** \"{comment}\""
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"> 💬 *\"{vouch.get('comment', 'Great service!')}\"*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=0xF1C40F,
         timestamp=datetime.now(timezone.utc)
     )
+    author_tag = f"<@{vouch.get('user_id')}>"
+    embed.add_field(name="👤 Customer", value=author_tag, inline=True)
+    if vouch.get("staff_id"):
+        embed.add_field(name="🛡️ Staff Member", value=f"<@{vouch.get('staff_id')}>", inline=True)
+    embed.add_field(name="🆔 Review ID", value=f"`#{vouch.get('id', 1):03d}`", inline=True)
     if vouch.get("proof_url"):
         embed.set_image(url=vouch["proof_url"])
     if user and hasattr(user, "display_avatar"):
         embed.set_author(name=f"Vouch from {getattr(user, 'display_name', str(user))}", icon_url=user.display_avatar.url)
-    embed.set_footer(text="AIO Customer Vouches")
+    embed.set_footer(text="AIO Customer Vouches • Verified Community Feedback")
     return embed
 
 def parse_giveaway_duration(duration_str: str) -> Optional[int]:
@@ -2062,11 +2075,12 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     deals_link = "https://www.cvs.com/deals/coupons"
 
     embed = discord.Embed(
-        title=f"💳 CVS ExtraCare® — #{acc_id} {name}",
+        title=f"💳 CVS ExtraCare® Card — #{acc_id} {name}",
         description=(
-            f"• 🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})**\n"
-            f"• 🎟️ **[Digital Coupons]({deals_link})**\n"
-            f"• 💰 **[Account Dashboard]({extracare_link})**"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 🎟️ **[Digital Coupons]({deals_link})** • 💰 **[Dashboard]({extracare_link})**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "> 📷 *Scannable barcode generated below for register & self-checkout scanners.*"
         ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
@@ -2077,44 +2091,45 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     phone = acc.get("phone", "")
     phone_fmt = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}" if len(phone) == 10 else (phone or "—")
 
-    card_lines = [
-        f"• 🔢 **Card:** `{formatted_card}`",
-        f"• 👤 **Name:** {name}",
-        f"• 📞 **Phone:** `{phone_fmt}`"
-    ]
-    if acc.get("extrabucks"):
-        card_lines.append(f"• 💰 **ExtraBucks:** {acc['extrabucks']}")
-    if acc.get("birthday"):
-        card_lines.append(f"• 🎂 **Birthday:** `{acc['birthday']}`")
-    if email or pwd:
-        card_lines.append(f"• 🔐 **Credentials:** `{email}`" + (f"  |  ||`{pwd}`||" if pwd else ""))
+    embed.add_field(name="🔢 ExtraCare Number", value=f"`{formatted_card}`", inline=True)
+    embed.add_field(name="👤 Cardholder", value=f"**{name}**", inline=True)
+    embed.add_field(name="📞 Phone", value=f"`{phone_fmt}`", inline=True)
 
-    embed.add_field(name="📋 Account Info", value="\n".join(card_lines), inline=False)
+    if acc.get("extrabucks"):
+        embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{acc['extrabucks']}**", inline=True)
+    if acc.get("birthday"):
+        embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
+
+    val = f"📧 `{email}`" if email else ""
+    if pwd:
+        val += f" • 🔑 ||`{pwd}`||"
+    if val:
+        embed.add_field(name="🔐 Account Credentials", value=f"> {val}", inline=False)
 
     active_coupons = acc.get("coupons", [])
     if active_coupons:
-        c_lines = [f"• 🎟️ {c}" for c in active_coupons[:8]]
-        embed.add_field(name=f"🎟️ Active Coupons ({len(active_coupons)})", value="\n".join(c_lines)[:1024], inline=False)
+        c_lines = "\n".join(f"▸ 🎟️ **{c}**" for c in active_coupons)
+        embed.add_field(name=f"🎟️ Loaded Active Coupons ({len(active_coupons)})", value=c_lines[:1024], inline=False)
 
     used_coupons = acc.get("used_coupons", [])
     if used_coupons:
         u_lines = []
-        recent_used = used_coupons[-6:]
-        for u in recent_used:
+        for u in used_coupons[-6:]:
             if isinstance(u, dict):
                 cname = u.get("coupon", "Coupon")
+                dt = u.get("date", "")
                 sav = u.get("savings", 0.0)
-                sav_str = f" (`${sav:.2f}`)" if sav > 0 else ""
-                u_lines.append(f"• ~~{cname}~~{sav_str}")
+                sav_str = f" (${sav:.2f})" if sav > 0 else ""
+                u_lines.append(f"▸ ~~{cname}~~{sav_str}" + (f" *({dt})*" if dt else ""))
             else:
-                u_lines.append(f"• ~~{u}~~")
+                u_lines.append(f"▸ ~~{u}~~")
         embed.add_field(name=f"✅ Used / Redeemed Coupons ({len(used_coupons)})", value="\n".join(u_lines)[:1024], inline=False)
 
     if acc.get("notes"):
-        embed.add_field(name="📝 Notes", value=f"• {acc['notes'][:1000]}", inline=False)
+        embed.add_field(name="📝 Account Notes", value=f"> {acc['notes'][:1000]}", inline=False)
 
     embed.set_image(url="attachment://cvs_barcode.png")
-    embed.set_footer(text=f"Card #{acc_id} of {len(cvs_accounts_db)}")
+    embed.set_footer(text=f"AIO Bot CVS Account Manager • Card #{acc_id} of {len(cvs_accounts_db)} • Verified Active")
     return embed, file
 
 
@@ -2471,18 +2486,21 @@ def _do_checkout(items: List[Dict[str, Any]], coupons: List[Any]) -> tuple:
     save_savings(savings_tracker)
 
     embed = discord.Embed(
-        title="✅ Trip Checked Out!",
+        title="✅ Trip Checked Out Successfully!",
         description=(
-            f"• 💰 **Saved This Trip:** `${net_saved:.2f}`\n"
-            f"• 🏷️ **Retail Total:** `${subtotal:.2f}`\n"
-            f"• 💵 **Register Paid:** `${total_due:.2f}`\n"
-            f"• 🎟️ **Coupon Cost:** `${coupon_spend:.2f}`\n"
-            f"• 📈 **Lifetime Saved:** `${savings_tracker['total_net_saved']:.2f}` (`{savings_tracker['trip_count']}` trips)"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"> 🗓️ **{now.strftime('%A, %b %d, %Y @ %I:%M %p')}**\n"
+            f"> 💰 **Net Money Saved This Trip:** **${net_saved:.2f}**\n"
+            f"> 📈 **Lifetime Saved:** **${savings_tracker['total_net_saved']:.2f}** across `{savings_tracker['trip_count']}` trip(s)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.set_footer(text="AIO Savings Tracker")
+    embed.add_field(name="🏷️ Full Retail", value=f"**${subtotal:.2f}**", inline=True)
+    embed.add_field(name="💵 Register Paid", value=f"**${total_due:.2f}**", inline=True)
+    embed.add_field(name="🎟️ Coupon Spend", value=f"**${coupon_spend:.2f}**", inline=True)
+    embed.set_footer(text="AIO Bot • Savings Tracker")
     return embed, subtotal, total_due, coupon_spend, net_saved, now
 
 
@@ -2493,37 +2511,38 @@ def build_cart_embed(user_id: int, notice: Optional[str] = None) -> discord.Embe
     subtotal = sum(i['price'] for i in items)
 
     embed = discord.Embed(
-        title="🛒 Shopping Cart",
+        title="🛒 AIO Shopping Cart & Optimizer",
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
-    desc_lines = []
+    desc_lines = [
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "> 🛍️ **Active Cart Session • Real-Time Savings Engine**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ]
     if notice:
-        desc_lines.append(f"{notice}\n")
+        desc_lines.append(f"\n{notice}\n")
 
     if not items:
-        desc_lines.append("📭 *Cart is empty. Click Add Items or type /add to start.*")
+        desc_lines.append("\n📭 *Your cart is currently empty. Click **Add Items** or type `/add` to start!*")
     else:
-        desc_lines.append(f"**📦 Items ({len(items)}):**")
-        for item in items[:10]:
-            desc_lines.append(f"• **{item['name']}** — `${item['price']:.2f}`")
-        if len(items) > 10:
-            desc_lines.append(f"• *...and {len(items) - 10} more item(s)*")
+        desc_lines.append(f"\n**📦 Items in Cart ({len(items)}):**")
+        for item in items[:12]:
+            desc_lines.append(f"▸ **{item['name']}** — `${item['price']:.2f}`")
+        if len(items) > 12:
+            desc_lines.append(f"*...and {len(items) - 12} more item(s)*")
 
     embed.description = "\n".join(desc_lines)
-    coupon_str = ", ".join(f"`{coupon_label(c)}`" for c in coupons) if coupons else "*None*"
+    coupon_str = ", ".join(f"`{coupon_label(c)}`" for c in coupons) if coupons else "*None loaded*"
 
-    summary_lines = [
-        f"• 💵 **Subtotal:** `${subtotal:.2f}` ({len(items)} items)",
-        f"• 🎟️ **Coupons:** {coupon_str}"
-    ]
+    embed.add_field(name="💵 Subtotal", value=f"**${subtotal:.2f}** ({len(items)} items)", inline=True)
+    embed.add_field(name="🎟️ Coupons", value=coupon_str, inline=True)
     if items and coupons:
         est_due, _ = calculate_best_bundles(items, coupons)
         saved = max(0.0, subtotal - est_due)
-        summary_lines.append(f"• 💰 **Est. Due:** `${est_due:.2f}` *(Save `${saved:.2f}`)*")
+        embed.add_field(name="💰 Est. Register Due", value=f"**${est_due:.2f}** *(Save ${saved:.2f})*", inline=True)
 
-    embed.add_field(name="📊 Cart Summary", value="\n".join(summary_lines), inline=False)
-    embed.set_footer(text="Manage cart with buttons below")
+    embed.set_footer(text="Manage cart below with buttons • Run /optimize for step-by-step cashier plan")
     return embed
 
 
@@ -3257,8 +3276,11 @@ class HelpCategorySelect(discord.ui.Select):
         cat = self.values[0]
         embed = discord.Embed(color=COLOR_PRIMARY)
         if cat == "coupons":
-            embed.title = "🛍️ Coupon Optimizer Guide"
-            embed.description = "Save out-of-pocket money by splitting items into optimal coupon bundles."
+            embed.title = "🛍️ AIO Bot — Coupon Optimizer Guide"
+            embed.description = (
+                "> 💡 *Save maximum out-of-pocket money at register by splitting items into optimal coupon bundles.*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
             embed.add_field(name="Interactive Panel", value="`/panel` or `!panel` — open the interactive button & modal shopping interface", inline=False)
             embed.add_field(name="Load Coupons", value="`/coupons` or `!coupons [val1] [val2] ...` (e.g. `!coupons 8 8 5 half` or `/coupons 8 8 5 half`)", inline=False)
             embed.add_field(name="Add Items", value="`/add` or `!add [item] [price] ...` (e.g. `!add Fairlife 4.49 Shampoo 6.59` or `/add ...`)", inline=False)
@@ -3267,8 +3289,11 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Instant Calculator", value="`/calc` or `!calc [items] | [coupons]` (e.g. `!calc Fairlife 4.49, Shampoo 6.59 | 8 5` or `/calc ...`)", inline=False)
             embed.add_field(name="Cart Management", value="`/cart` — view current cart\n`/undo` — remove last item added\n`/remove [name]` — remove item by name\n`/clear` — wipe cart & coupons", inline=False)
         elif cat == "mod":
-            embed.title = "🛡️ Server Moderation Suite"
-            embed.description = "Administrative security, anti-raid, and discipline suite. Works with `!` or `/`."
+            embed.title = "🛡️ AIO Bot — Server Moderation Suite"
+            embed.description = (
+                "> 🛡️ *Complete administrative security, anti-raid, and discipline suite. Works with `!` or `/`.*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
             embed.add_field(name="Server Lockdown & Anti-Raid", value="`/lockdown [action: on/off] [reason]` — emergency lockdown for all server text channels", inline=False)
             embed.add_field(name="Auto-Mod Word Filter", value="`/filter add [word]` / `/filter remove [word]` / `/filter list` — automatic word censor & warning trigger", inline=False)
             embed.add_field(name="Case & Incident Logs", value="`/modlogs [@member]` — view all historical infractions\n`/case [id]` — look up detailed case file", inline=False)
@@ -3278,8 +3303,11 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Warnings System", value="`/warn` or `!warn [@member] [reason]` — log a warning\n`/warnings` or `!warnings [@member]` — view warning record\n`/clearwarnings` or `!clearwarnings [@member]` — wipe records", inline=False)
             embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/ticketpanel` or `!tickets` — deploy interactive support ticket panel\n`/dm [user] [msg]` or `!dm` — direct message member from bot\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount] [member] [channel]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
         elif cat == "games":
-            embed.title = "🎮 Arcade, Casino & Economy"
-            embed.description = "Interactive mini-games and full coin economy system powered by Discord buttons."
+            embed.title = "🎮 AIO Bot — Arcade, Casino & Economy"
+            embed.description = (
+                "> 🎲 *Interactive mini-games and full coin economy system powered by Discord buttons!*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
             embed.add_field(name="🪙 Coin Economy & Banking", value="`/balance` or `!bal [@member]` — check coin wallet\n`/daily` or `!daily` — claim daily 250 free coins (24h cooldown)\n`/pay` or `!pay [@member] [amount]` — transfer coins\n`/leaderboard` or `!top` — top 10 richest members", inline=False)
             embed.add_field(name="🃏 Blackjack / 21", value="`/blackjack [bet]` or `!blackjack` — play 21 against dealer with interactive Hit, Stand & Double Down buttons", inline=False)
             embed.add_field(name="🔴🟡 Connect 4", value="`/connect4 [@opponent]` or `!connect4` — 7-column interactive drop board against friends or smart Bot AI", inline=False)
@@ -3288,16 +3316,22 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="🪨📄✂️ Rock-Paper-Scissors", value="`/rps [choice] [@opponent]` or `!rps` — secret choice duel against friends or the bot", inline=False)
             embed.add_field(name="🪙 Coinflip & Dice Roller", value="`/coinflip [heads/tails] [bet]` — animated flip & betting\n`/roll [dice]` — tabletop dice roller (e.g. `2d6`, `1d20+5`, `100`)", inline=False)
         elif cat == "utils":
-            embed.title = "🎨 Embeds & Utilities"
-            embed.description = "Creative, diagnostic, and communication utility tools for server staff and members."
+            embed.title = "🎨 AIO Bot — Embeds & Utilities"
+            embed.description = (
+                "> 🛠️ *Creative, diagnostic, and communication utility tools for server staff and members.*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
             embed.add_field(name="Welcome System", value="`/testwelcome [@member]` — preview the new member welcome card\n`/setup-welcome` — set up or configure the `#👋-welcome` channel", inline=False)
             embed.add_field(name="Bot Announcement & Echo", value="`/say` or `!say [text]` — repost text and attached photos/images through the bot", inline=False)
             embed.add_field(name="Custom Embed Creator", value="`/embed` or `!embed` — open interactive modal to design & publish rich embeds with titles, images, colors, and footers", inline=False)
             embed.add_field(name="Server & Member Info", value="`/serverinfo` or `!serverinfo` — server stats, boosts, channels, and roles\n`/userinfo` or `!userinfo [@member]` — member details, account age, join date, permissions", inline=False)
             embed.add_field(name="Bot Status", value="`/ping` or `!ping` — bot latency\n`/about` or `!about` — system info", inline=False)
         elif cat == "owner":
-            embed.title = "👑 Operator Commands"
-            embed.description = "Administrative architecture and bot owner management commands."
+            embed.title = "👑 AIO Bot — Operator Commands"
+            embed.description = (
+                "> ⚙️ *Administrative architecture and bot owner management commands.*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
             embed.add_field(
                 name="Server Architecture & Channel Cleanup",
                 value=(
@@ -3512,16 +3546,18 @@ class TicketCloseConfirmView(discord.ui.View):
                         log_embed = discord.Embed(
                             title=f"📁 Ticket #{t_id:04d} Closed & Archived",
                             description=(
-                                f"• 🏷️ **Channel:** `#{channel.name}`\n"
-                                f"• 👤 **Customer:** <@{owner_id}>\n"
-                                f"• 🛡️ **Staff:** {interaction.user.mention}\n"
-                                f"• 💬 **Messages:** `{len(messages)}`\n"
-                                f"• 📂 **File:** `transcript-ticket-{t_id:04d}.txt`"
+                                f"> 📋 *Support ticket has been closed and conversation history securely archived.*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                             ),
                             color=COLOR_PRIMARY,
                             timestamp=datetime.now(timezone.utc)
                         )
-                        log_embed.set_footer(text="Ticket Archives", icon_url=channel.guild.icon.url if channel.guild and channel.guild.icon else None)
+                        log_embed.add_field(name="🏷️ Channel Reference", value=f"`#{channel.name}`", inline=True)
+                        log_embed.add_field(name="👤 Customer", value=f"<@{owner_id}>", inline=True)
+                        log_embed.add_field(name="🛡️ Closed By Staff", value=interaction.user.mention, inline=True)
+                        log_embed.add_field(name="💬 Total Messages", value=f"`{len(messages)}` messages", inline=True)
+                        log_embed.add_field(name="📂 Transcript File", value=f"`transcript-ticket-{t_id:04d}.txt`", inline=True)
+                        log_embed.set_footer(text="AIO Bot Ticket Archives • Audit Log", icon_url=channel.guild.icon.url if channel.guild and channel.guild.icon else None)
                         await log_ch.send(embed=log_embed, file=log_file)
                     except Exception as e:
                         print(f"⚠️ Error posting to ticket-logs: {e}", file=sys.stderr)
@@ -3537,13 +3573,16 @@ class TicketCloseConfirmView(discord.ui.View):
                         dm_embed = discord.Embed(
                             title=f"🎟️ Ticket #{t_id:04d} Closed • {channel.guild.name}",
                             description=(
-                                "Your ticket has been closed. A full transcript is attached below.\n\n"
-                                "Click **Leave a Review** below to rate your experience with staff!"
+                                f"> 📄 *Thank you for contacting our support team. Your ticket has concluded!*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"📁 **Transcript Attached:** A full archive of your conversation is attached below for your records.\n\n"
+                                f"⭐ **We Value Your Feedback!**\n"
+                                f"Click **Leave a Review** below to rate your experience with our staff and community."
                             ),
                             color=COLOR_SUCCESS,
                             timestamp=datetime.now(timezone.utc)
                         )
-                        dm_embed.set_footer(text=f"{channel.guild.name} Support", icon_url=channel.guild.icon.url if channel.guild and channel.guild.icon else None)
+                        dm_embed.set_footer(text=f"{channel.guild.name} Support System", icon_url=channel.guild.icon.url if channel.guild and channel.guild.icon else None)
                         await owner.send(
                             embed=dm_embed,
                             file=dm_file,
@@ -3692,19 +3731,22 @@ class TicketLaunchView(discord.ui.View):
         embed = discord.Embed(
             title=f"🎫 Support Ticket #{ticket_num:04d}",
             description=(
-                f"Welcome {interaction.user.mention}! Support staff has been notified.\n\n"
-                f"• 👤 **Opened By:** {interaction.user.mention} (`{interaction.user.id}`)\n"
-                f"• ⏰ **Opened:** <t:{int(time.time())}:R>\n"
-                f"• 📌 **Status:** `🟢 Open · Unclaimed`\n\n"
-                "**📋 Next Steps:**\n"
-                "• Describe your issue or request in detail below\n"
-                "• Upload any relevant screenshots or order info\n"
-                "• A staff member will respond shortly"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"> 💬 **Welcome {interaction.user.mention}! Support staff has been notified.**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "**📋 What to do next:**\n"
+                "▸ Describe your issue, question, or request in detail below.\n"
+                "▸ Upload any screenshots or relevant details to speed up help.\n"
+                "▸ A staff member will be with you shortly.\n"
+                "▸ Please be patient — do **not** ping staff repeatedly."
             ),
             color=COLOR_PRIMARY,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="AIO Support • Use buttons below to manage")
+        embed.add_field(name="👤 Opened By", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="⏰ Opened", value=f"<t:{int(time.time())}:R>", inline=True)
+        embed.add_field(name="📌 Status", value="`🟢 Open · Unclaimed`", inline=True)
+        embed.set_footer(text="AIO Support Suite • Use the buttons below to manage this ticket")
 
         mention_targets = [interaction.user.mention]
         if founder_role:
@@ -3843,20 +3885,24 @@ class FoodAccountOrderModal(discord.ui.Modal):
         embed = discord.Embed(
             title=f"{'🌮' if brand_slug == 'tacobell' else '🍕'} {self.brand} Order #{ticket_num:04d}",
             description=(
-                f"Welcome {interaction.user.mention}! Support staff has been notified of your order.\n\n"
-                f"• 👤 **Customer:** {interaction.user.mention} (`{interaction.user.id}`)\n"
-                f"• 📦 **Item:** {self.brand} Preloaded Account(s)\n"
-                f"• 🔢 **Quantity:** `{qty}` account(s) @ `${self.price:.2f}`\n"
-                f"• 💰 **Total:** `${total_est:.2f}`\n"
-                f"• 📝 **Payment Note:** `{notes_val}`\n"
-                f"• 📌 **Status:** `🟢 Awaiting Staff`\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"> 🛒 **Welcome {interaction.user.mention}! Support staff has been notified of your order.**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"**📋 Order Details:**\n"
+                f"▸ 📦 **Item:** **{self.brand} Preloaded Account(s)**\n"
+                f"▸ 🔢 **Quantity:** **{qty}** account(s) — `${self.price:.2f}` each\n"
+                f"▸ 💰 **Estimated Total:** **${total_est:.2f}**\n"
+                f"▸ 📝 **Payment Note:** `{notes_val}`\n\n"
                 f"**📌 How This Works:**\n"
                 f"{instructions}"
             ),
             color=0x2ECC71,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="AIO Order Suite • Staff will claim shortly")
+        embed.add_field(name="👤 Customer", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="⏰ Opened", value=f"<t:{int(time.time())}:R>", inline=True)
+        embed.add_field(name="📌 Status", value="`🟢 Awaiting Staff`", inline=True)
+        embed.set_footer(text="AIO Order Suite • Staff: use Claim Ticket to handle this order")
 
         mention_targets = [interaction.user.mention]
         if founder_role:
@@ -3878,33 +3924,52 @@ def build_food_accounts_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🌮🍕 Fast Food Preloaded Rewards Accounts",
         description=(
-            "Preloaded rewards accounts with items and discounts already claimed.\n"
-            "Click **Buy Taco Bell** or **Buy Pizza Hut** below to open a ticket."
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "> ⚡ **Instant Preloaded Food Rewards • Massive Savings on Every Meal**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Get preloaded **Taco Bell** & **Pizza Hut** rewards accounts with dozens of free items and discounts already claimed!\n\n"
+            "👇 **Click Buy Taco Bell or Buy Pizza Hut below to open a ticket.**"
         ),
         color=0xFF7B00,
         timestamp=datetime.now(timezone.utc)
     )
 
     tb_value = (
-        "• 🏷️ **Price:** `$10.00 each` (15 rewards pre-claimed)\n"
-        "• 📱 **How to order:** Open a ticket for Taco Bell → specify count (1–10). Enter account email in app, tap **send code**, ping staff for OTP.\n"
-        "• 💵 **Discounts:** `$15 off your entire order`  |  `$10 off your entire order`  |  `$5 off`\n"
-        "• 🌮 **Entrees:** `Free Chalupa Supreme` (×2)  |  `Free quesadilla`\n"
-        "• 🥤 **Drinks/Sides:** `Free large fountain drink`  |  `Birthday Baja Blast Freeze`\n"
-        "• 🔥 **Rewards:** Fire & Hot tier rewards active"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "> 🏷️ **Price:** **$10.00 each** · *15 rewards already claimed on every account*\n"
+        "> 📱 **How to order:** Open a ticket for Taco Bell → specify how many you want (1–10). After staff provides account email, enter that into Taco Bell app, tap Send code in the app, then ping staff and they will retrieve the OTP code.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "**🎁 What's on every account:**\n"
+        "▸ 💵 `$15 off your entire order`\n"
+        "▸ 💵 `$10 off your entire order`\n"
+        "▸ 💵 `$5 off your entire order` · `extra $5 off`\n"
+        "▸ 🌮 `1 free individual item` · `Free Chalupa Supreme` *(two of these)*\n"
+        "▸ 🌮 `Free quesadilla` · `Fire tier + Hot tier free rewards`\n"
+        "▸ 🥤 `Welcome + Referral free rewards` · `Free large fountain drink`\n"
+        "▸ 🥤 `Birthday Baja Blast Freeze`\n\n"
+        "🔥 **Loyalty is ACTIVE.** These are free / off-the-order rewards — not spend coupons."
     )
-    embed.add_field(name="🌮 Taco Bell Rewards ($10.00)", value=tb_value, inline=False)
+    embed.add_field(name="🌮 Taco Bell Rewards", value=tb_value, inline=False)
 
     ph_value = (
-        "• 🏷️ **Price:** `$15.00 each` (Hut Rewards login)\n"
-        "• 🍕 **Pizzas:** 2 Large pizzas  |  1 Medium pizza  |  1 Personal Pan pizza  |  1 Melt\n"
-        "• 🥖 **Sides:** Breadsticks  |  Cheesy breadsticks  |  8 pc boneless wings  |  Mac\n"
-        "• 🥤 **Drinks:** 1× 2-liter drink  |  1× 20oz drink\n"
-        "• 🍫 **Dessert:** triple chocolate fudge brownie  |  Cinnabon rolls"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "> 🏷️ **Price:** **$15.00 each** · *rewards stackable, recommended 2–3 at a time*\n"
+        "> 📱 **Description:** Every account is a Hut Rewards login with these free rewards already claimed:\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "**🍕 Pizzas:**\n"
+        "▸ 2 Large pizzas · 1 Medium pizza · 1 Personal Pan pizza · 1 Melt\n\n"
+        "**🥖 Sides:**\n"
+        "▸ 1 order of breadsticks · 1 order of cheesy breadsticks\n"
+        "▸ 8 pc boneless wings · Triple cheese mac\n"
+        "▸ Cinnamon sticks · S'mores sticks · Cinnabon cinnamon rolls · 1 free dip cup (ranch / marinara / etc.)\n\n"
+        "**🥤 Drinks & dessert:**\n"
+        "▸ 1× 2-liter drink · 1× 20oz drink\n"
+        "▸ Triple chocolate fudge brownie · Huge ultimate cookie\n\n"
+        "🚗 *Delivery is recommended if you're shy lol — pickup works too.*"
     )
-    embed.add_field(name="🍕 Pizza Hut Preloaded Accounts ($15.00)", value=ph_value, inline=False)
+    embed.add_field(name="🍕 Pizza Hut Preloaded Accounts", value=ph_value, inline=False)
 
-    embed.set_footer(text="AIO Rewards Store • Click below to open an order ticket")
+    embed.set_footer(text="AIO Rewards Store • Click the buttons below to open an order ticket with staff!")
     return embed
 
 
@@ -4578,22 +4643,24 @@ class ModAddOrderModal(discord.ui.Modal, title="➕ Record Completed Order"):
         )
 
         cust_display = f"<@{rec['customer_id']}>" if rec.get('customer_id') else rec.get('customer_name', 'Customer')
-        desc_lines = [
-            f"• 🆔 **Order ID:** `#{rec['order_id']:02d}`",
-            f"• 👤 **Customer:** {cust_display}",
-            f"• 📦 **Item:** **{rec['brand']}**",
-            f"• 💵 **Amount:** `${rec['amount']:.2f}`",
-            f"• 🛡️ **Logged By:** {interaction.user.mention}"
-        ]
-        if self.notes.value:
-            desc_lines.append(f"• 📝 **Notes:** {self.notes.value.strip()}")
-
         embed = discord.Embed(
             title="✅ Order Manually Recorded",
-            description="\n".join(desc_lines),
+            description=(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"> 📋 **Order #{rec['order_id']:02d} added to sales tracker**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
             color=COLOR_SUCCESS,
             timestamp=datetime.now(timezone.utc)
         )
+        embed.add_field(name="🆔 Order ID", value=f"`#{rec['order_id']:02d}`", inline=True)
+        embed.add_field(name="👤 Customer", value=cust_display, inline=True)
+        embed.add_field(name="📦 Item / Brand", value=f"**{rec['brand']}**", inline=True)
+        embed.add_field(name="💵 Amount", value=f"**${rec['amount']:.2f}**", inline=True)
+        embed.add_field(name="🛡️ Logged By", value=interaction.user.mention, inline=True)
+        if self.notes.value:
+            embed.add_field(name="📝 Notes", value=self.notes.value.strip(), inline=False)
+
         embed.set_footer(text="AIO Sales Tracker • View all stats with /orderstats")
         await interaction.response.send_message(embed=embed, ephemeral=True)
         try:
@@ -4606,30 +4673,34 @@ class ModAddOrderModal(discord.ui.Modal, title="➕ Record Completed Order"):
 
 def build_coupon_hub_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🛒 CVS & Coupon Optimizer Hub",
+        title="🛒 CVS & Retail Coupon Optimizer Hub",
         description=(
-            "Automated coupon bundling, threshold logic & checkout sequencing.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "> 💡 **Automated Coupon Bundling, Threshold Logic & Cashier Sequencing**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Build optimized shopping trips, stack manufacturer and store coupons, calculate exact cashier sequencing, and maximize your savings!\n\n"
             "**How to start:**\n"
-            "• 🛒 Click **Open Private Optimizer Room** below\n"
-            "• 📦 Add your items and input your coupons\n"
-            "• ⚡ Run `/optimize` for step-by-step cashier instructions\n"
-            "• 🔒 Click **Close Room** when finished"
+            "▸ Click **[🛒 Open Private Optimizer Room]** below\n"
+            "▸ A personal room (`cart-{your-username}`) will be created just for you\n"
+            "▸ Add your items, input your coupons, and run the optimizer\n"
+            "▸ When you are finished, click **🔒 Close Room** to cleanly delete your room\n\n"
+            "Ready to save big? Open your private room now!"
         ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
     embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
     embed.add_field(
-        name="✨ Features",
+        name="✨ Key Capabilities",
         value=(
-            "• 🏷️ **Smart Stacking:** Combines MFR & CVS Store coupons\n"
-            "• 📊 **Sequencing:** Step-by-step ring-up instructions\n"
-            "• 💰 **Threshold Logic:** Auto-calculates `$X off $Y` requirements\n"
-            "• 🔒 **Private:** Isolated cart channel visible only to you"
+            "▸ 🏷️ **Smart Stacking:** Combines MFR & CVS Store digital coupons\n"
+            "▸ 📊 **Cashier Sequencing:** Step-by-step ring-up instructions\n"
+            "▸ 💰 **Threshold Optimization:** Hit `$X off $Y` requirements flawlessly\n"
+            "▸ 🔒 **Private & Isolated:** Your items & savings remain 100% confidential"
         ),
         inline=False
     )
-    embed.set_footer(text="AIO Coupon Optimizer")
+    embed.set_footer(text="AIO Bot Coupon Optimizer • Your cart and savings calculations remain 100% private")
     return embed
 
 
@@ -4710,14 +4781,16 @@ class CouponHubLaunchView(discord.ui.View):
             welcome_embed = discord.Embed(
                 title=f"🛒 {interaction.user.display_name}'s Private Optimizer Room",
                 description=(
-                    f"Welcome {interaction.user.mention}! This is your private optimizer session.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"> 🛍️ **Welcome {interaction.user.mention}! This is your private shopping and optimizer suite.**\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     "**Quick Controls:**\n"
-                    "• ➕ **Add Items:** Enter items and prices to build cart\n"
-                    "• 🎟️ **Load Coupons:** Load manufacturer & store coupons\n"
-                    "• 📊 **Optimize Plan:** Calculate best cashier order\n"
-                    "• ↩️ **Undo Last:** Remove recently added item\n"
-                    "• ✅ **Checkout:** Complete cart trip summary\n"
-                    "• 🔒 **Close Room:** Cleanly delete this private room\n\n"
+                    "▸ **➕ Add Items:** Enter items and prices to build your cart\n"
+                    "▸ **🎟️ Load Coupons:** Load digital manufacturer and store coupons / ExtraBucks\n"
+                    "▸ **📊 Optimize Plan:** Calculate optimal cashier scanning order and max savings\n"
+                    "▸ **↩️ Undo Last:** Remove the most recently added item\n"
+                    "▸ **✅ Checkout:** Complete your cart trip summary\n"
+                    "▸ **🔒 Close Room:** Cleanly delete this private room when you're done\n\n"
                     "*Use the buttons below to manage your session.*"
                 ),
                 color=COLOR_SUCCESS,
@@ -4823,34 +4896,37 @@ class CouponRoomControlView(discord.ui.View):
 
 def build_staff_modpanel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🎛️ Staff Control Center",
+        title="🎛️ Staff Control Center & Moderation Panel",
         description=(
-            "Staff management console. Use the buttons below to execute actions.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "> 🛡️ **Centralized Server Moderation, Billing & Administration Console**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Execute server moderation, channel controls, billing invoices, direct messaging, and panel refreshes using the buttons below.\n\n"
             "**🛡️ Member Discipline:**\n"
-            "• ⚠️ **Warn:** Log an official warning\n"
-            "• ⏱️ **Timeout:** Temporarily mute member\n"
-            "• 👢 **Kick:** *(Admin Only)* Remove member\n"
-            "• 🔨 **Ban:** *(Admin Only)* Ban member & purge messages\n"
-            "• 🧹 **Purge:** Bulk delete recent messages\n\n"
+            "▸ **⚠️ Warn:** Issue an official logged warning to a member\n"
+            "▸ **⏱️ Timeout:** Temporarily mute/timeout a member\n"
+            "▸ **👢 Kick:** *(Admin Only)* Remove a member from the server\n"
+            "▸ **🔨 Ban:** *(Admin Only)* Ban a member and optionally purge messages\n"
+            "▸ **🧹 Purge:** Clean up recent messages in any specified channel\n\n"
             "**🔒 Channel & Server Security:**\n"
-            "• 🔒 **Lock / 🔓 Unlock:** Restrict or restore channel\n"
-            "• ⏳ **Slowmode:** Adjust channel cooldown\n"
-            "• 🚨 **Server Lockdown:** *(Admin Only)* Emergency freeze\n\n"
-            "**💵 Store & Billing:**\n"
-            "• 💵 **Create Invoice:** Create CashApp / Venmo bill\n"
-            "• ➕ **Add Order:** Manually record an order\n"
-            "• 📈 **Order Stats:** View sales & revenue log\n"
-            "• 📬 **DM Member:** Send official direct message\n"
-            "• 🌮 **Refresh Store:** *(Admin Only)* Update stock\n\n"
-            "**🎟️ Panels & Info:**\n"
-            "• 🎟️ **Refresh Tickets:** *(Admin Only)* Update ticket panel\n"
-            "• 🛒 **Refresh Hub:** *(Admin Only)* Update optimizer hub\n"
-            "• ℹ️ **Server Info:** Guild diagnostics"
+            "▸ **🔒 Lock / 🔓 Unlock:** Restrict or restore messaging in this channel\n"
+            "▸ **⏳ Slowmode:** Configure channel message cooldown\n"
+            "▸ **🚨 Server Lockdown:** *(Admin Only)* Emergency freeze across text channels\n\n"
+            "**💵 Store, Billing & Member Outreach:**\n"
+            "▸ **💵 Create Invoice:** Generate official bill with CashApp / Venmo links\n"
+            "▸ **➕ Add Order:** Manually record an order in the sales tracker\n"
+            "▸ **📈 Order Stats:** View completed sales, revenue & order log\n"
+            "▸ **📬 DM Member:** Send an official direct message from the bot\n"
+            "▸ **🌮 Refresh Store:** *(Admin Only)* Update `#🌮🍕-food-rewards` with latest stock\n\n"
+            "**🎟️ Panels & Server Info:**\n"
+            "▸ **🎟️ Refresh Tickets:** *(Admin Only)* Refresh the ticket deployment panel\n"
+            "▸ **🛒 Refresh Hub:** *(Admin Only)* Refresh the Coupon Optimizer Hub\n"
+            "▸ **ℹ️ Server Info:** View guild statistics and diagnostics"
         ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.set_footer(text="Staff Control Center • Admin Only actions marked")
+    embed.set_footer(text="AIO Bot Staff Control Center • Admin Only actions marked accordingly")
     return embed
 
 
@@ -4858,11 +4934,14 @@ def build_ticket_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎫 Support & Order Help",
         description=(
-            "Need assistance or want to place an order?\n\n"
-            "• 🔒 Private channel created for you & staff\n"
-            "• 👥 Only you and staff have access\n"
-            "• ⚡ Staff will respond as soon as possible\n\n"
-            "Click the button below to open your ticket."
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "> 💬 **Have a question, need assistance, or want to place an order?**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**How it works:**\n"
+            "▸ 🔒 A **private channel** is created just for you and staff\n"
+            "▸ 👥 Only you and server staff can see it\n"
+            "▸ ⚡ Staff will respond as soon as possible\n\n"
+            "👇 **Click the button below to open your ticket.**"
         ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
@@ -4870,13 +4949,13 @@ def build_ticket_panel_embed() -> discord.Embed:
     embed.add_field(
         name="📌 Support Guidelines",
         value=(
-            "• 📝 Describe inquiry or order details in full\n"
-            "• 🔕 Avoid unnecessary staff pings\n"
-            "• 📄 Transcripts available upon ticket close"
+            "• Please describe your inquiry or order details in full upon opening.\n"
+            "• Avoid unnecessary `@staff` pings — our team is notified automatically.\n"
+            "• Transcripts and reviews are available upon ticket resolution."
         ),
         inline=False
     )
-    embed.set_footer(text="AIO Support Center • One ticket per user")
+    embed.set_footer(text="AIO Bot Custom Ticket Center • One ticket per user")
     return embed
 
 
@@ -5819,52 +5898,53 @@ class DeleteChannelsConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="❌ Channel deletion cancelled.", embed=None, view=None)
 
 def build_serverinfo_embed(guild: discord.Guild) -> discord.Embed:
-    created_ts = int(guild.created_at.timestamp())
-    owner = guild.owner.mention if guild.owner else f"<@{guild.owner_id}>"
     embed = discord.Embed(
         title=f"📊 Server Diagnostics • {guild.name}",
         description=(
-            f"• 👑 **Owner:** {owner}\n"
-            f"• 🆔 **Guild ID:** `{guild.id}`\n"
-            f"• 🗓️ **Created:** <t:{created_ts}:D> (<t:{created_ts}:R>)\n"
-            f"• 👥 **Members:** `{guild.member_count:,}`\n"
-            f"• 🚀 **Boosts:** Tier {guild.premium_tier} (`{guild.premium_subscription_count}` boosts)\n"
-            f"• 💬 **Channels:** `{len(guild.text_channels)}` text  |  `{len(guild.voice_channels)}` voice\n"
-            f"• 🏷️ **Assets:** `{len(guild.roles)}` roles  |  `{len(guild.emojis)}` emojis"
+            f"> 🌐 *Comprehensive guild overview, stats, and configuration.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_INFO,
         timestamp=datetime.now(timezone.utc)
     )
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
-    embed.set_footer(text="AIO Server Diagnostics", icon_url=guild.icon.url if guild.icon else None)
+    owner = guild.owner.mention if guild.owner else f"<@{guild.owner_id}>"
+    created_ts = int(guild.created_at.timestamp())
+    embed.add_field(name="👑 Guild Ownership", value=f"{owner}\n`ID: {guild.id}`", inline=True)
+    embed.add_field(name="🗓️ Created Date", value=f"<t:{created_ts}:D>\n*(<t:{created_ts}:R>)*", inline=True)
+    embed.add_field(name="🚀 Boost Status", value=f"Tier **{guild.premium_tier}**\n`{guild.premium_subscription_count}` boosts", inline=True)
+    embed.add_field(name="👥 Members", value=f"**{guild.member_count:,}** members", inline=True)
+    embed.add_field(name="💬 Channels", value=f"`{len(guild.text_channels)}` text • `{len(guild.voice_channels)}` voice", inline=True)
+    embed.add_field(name="🏷️ Roles & Emojis", value=f"`{len(guild.roles)}` roles • `{len(guild.emojis)}` emojis", inline=True)
+    embed.set_footer(text="AIO Bot Server Diagnostics", icon_url=guild.icon.url if guild.icon else None)
     return embed
 
 def build_userinfo_embed(member: discord.Member) -> discord.Embed:
-    badge = "Bot Account" if member.bot else "Human User"
-    created_ts = int(member.created_at.timestamp())
-    joined_ts = int(member.joined_at.timestamp()) if member.joined_at else None
-    joined_str = f"<t:{joined_ts}:D> (<t:{joined_ts}:R>)" if joined_ts else "Unknown"
-
-    roles = [r.mention for r in reversed(member.roles) if r.name != "@everyone"]
-    role_str = " ".join(roles[:10]) if roles else "*No assigned roles*"
-    if len(roles) > 10:
-        role_str += f" *(+{len(roles)-10} more)*"
-
     embed = discord.Embed(
         title=f"👤 Member Profile • {member.display_name}",
         description=(
-            f"• 👤 **User:** {member.mention} (`{badge}`)\n"
-            f"• 🆔 **ID:** `{member.id}`\n"
-            f"• 🗓️ **Created:** <t:{created_ts}:D> (<t:{created_ts}:R>)\n"
-            f"• 📥 **Joined:** {joined_str}\n"
-            f"• 🏷️ **Roles ({len(roles)}):** {role_str}"
+            f"> 🔍 *Detailed identity profile and permission overview.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=member.color if member.color.value != 0 else COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.set_footer(text="AIO Member Profile", icon_url=member.guild.icon.url if member.guild and member.guild.icon else None)
+    badge = " • 🤖 `Bot Account`" if member.bot else " • 👤 `Human User`"
+    created_ts = int(member.created_at.timestamp())
+    joined_ts = int(member.joined_at.timestamp()) if member.joined_at else None
+    joined_str = f"<t:{joined_ts}:D> (<t:{joined_ts}:R>)" if joined_ts else "Unknown"
+
+    embed.add_field(name="🆔 Member Identity", value=f"{member.mention}\n`{member.id}`{badge}", inline=True)
+    embed.add_field(name="🗓️ Account Created", value=f"<t:{created_ts}:D>\n*(<t:{created_ts}:R>)*", inline=True)
+    embed.add_field(name="📥 Server Joined", value=f"{joined_str}", inline=True)
+    roles = [r.mention for r in reversed(member.roles) if r.name != "@everyone"]
+    role_str = " ".join(roles[:12]) if roles else "*No assigned roles*"
+    if len(roles) > 12:
+        role_str += f" *(+{len(roles)-12} more)*"
+    embed.add_field(name=f"🏷️ Assigned Roles ({len(roles)})", value=role_str, inline=False)
+    embed.set_footer(text="AIO Bot Member Profile", icon_url=member.guild.icon.url if member.guild and member.guild.icon else None)
     return embed
 
 # --- GIVEAWAYS BACKGROUND RUNNER ---
@@ -5913,14 +5993,16 @@ async def finish_giveaway(msg_id_str: str) -> None:
             ended_embed = discord.Embed(
                 title=f"🎉 GIVEAWAY ENDED: {prize}",
                 description=(
-                    f"• 🏆 **Prize:** `{prize}`\n"
-                    f"• 👤 **Host:** <@{giveaway.get('host_id')}>\n"
-                    f"• 👥 **Winner(s):** {winners_pings}"
+                    f"> 🏆 *This giveaway has concluded and winners have been selected!*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🎁 **Prize:** `{prize}`\n"
+                    f"👤 **Hosted By:** <@{giveaway.get('host_id')}>\n\n"
+                    f"🏆 **Winner(s):**\n{winners_desc}"
                 ),
                 color=0x2B2D31,
                 timestamp=datetime.now(timezone.utc)
             )
-            ended_embed.set_footer(text="Giveaway Concluded")
+            ended_embed.set_footer(text="AIO Bot Giveaway System • Concluded")
             disabled_view = GiveawayEntryView(len(participants))
             for child in disabled_view.children:
                 child.disabled = True
@@ -6189,15 +6271,18 @@ async def help_command(ctx):
     author_perms = ctx.channel.permissions_for(ctx.author) if ctx.guild else discord.Permissions.none()
     is_owner = await bot.is_owner(ctx.author)
     embed = discord.Embed(
-        title="📖 AIO Command Center",
-        description="Select a category from the dropdown menu below to view command guides.",
+        title="📖 AIO Bot — Command Center",
+        description=(
+            "> 💡 *Select a category from the interactive dropdown menu below to view full command guides.*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.add_field(name="🛍️ Coupon Optimizer", value="• Optimal checkout bundles & max savings", inline=False)
-    embed.add_field(name="🛡️ Moderation Suite", value="• Anti-raid, word filters, cases & staff tools", inline=False)
-    embed.add_field(name="🎮 Games & Economy", value="• Blackjack, Slots, Connect 4, Trivia & bank", inline=False)
-    embed.set_footer(text="Tip: Commands work with / or !")
+    embed.add_field(name="🛍️ Coupon Optimizer", value="• Optimal checkout bundles & max savings.", inline=True)
+    embed.add_field(name="🛡️ Moderation Suite", value="• Anti-raid, word filters, cases & staff tools.", inline=True)
+    embed.add_field(name="🎮 Games & Economy", value="• Blackjack, Slots, Connect 4, Trivia & bank.", inline=True)
+    embed.set_footer(text="Tip: All commands work with either / or ! (e.g. /panel or !panel)")
     view = HelpMenuView(author_perms, is_owner)
     await ctx.send(embed=embed, view=view)
 
@@ -6359,17 +6444,19 @@ async def kick_member(ctx, member: discord.Member, *, reason: Optional[str] = "N
         await member.kick(reason=f"{reason} (by {ctx.author})")
         case_id = log_mod_case(ctx.guild.id, "Kick", str(member), str(ctx.author), reason or "No reason provided")
         embed = discord.Embed(
-            title="👢 Member Kicked",
+            title="👢 Moderation Action • Member Kicked",
             description=(
-                f"• 👤 **Member:** {member.mention} (`{member.id}`)\n"
-                f"• 🛡️ **Moderator:** {ctx.author.mention}\n"
-                f"• 📋 **Case:** `#CASE-{case_id:04d}`\n"
-                f"• 📄 **Reason:** {reason}"
+                f"> 🛡️ *A server member has been officially kicked by moderation staff.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=COLOR_WARN,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="AIO Moderation", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        embed.add_field(name="👤 Member", value=f"**{member}**\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+        embed.set_footer(text="AIO Bot Moderation System", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to kick this user.", delete_after=6)
@@ -6387,17 +6474,19 @@ async def ban_member(ctx, member: discord.Member, delete_message_days: Optional[
         await member.ban(delete_message_days=min(delete_message_days or 0, 7), reason=f"{reason} (by {ctx.author})")
         case_id = log_mod_case(ctx.guild.id, "Ban", str(member), str(ctx.author), reason or "No reason provided", f"Purged {delete_message_days}d messages")
         embed = discord.Embed(
-            title="🔨 Member Banned",
+            title="🔨 Moderation Action • Member Banned",
             description=(
-                f"• 👤 **Member:** {member.mention} (`{member.id}`)\n"
-                f"• 🛡️ **Moderator:** {ctx.author.mention}\n"
-                f"• 📋 **Case:** `#CASE-{case_id:04d}`\n"
-                f"• 📄 **Reason:** {reason}"
+                f"> ⛔ *A user has been permanently banned from the server.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=COLOR_ERROR,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="AIO Moderation", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        embed.add_field(name="👤 Member", value=f"**{member}**\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+        embed.set_footer(text="AIO Bot Moderation System", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to ban this user.", delete_after=6)
@@ -6431,16 +6520,18 @@ async def unban_user(ctx, *, user_query: str):
         await ctx.guild.unban(target_user, reason=f"Unbanned by {ctx.author}")
         case_id = log_mod_case(ctx.guild.id, "Unban", str(target_user), str(ctx.author), "Unbanned user")
         embed = discord.Embed(
-            title="🕊️ User Unbanned",
+            title="🕊️ Moderation Action • User Unbanned",
             description=(
-                f"• 👤 **User:** {target_user.mention if hasattr(target_user, 'mention') else target_user} (`{target_user.id}`)\n"
-                f"• 🛡️ **Moderator:** {ctx.author.mention}\n"
-                f"• 📋 **Case:** `#CASE-{case_id:04d}`"
+                f"> 🔓 *A previously banned user has had their server access restored.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=COLOR_SUCCESS,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="AIO Moderation", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        embed.add_field(name="👤 User Profile", value=f"**{target_user}**\n`ID: {target_user.id}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        embed.set_footer(text="AIO Bot Moderation System", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot lacks permission to unban users.", delete_after=6)
@@ -6468,18 +6559,20 @@ async def timeout_member(ctx, member: discord.Member, duration: str, *, reason: 
         await member.timeout(td, reason=f"{reason} (by {ctx.author})")
         case_id = log_mod_case(ctx.guild.id, "Timeout", str(member), str(ctx.author), reason or "No reason provided", f"Duration: {duration}")
         embed = discord.Embed(
-            title="🔇 Member Timed Out",
+            title="🔇 Moderation Action • Member Timed Out",
             description=(
-                f"• 👤 **Member:** {member.mention} (`{member.id}`)\n"
-                f"• ⏱️ **Duration:** `{duration}`\n"
-                f"• 🛡️ **Moderator:** {ctx.author.mention}\n"
-                f"• 📋 **Case:** `#CASE-{case_id:04d}`\n"
-                f"• 📄 **Reason:** {reason}"
+                f"> ⏳ *A member has been temporarily timed out (muted).*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=COLOR_WARN,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="AIO Moderation", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        embed.add_field(name="👤 Member", value=f"{member.mention}\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="⏱️ Duration", value=f"`{duration}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+        embed.set_footer(text="AIO Bot Moderation System", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to timeout this user.", delete_after=6)
@@ -6497,16 +6590,18 @@ async def untimeout_member(ctx, member: discord.Member):
         await member.timeout(None, reason=f"Timeout removed by {ctx.author}")
         case_id = log_mod_case(ctx.guild.id, "Untimeout", str(member), str(ctx.author), "Timeout removed")
         embed = discord.Embed(
-            title="🔊 Timeout Removed",
+            title="🔊 Moderation Action • Timeout Removed",
             description=(
-                f"• 👤 **Member:** {member.mention} (`{member.id}`)\n"
-                f"• 🛡️ **Moderator:** {ctx.author.mention}\n"
-                f"• 📋 **Case:** `#CASE-{case_id:04d}`"
+                f"> 🗣️ *Member timeout has been lifted by staff. Full permissions restored.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=COLOR_SUCCESS,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="AIO Moderation", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        embed.add_field(name="👤 Member", value=f"{member.mention}\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+        embed.set_footer(text="AIO Bot Moderation System", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Bot is missing permissions to untimeout this user.", delete_after=6)
@@ -6535,18 +6630,20 @@ async def warn_member(ctx, member: discord.Member, *, reason: str):
     count = len(warnings_db[key])
     case_id = log_mod_case(ctx.guild.id, "Warning", str(member), str(ctx.author), reason, f"Active warning count: {count}")
     embed = discord.Embed(
-        title="⚠️ Warning Issued",
+        title="⚠️ Moderation Action • Official Warning Issued",
         description=(
-            f"• 👤 **Member:** {member.mention} (`{member.id}`)\n"
-            f"• 🔢 **Warning Count:** `#{count}`\n"
-            f"• 🛡️ **Moderator:** {ctx.author.mention}\n"
-            f"• 📋 **Case:** `#CASE-{case_id:04d}`\n"
-            f"• 📄 **Reason:** {reason}"
+            f"> 📢 *An official formal warning has been recorded for this member.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_WARN,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.set_footer(text="AIO Moderation", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+    embed.add_field(name="👤 Member", value=f"{member.mention}\n`ID: {member.id}`", inline=True)
+    embed.add_field(name="🔢 Warning Count", value=f"`#{count}` warnings", inline=True)
+    embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+    embed.add_field(name="📋 Case ID", value=f"`#CASE-{case_id:04d}`", inline=True)
+    embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+    embed.set_footer(text="AIO Bot Moderation System", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
     await ctx.send(embed=embed)
 
 @bot.hybrid_command(name="warnings", description="View warnings logged for a member")
@@ -6688,16 +6785,20 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
     tx_count = len(coupons) if coupons else 1
     embed = discord.Embed(
         title="🧾 Cashier Step-by-Step Checkout Strategy",
-        description=f"Split items into **{tx_count} transaction(s)** at checkout for maximum savings.",
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"> 💡 Split items into **{tx_count} transaction(s)** at checkout for maximum savings.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
         color=COLOR_SUCCESS if total_savings > 0 else 0x3498DB,
         timestamp=datetime.now(timezone.utc)
     )
 
     if not coupons:
-        item_lines = "\n".join([f"• **{i['name']}**: `${i['price']:.2f}`" for i in items])
+        item_lines = "\n".join([f"▸ **{i['name']}**: `${i['price']:.2f}`" for i in items])
         embed.add_field(
             name="Single Transaction (No Coupons Loaded)",
-            value=f"{item_lines}\n\n💵 **Total Due at Register: ${total_due:.2f}**",
+            value=f"{item_lines}\n\n> 💵 **Total Due at Register: ${total_due:.2f}**",
             inline=False
         )
     else:
@@ -6711,22 +6812,21 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
                 embed.add_field(
                     name=f"🛒 Step {idx+1}: Ring Up {len(group_items)} Item(s)",
                     value=(
-                        f"• 📦 **Items:** {item_bullets}\n"
-                        f"• 🎟️ **Scan:** `{coupon_label(coupon_val)}`\n"
-                        f"• 💵 **Subtotal:** `${group_sub:.2f}` ➔ **Due:** `${due:.2f}` *(Saved `${saved_amt:.2f}`)*"
+                        f"**Items:** {item_bullets}\n"
+                        f"**Scan Coupon:** `{coupon_label(coupon_val)}`\n"
+                        f"> 💵 Subtotal: `${group_sub:.2f}` ➔ **Cashier Due: ${due:.2f}** *(Saved ${saved_amt:.2f}!)*"
                     ),
                     inline=False
                 )
 
     # Cart Summary
-    summary_lines = [
-        f"• 🏷️ **Total Retail:** `${full_subtotal:.2f}`",
-        f"• 🎟️ **Discounts:** `-${total_savings:.2f}` ({savings_pct:.0f}% OFF)",
-        f"• 💵 **Final Due:** `${total_due:.2f}`"
-    ]
     embed.add_field(
         name="📊 Checkout Summary",
-        value="\n".join(summary_lines),
+        value=(
+            f"▸ 🏷️ **Total Retail:** `${full_subtotal:.2f}`\n"
+            f"▸ 🎟️ **Discounts Applied:** `-${total_savings:.2f}` ({savings_pct:.0f}% OFF)\n"
+            f"> 💵 **Final Register Out-of-Pocket: ${total_due:.2f}**"
+        ),
         inline=False
     )
 
@@ -6756,21 +6856,20 @@ def build_strategy_embed(items: List[Dict[str, Any]], coupons: List[Any]) -> dis
 
             trial_due, trial_bundling, register_savings = best_trial
             suggestions.append(
-                f"Buy `{coupon_label(best_candidate)}` (${coupon_cost(best_candidate):.2f}) "
+                f"• Buy `{coupon_label(best_candidate)}` (${coupon_cost(best_candidate):.2f}) "
                 f"➔ Drops register to **${trial_due:.2f}** *(+${best_net_benefit:.2f} profit!)*"
             )
             working_coupons.append(best_candidate)
             working_due = trial_due
 
         if suggestions:
-            sug_lines = [f"• {s}" for s in suggestions]
             embed.add_field(
                 name="💡 Extra Savings Opportunities",
-                value="\n".join(sug_lines),
+                value="Save even more by purchasing these coupons:\n" + "\n".join(suggestions),
                 inline=False
             )
 
-    embed.set_footer(text="Click Checkout below once purchased to record savings")
+    embed.set_footer(text="Click 'Checkout' below once purchased to record your lifetime savings!")
     return embed
 
 # --- COUPON OPTIMIZER COMMANDS ---
@@ -7817,27 +7916,25 @@ async def used_cmd(
         await ctx.send(f"❌ {msg}", delete_after=8)
         return
 
-    desc_lines = [
-        f"• 🎟️ **Coupon:** `{coupon}`",
-        f"• 💳 **Account:** #{acc['id']} {acc.get('name', 'Cardholder')}",
-        f"• 🔢 **Card:** `{acc.get('extraCareNumber', '—')}`"
-    ]
-    if sav_val:
-        desc_lines.append(f"• 💰 **Savings:** `${sav_val:.2f}`")
-
     embed = discord.Embed(
         title="✅ Coupon Marked as Used",
-        description="\n".join(desc_lines),
+        description=(
+            f"> 🎟️ *Coupon **'{coupon}'** has been successfully redeemed and logged.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
+    embed.add_field(name="💳 CVS Account", value=f"#{acc['id']} **{acc.get('name', 'Cardholder')}**", inline=True)
+    embed.add_field(name="🔢 ExtraCare Card", value=f"`{acc.get('extraCareNumber', '—')}`", inline=True)
+    if sav_val:
+        embed.add_field(name="💰 Savings Logged", value=f"`${sav_val:.2f}`", inline=True)
 
     rem = acc.get("coupons", [])
     if rem:
-        rem_lines = [f"• {c}" for c in rem[:6]]
-        embed.add_field(name=f"🎟️ Remaining Active Coupons ({len(rem)})", value="\n".join(rem_lines), inline=False)
+        embed.add_field(name=f"🎟️ Remaining Active Coupons ({len(rem)})", value="\n".join(f"• {c}" for c in rem[:6]), inline=False)
 
-    embed.set_footer(text=f"Marked by {ctx.author.display_name}")
+    embed.set_footer(text=f"Marked by {ctx.author.display_name} • View updated card with /accounts")
     await ctx.send(embed=embed)
 
 
@@ -8822,11 +8919,13 @@ async def orderstats_cmd(ctx: commands.Context, action: Optional[str] = "view"):
         embed = discord.Embed(
             title="➕ Add Order Stats",
             description=(
-                "To manually record an order into the sales tracker:\n\n"
-                "• **Via Command:**\n"
-                "  `/addorder customer:@user price:15.00 item:Taco Bell notes:Paid`\n\n"
-                "• **Via Staff Control Center:**\n"
-                "  Click the **➕ Add Order** button in `🎛️-mod-panel` to open the modal!"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "> 💡 **To manually record an order into the sales tracker:**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "▸ **Via Slash Command:**\n"
+                "`/addorder customer:@user price:15.00 item:Taco Bell notes:Paid`\n\n"
+                "▸ **Via Staff Control Center:**\n"
+                "Click the **➕ Add Order** button in `🎛️-mod-panel` to open the interactive modal!"
             ),
             color=COLOR_PRIMARY
         )
@@ -8885,22 +8984,24 @@ async def addorder_cmd(
     )
 
     cust_display = f"<@{rec['customer_id']}>" if rec.get('customer_id') else rec.get('customer_name', 'Customer')
-    desc_lines = [
-        f"• 🆔 **Order ID:** `#{rec['order_id']:02d}`",
-        f"• 👤 **Customer:** {cust_display}",
-        f"• 📦 **Item:** **{rec['brand']}**",
-        f"• 💵 **Amount:** `${rec['amount']:.2f}`",
-        f"• 🛡️ **Logged By:** {ctx.author.mention}"
-    ]
-    if notes:
-        desc_lines.append(f"• 📝 **Notes:** {notes.strip()}")
-
     embed = discord.Embed(
         title="✅ Order Manually Recorded",
-        description="\n".join(desc_lines),
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"> 📋 **Order #{rec['order_id']:02d} added to sales tracker**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
+    embed.add_field(name="🆔 Order ID", value=f"`#{rec['order_id']:02d}`", inline=True)
+    embed.add_field(name="👤 Customer", value=cust_display, inline=True)
+    embed.add_field(name="📦 Item / Brand", value=f"**{rec['brand']}**", inline=True)
+    embed.add_field(name="💵 Amount", value=f"**${rec['amount']:.2f}**", inline=True)
+    embed.add_field(name="🛡️ Logged By", value=ctx.author.mention, inline=True)
+    if notes:
+        embed.add_field(name="📝 Notes", value=notes.strip(), inline=False)
+
     embed.set_footer(text="AIO Sales Tracker • View all stats with /orderstats")
     await ctx.send(embed=embed)
 
@@ -9055,22 +9156,22 @@ async def giverole_cmd(
     try:
         await member.add_roles(role, reason=f"{reason} (by {ctx.author})")
         case_id = log_mod_case(ctx.guild.id, "Role Granted", str(member), str(ctx.author), reason or "No reason provided", f"Role: {role.name} ({role.id})")
-        desc_lines = [
-            f"• 👤 **Member:** {member.mention} (`{member.id}`)",
-            f"• 🏷️ **Role:** {role.mention} (`{role.name}`)",
-            f"• 🛡️ **Moderator:** {ctx.author.mention}",
-            f"• 📋 **Case:** `#CASE-{case_id:04d}`"
-        ]
-        if reason and reason != "No reason provided":
-            desc_lines.append(f"• 📄 **Reason:** {reason}")
-
         embed = discord.Embed(
             title="🏷️ Role Granted",
-            description="\n".join(desc_lines),
+            description=(
+                f"> ✅ *Successfully assigned role to {member.mention}.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
             color=role.color if role.color.value != 0 else COLOR_SUCCESS,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="Role Management", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        embed.add_field(name="👤 Target Member", value=f"{member.mention}\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="🏷️ Role Assigned", value=f"{role.mention}\n`{role.name}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case Reference", value=f"`#CASE-{case_id:04d}`", inline=True)
+        if reason and reason != "No reason provided":
+            embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+        embed.set_footer(text="AIO Bot Role Management", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Discord Forbidden: Bot lacks permission to assign this role.", delete_after=6)
@@ -9126,22 +9227,22 @@ async def removerole_cmd(
     try:
         await member.remove_roles(role, reason=f"{reason} (by {ctx.author})")
         case_id = log_mod_case(ctx.guild.id, "Role Removed", str(member), str(ctx.author), reason or "No reason provided", f"Role: {role.name} ({role.id})")
-        desc_lines = [
-            f"• 👤 **Member:** {member.mention} (`{member.id}`)",
-            f"• 🏷️ **Role:** {role.mention} (`{role.name}`)",
-            f"• 🛡️ **Moderator:** {ctx.author.mention}",
-            f"• 📋 **Case:** `#CASE-{case_id:04d}`"
-        ]
-        if reason and reason != "No reason provided":
-            desc_lines.append(f"• 📄 **Reason:** {reason}")
-
         embed = discord.Embed(
             title="🏷️ Role Removed",
-            description="\n".join(desc_lines),
+            description=(
+                f"> 🗑️ *Successfully removed role from {member.mention}.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
             color=COLOR_WARN,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="Role Management", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        embed.add_field(name="👤 Target Member", value=f"{member.mention}\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="🏷️ Role Removed", value=f"{role.mention}\n`{role.name}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case Reference", value=f"`#CASE-{case_id:04d}`", inline=True)
+        if reason and reason != "No reason provided":
+            embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+        embed.set_footer(text="AIO Bot Role Management", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Discord Forbidden: Bot lacks permission to remove this role.", delete_after=6)
@@ -9411,11 +9512,12 @@ async def giveaway_start_cmd(
     embed = discord.Embed(
         title=f"🎉 GIVEAWAY: {prize}",
         description=(
-            f"• 🏆 **Prize:** `{prize}`\n"
-            f"• 👥 **Winners:** `{winners_count}`\n"
-            f"• ⏳ **Ends:** <t:{end_unix}:R> (<t:{end_unix}:f>)\n"
-            f"• 👤 **Host:** {ctx.author.mention}\n\n"
-            "Click **Enter** below to participate!"
+            f"> 🎁 *A new giveaway has started! Click the button below to participate.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🏆 **Prize:** `{prize}`\n"
+            f"👥 **Winners:** `{winners_count}`\n"
+            f"⏳ **Ends:** <t:{end_unix}:R> (<t:{end_unix}:f>)\n"
+            f"👤 **Hosted By:** {ctx.author.mention}\n"
         ),
         color=0xF1C40F,
         timestamp=datetime.now(timezone.utc)
@@ -9423,16 +9525,15 @@ async def giveaway_start_cmd(
 
     reqs = []
     if customer_only:
-        reqs.append("⭐ Verified Customers Only *(Completed order or Customer role)*")
+        reqs.append("• ⭐ **Verified Customers Only** *(Completed order or Customer role)*")
     if required_role:
-        reqs.append(f"🏷️ Role: {required_role.mention}")
+        reqs.append(f"• 🏷️ **Required Role:** {required_role.mention}")
     if reqs:
-        formatted_reqs = [f"• {r}" for r in reqs]
-        embed.add_field(name="🔒 Entry Requirements", value="\n".join(formatted_reqs), inline=False)
+        embed.add_field(name="🔒 Entry Requirements", value="\n".join(reqs), inline=False)
     else:
-        embed.add_field(name="👥 Entry Requirements", value="• 🌐 Open to Everyone", inline=False)
+        embed.add_field(name="👥 Entry Requirements", value="• 🌐 **Open to Everyone!**", inline=False)
 
-    embed.set_footer(text="AIO Giveaway • Good luck!", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+    embed.set_footer(text="AIO Bot Giveaway System • Good luck!", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
 
     view = GiveawayEntryView(count=0)
     msg = await target_ch.send(embed=embed, view=view)

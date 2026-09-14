@@ -1789,12 +1789,12 @@ class TestAIOBot(unittest.TestCase):
 
             embed = main.build_order_stats_embed(MockGuild())
             self.assertIn("Completed Orders & Sales Tracker", embed.title)
-            # Check description totals (Orders Fulfilled: 2, Gross Revenue: 24.00 + 18.75 = 42.75)
-            self.assertIn("`2`", embed.description)
-            self.assertIn("$42.75", embed.description)
+            # Check field totals (Orders Fulfilled: 2, Gross Revenue: 24.00 + 18.75 = 42.75)
+            field_text = " ".join(f.value for f in embed.fields)
+            self.assertIn("**2** orders", field_text)
+            self.assertIn("$42.75", field_text)
             # Other count displayed because '2x Accounts' is not taco/pizza
-            self.assertIn("Other", embed.description)
-            self.assertNotIn("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", embed.description)
+            self.assertIn("Other", field_text)
             self.assertIn("/addorder", embed.footer.text)
 
             # 4. Verify /addorder command registration and aliases
