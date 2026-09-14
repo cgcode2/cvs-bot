@@ -6,7 +6,7 @@ import time
 import copy
 import asyncio
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 import main
@@ -1654,6 +1654,75 @@ class TestAIOBot(unittest.TestCase):
         view = main.TicketControlView()
         transcript_btn = next((item for item in view.children if getattr(item, "custom_id", "") == "aio_ticket_transcript_btn"), None)
         self.assertIsNotNone(transcript_btn)
+
+    def test_welcome_system_and_role_management(self):
+        # 1. Test get_welcome_channel
+        class MockCh:
+            def __init__(self, name):
+                self.name = name
+
+        class MockGuild:
+            def __init__(self, channels):
+                self.text_channels = [MockCh(n) for n in channels]
+                self.name = "Test Discord Server"
+                self.member_count = 150
+                self.icon = None
+
+        g_welcome = MockGuild(["💬-general", "👋-welcome", "🤖-bot-commands"])
+        self.assertEqual(main.get_welcome_channel(g_welcome).name, "👋-welcome")
+
+        g_custom = MockGuild(["general", "welcome-chat", "memes"])
+        self.assertEqual(main.get_welcome_channel(g_custom).name, "welcome-chat")
+
+        g_none = MockGuild(["general", "commands"])
+        self.assertIsNone(main.get_welcome_channel(g_none))
+
+        # 2. Test build_welcome_embed
+        class MockMember:
+            def __init__(self, guild):
+                self.guild = guild
+                self.mention = "<@999>"
+                self.name = "NewJoiner"
+                self.created_at = datetime.now(timezone.utc)
+                self.display_avatar = None
+                self.avatar = None
+
+        new_mem = MockMember(g_welcome)
+        embed = main.build_welcome_embed(new_mem)
+        self.assertIn("Welcome to Test Discord Server", embed.title)
+        field_names = [f.name for f in embed.fields]
+        self.assertTrue(any("Member" in fn for fn in field_names))
+        self.assertTrue(any("Account Created" in fn for fn in field_names))
+        self.assertTrue(any("Member Count" in fn for fn in field_names))
+
+        # 3. Test giverole and removerole command registration and aliases
+        give_cmd = main.bot.get_command("giverole")
+        self.assertIsNotNone(give_cmd)
+        self.assertIn("addrole", give_cmd.aliases)
+        self.assertIn("roleadd", give_cmd.aliases)
+        self.assertIn("assignrole", give_cmd.aliases)
+
+        remove_cmd = main.bot.get_command("removerole")
+        self.assertIsNotNone(remove_cmd)
+        self.assertIn("takerole", remove_cmd.aliases)
+        self.assertIn("delrole", remove_cmd.aliases)
+        self.assertIn("roledel", remove_cmd.aliases)
+
+        # 4. Test role group command
+        role_group = main.bot.get_command("role")
+        self.assertIsNotNone(role_group)
+        subcmds = [c.name for c in role_group.commands]
+        self.assertIn("give", subcmds)
+        self.assertIn("remove", subcmds)
+
+        # 5. Test testwelcome and setup-welcome command registration
+        test_wel_cmd = main.bot.get_command("testwelcome")
+        self.assertIsNotNone(test_wel_cmd)
+        self.assertIn("welcometest", test_wel_cmd.aliases)
+
+        setup_wel_cmd = main.bot.get_command("setup-welcome")
+        self.assertIsNotNone(setup_wel_cmd)
+        self.assertIn("setupwelcome", setup_wel_cmd.aliases)
 
 
 if __name__ == '__main__':

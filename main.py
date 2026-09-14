@@ -1021,11 +1021,108 @@ def get_vouches_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
 
 def get_giveaways_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
     """Finds existing giveaways channel in the guild."""
-    for ch in guild.text_channels:
+    for ch in getattr(guild, "text_channels", []):
         clean = ch.name.lower().replace("-", "").replace("_", "").replace(" ", "")
         if "giveaway" in clean:
             return ch
     return None
+
+def get_welcome_channel(guild: Optional[discord.Guild]) -> Optional[discord.TextChannel]:
+    """Finds existing welcome channel in the guild."""
+    if not guild:
+        return None
+    for ch in getattr(guild, "text_channels", []):
+        clean = ch.name.lower().replace("-", "").replace("_", "").replace(" ", "")
+        if "welcome" in clean or "joins" in clean or "join" in clean or "arrivals" in clean:
+            return ch
+    return None
+
+def build_welcome_embed(member: discord.Member) -> discord.Embed:
+    guild = member.guild
+    created_ts = int(member.created_at.timestamp())
+    embed = discord.Embed(
+        title=f"👋 Welcome to {guild.name}!",
+        description=(
+            f"> 🎉 *Welcome {member.mention}! We're thrilled to have you here in our community.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_SUCCESS,
+        timestamp=datetime.now(timezone.utc)
+    )
+    if hasattr(member, "display_avatar") and member.display_avatar:
+        embed.set_thumbnail(url=member.display_avatar.url)
+    elif hasattr(member, "avatar") and member.avatar:
+        embed.set_thumbnail(url=member.avatar.url)
+
+    embed.add_field(name="👤 Member", value=f"{member.mention}\n`{member.name}`", inline=True)
+    embed.add_field(name="🗓️ Account Created", value=f"<t:{created_ts}:D>\n*(<t:{created_ts}:R>)*", inline=True)
+    embed.add_field(name="👥 Member Count", value=f"**#{getattr(guild, 'member_count', 1):,}**", inline=True)
+
+    links = []
+    for ch in getattr(guild, "text_channels", []):
+        cname = ch.name.lower()
+        if "rule" in cname:
+            links.append(f"• 📜 Read server rules: {ch.mention}")
+        elif "coupon" in cname or "optimizer" in cname:
+            links.append(f"• 🛒 Shop & optimize coupons: {ch.mention}")
+        elif "ticket" in cname:
+            links.append(f"• 📩 Need support? Open a ticket: {ch.mention}")
+        elif "food" in cname or "reward" in cname:
+            links.append(f"• 🌮 Check food rewards: {ch.mention}")
+        elif "giveaway" in cname:
+            links.append(f"• 🎉 Active giveaways: {ch.mention}")
+        if len(links) >= 3:
+            break
+
+    if links:
+        embed.add_field(name="📌 Quick Links & Getting Started", value="\n".join(links), inline=False)
+
+    icon_url = guild.icon.url if getattr(guild, "icon", None) else None
+    embed.set_footer(text=f"Member #{getattr(guild, 'member_count', 1):,} • Enjoy your stay!", icon_url=icon_url)
+    return embed
+
+async def setup_welcome_channel(guild: discord.Guild) -> Tuple[Optional[discord.TextChannel], bool]:
+    """Creates or locates a dedicated #👋-welcome channel for new member join announcements."""
+    existing = get_welcome_channel(guild)
+    if existing:
+        return existing, False
+
+    cat = (
+        discord.utils.get(guild.categories, name="📢 INFORMATION") or
+        discord.utils.get(guild.categories, name="💬 COMMUNITY")
+    )
+    if not cat:
+        try:
+            cat = await guild.create_category("📢 INFORMATION")
+        except Exception:
+            cat = None
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=False,
+            add_reactions=True,
+            read_message_history=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            embed_links=True,
+            attach_files=True,
+            manage_messages=True
+        )
+    }
+
+    try:
+        new_ch = await guild.create_text_channel(
+            "👋-welcome",
+            category=cat,
+            topic="Welcome new members to the server!",
+            overwrites=overwrites
+        )
+        return new_ch, True
+    except Exception:
+        return None, False
 
 async def setup_giveaways_channel(guild: discord.Guild) -> Tuple[Optional[discord.TextChannel], bool]:
     """Creates or configures a dedicated #🎉-giveaways channel with read-only permissions for members."""
@@ -3152,6 +3249,7 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Case & Incident Logs", value="`/modlogs [@member]` — view all historical infractions\n`/case [id]` — look up detailed case file", inline=False)
             embed.add_field(name="Staff Private Notes", value="`/note add [@member] [note]` / `/note view` / `/note clear` — staff internal records", inline=False)
             embed.add_field(name="Member Discipline", value="`/kick` or `!kick [@member] [reason]`\n`/ban` or `!ban [@member] [reason]`\n`/unban` or `!unban [user_id_or_name]`\n`/timeout` or `!timeout [@member] [duration]` (e.g. `10m`, `1h`, `1d`)\n`/untimeout` or `!untimeout [@member]`", inline=False)
+            embed.add_field(name="Role Management", value="`/giverole [@member] [@role]` (or `/role give`) — grant a role to a member\n`/removerole [@member] [@role]` (or `/role remove`) — revoke a role\n`/fixroles` — audit role hierarchy & repair bot positioning", inline=False)
             embed.add_field(name="Warnings System", value="`/warn` or `!warn [@member] [reason]` — log a warning\n`/warnings` or `!warnings [@member]` — view warning record\n`/clearwarnings` or `!clearwarnings [@member]` — wipe records", inline=False)
             embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/ticketpanel` or `!tickets` — deploy interactive support ticket panel\n`/dm [user] [msg]` or `!dm` — direct message member from bot\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount] [member] [channel]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
         elif cat == "games":
@@ -3173,6 +3271,7 @@ class HelpCategorySelect(discord.ui.Select):
                 "> 🛠️ *Creative, diagnostic, and communication utility tools for server staff and members.*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
+            embed.add_field(name="Welcome System", value="`/testwelcome [@member]` — preview the new member welcome card\n`/setup-welcome` — set up or configure the `#👋-welcome` channel", inline=False)
             embed.add_field(name="Bot Announcement & Echo", value="`/say` or `!say [text]` — repost text and attached photos/images through the bot", inline=False)
             embed.add_field(name="Custom Embed Creator", value="`/embed` or `!embed` — open interactive modal to design & publish rich embeds with titles, images, colors, and footers", inline=False)
             embed.add_field(name="Server & Member Info", value="`/serverinfo` or `!serverinfo` — server stats, boosts, channels, and roles\n`/userinfo` or `!userinfo [@member]` — member details, account age, join date, permissions", inline=False)
@@ -5854,6 +5953,20 @@ async def on_ready():
                             pass
         except Exception:
             pass
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    guild = getattr(member, "guild", None)
+    if not guild or getattr(member, "bot", False):
+        return
+
+    welcome_ch = get_welcome_channel(guild)
+    if welcome_ch:
+        try:
+            embed = build_welcome_embed(member)
+            await welcome_ch.send(content=f"👋 Welcome to {guild.name}, {member.mention}!", embed=embed)
+        except Exception as e:
+            print(f"⚠️ Error sending welcome message for {member}: {e}", file=sys.stderr)
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -8776,6 +8889,224 @@ async def fixroles_cmd(ctx: commands.Context):
     )
     embed.set_footer(text="AIO Role Management Suite")
     await status_msg.edit(content=None, embed=embed)
+
+
+# --- ROLE ASSIGNMENT & REMOVAL COMMANDS ---
+
+@bot.hybrid_command(
+    name="giverole",
+    aliases=["addrole", "give-role", "roleadd", "assignrole"],
+    description="Assign a server role to a member"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_roles=True)
+@app_commands.default_permissions(manage_roles=True)
+@app_commands.describe(
+    member="The member to receive the role",
+    role="The role to assign",
+    reason="Reason for granting the role (optional)"
+)
+async def giverole_cmd(
+    ctx: commands.Context,
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: Optional[str] = "No reason provided"
+):
+    await safely_delete_message(ctx)
+    if not (is_staff_or_admin(ctx.author) or getattr(ctx.author.guild_permissions, "manage_roles", False) or await bot.is_owner(ctx.author)):
+        await ctx.send("⛔ Permission Denied: You need 'Manage Roles' permission or staff access to assign roles.", delete_after=6)
+        return
+
+    if not ctx.guild.me.guild_permissions.manage_roles:
+        await ctx.send("❌ Bot Missing Permissions: The bot does not have 'Manage Roles' permission in this server.", delete_after=6)
+        return
+
+    if role.is_default() or role.is_integration() or role.is_bot_managed():
+        await ctx.send(f"❌ Cannot assign {role.name}: Managed or default roles cannot be manually assigned.", delete_after=8)
+        return
+
+    if role >= ctx.guild.me.top_role:
+        await ctx.send(f"❌ Hierarchy Error: {role.mention} is higher than or equal to the bot's highest role. Move the bot's role higher in Server Settings.", delete_after=8)
+        return
+
+    if role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_admin_member(ctx.author):
+        await ctx.send(f"⛔ Hierarchy Error: You cannot assign a role ({role.mention}) equal to or higher than your own highest role.", delete_after=8)
+        return
+
+    if role in member.roles:
+        await ctx.send(f"ℹ️ {member.mention} already possesses the {role.mention} role.", delete_after=6)
+        return
+
+    try:
+        await member.add_roles(role, reason=f"{reason} (by {ctx.author})")
+        case_id = log_mod_case(ctx.guild.id, "Role Granted", str(member), str(ctx.author), reason or "No reason provided", f"Role: {role.name} ({role.id})")
+        embed = discord.Embed(
+            title="🏷️ Role Granted",
+            description=(
+                f"> ✅ *Successfully assigned role to {member.mention}.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=role.color if role.color.value != 0 else COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="👤 Target Member", value=f"{member.mention}\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="🏷️ Role Assigned", value=f"{role.mention}\n`{role.name}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case Reference", value=f"`#CASE-{case_id:04d}`", inline=True)
+        if reason and reason != "No reason provided":
+            embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+        embed.set_footer(text="AIO Bot Role Management", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        await ctx.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("❌ Discord Forbidden: Bot lacks permission to assign this role.", delete_after=6)
+    except Exception as e:
+        await ctx.send(f"❌ Error assigning role: {e}", delete_after=8)
+
+
+@bot.hybrid_command(
+    name="removerole",
+    aliases=["takerole", "remove-role", "delrole", "roledel"],
+    description="Remove a server role from a member"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_roles=True)
+@app_commands.default_permissions(manage_roles=True)
+@app_commands.describe(
+    member="The member to remove the role from",
+    role="The role to remove",
+    reason="Reason for removing the role (optional)"
+)
+async def removerole_cmd(
+    ctx: commands.Context,
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: Optional[str] = "No reason provided"
+):
+    await safely_delete_message(ctx)
+    if not (is_staff_or_admin(ctx.author) or getattr(ctx.author.guild_permissions, "manage_roles", False) or await bot.is_owner(ctx.author)):
+        await ctx.send("⛔ Permission Denied: You need 'Manage Roles' permission or staff access to remove roles.", delete_after=6)
+        return
+
+    if not ctx.guild.me.guild_permissions.manage_roles:
+        await ctx.send("❌ Bot Missing Permissions: The bot does not have 'Manage Roles' permission in this server.", delete_after=6)
+        return
+
+    if role.is_default() or role.is_integration() or role.is_bot_managed():
+        await ctx.send(f"❌ Cannot remove {role.name}: Managed or default roles cannot be manually altered.", delete_after=8)
+        return
+
+    if role >= ctx.guild.me.top_role:
+        await ctx.send(f"❌ Hierarchy Error: {role.mention} is higher than or equal to the bot's highest role. Move the bot's role higher in Server Settings.", delete_after=8)
+        return
+
+    if role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_admin_member(ctx.author):
+        await ctx.send(f"⛔ Hierarchy Error: You cannot remove a role ({role.mention}) equal to or higher than your own highest role.", delete_after=8)
+        return
+
+    if role not in member.roles:
+        await ctx.send(f"ℹ️ {member.mention} does not have the {role.mention} role.", delete_after=6)
+        return
+
+    try:
+        await member.remove_roles(role, reason=f"{reason} (by {ctx.author})")
+        case_id = log_mod_case(ctx.guild.id, "Role Removed", str(member), str(ctx.author), reason or "No reason provided", f"Role: {role.name} ({role.id})")
+        embed = discord.Embed(
+            title="🏷️ Role Removed",
+            description=(
+                f"> 🗑️ *Successfully removed role from {member.mention}.*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=COLOR_WARN,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="👤 Target Member", value=f"{member.mention}\n`ID: {member.id}`", inline=True)
+        embed.add_field(name="🏷️ Role Removed", value=f"{role.mention}\n`{role.name}`", inline=True)
+        embed.add_field(name="🛡️ Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="📋 Case Reference", value=f"`#CASE-{case_id:04d}`", inline=True)
+        if reason and reason != "No reason provided":
+            embed.add_field(name="📄 Reason", value=f"> {reason}", inline=False)
+        embed.set_footer(text="AIO Bot Role Management", icon_url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
+        await ctx.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("❌ Discord Forbidden: Bot lacks permission to remove this role.", delete_after=6)
+    except Exception as e:
+        await ctx.send(f"❌ Error removing role: {e}", delete_after=8)
+
+
+@bot.hybrid_group(
+    name="role",
+    description="Role management commands (give or remove roles)"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_roles=True)
+@app_commands.default_permissions(manage_roles=True)
+async def role_group(ctx: commands.Context):
+    if ctx.invoked_subcommand is None:
+        await ctx.send_help(ctx.command)
+
+@role_group.command(name="give", aliases=["add"], description="Assign a role to a member")
+@app_commands.describe(member="The member to receive the role", role="The role to assign", reason="Reason for granting the role (optional)")
+async def role_give_subcmd(ctx: commands.Context, member: discord.Member, role: discord.Role, *, reason: Optional[str] = "No reason provided"):
+    await giverole_cmd(ctx, member, role, reason=reason)
+
+@role_group.command(name="remove", aliases=["take"], description="Remove a role from a member")
+@app_commands.describe(member="The member to remove the role from", role="The role to remove", reason="Reason for removing the role (optional)")
+async def role_remove_subcmd(ctx: commands.Context, member: discord.Member, role: discord.Role, *, reason: Optional[str] = "No reason provided"):
+    await removerole_cmd(ctx, member, role, reason=reason)
+
+
+# --- WELCOME SYSTEM COMMANDS ---
+
+@bot.hybrid_command(
+    name="testwelcome",
+    aliases=["welcometest"],
+    description="Preview or test the welcome message in the welcome channel or active channel"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(
+    member="Member to preview the welcome card for (defaults to yourself)"
+)
+async def testwelcome_cmd(ctx: commands.Context, member: Optional[discord.Member] = None):
+    await safely_delete_message(ctx)
+    target = member or ctx.author
+    embed = build_welcome_embed(target)
+    welcome_ch = get_welcome_channel(ctx.guild)
+    if welcome_ch and welcome_ch.id != ctx.channel.id:
+        try:
+            await welcome_ch.send(content=f"*(Welcome Test Preview)* Welcome {target.mention}!", embed=embed)
+            await ctx.send(f"✅ Welcome message test sent to {welcome_ch.mention}!", delete_after=6)
+            return
+        except Exception as e:
+            await ctx.send(f"⚠️ Could not send to {welcome_ch.mention} ({e}). Displaying here:", delete_after=4)
+
+    await ctx.send(content=f"*(Welcome Test Preview)* Welcome {target.mention}!", embed=embed)
+
+
+@bot.hybrid_command(
+    name="setup-welcome",
+    aliases=["setupwelcome", "createwelcomechannel"],
+    description="Staff command: Set up or configure the #👋-welcome channel"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_welcome_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Only server staff or administrators can set up channels.", delete_after=6)
+        return
+
+    ch, created = await setup_welcome_channel(ctx.guild)
+    if not ch:
+        await ctx.send("❌ Failed to create or find welcome channel. Check bot permissions.", delete_after=6)
+        return
+
+    action = "Created new" if created else "Found existing"
+    await ctx.send(f"✅ {action} welcome channel: {ch.mention}. New members will automatically receive a welcome card here!", delete_after=8)
 
 
 @bot.hybrid_command(name="ping", description="Check the bot's latency")
