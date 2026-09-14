@@ -3939,6 +3939,195 @@ class FoodAccountPurchaseView(discord.ui.View):
         await interaction.response.send_modal(FoodAccountOrderModal(brand="Pizza Hut", price=15.0))
 
 
+# --- SHOP STATUS SYSTEM ---
+
+def get_updated_status_channel_name(current_name: str, is_open: bool) -> str:
+    """
+    Computes the updated channel name reflecting open/closed status.
+    Swaps 🔴 with 🟢 (and vice versa), and swaps 'closed' with 'open' (and vice versa).
+    """
+    target_emoji = "🟢" if is_open else "🔴"
+    other_emoji = "🔴" if is_open else "🟢"
+    name = current_name.strip()
+
+    if other_emoji in name:
+        name = name.replace(other_emoji, target_emoji)
+    elif target_emoji not in name:
+        name = f"{target_emoji}-{name.lstrip('-')}"
+
+    if is_open:
+        if "closed" in name:
+            name = name.replace("closed", "open")
+        elif "close" in name:
+            name = name.replace("close", "open")
+        elif not any(k in name for k in ("open", "status")):
+            name = f"{name}-open"
+    else:
+        if "open" in name:
+            name = name.replace("open", "closed")
+        elif not any(k in name for k in ("closed", "status")):
+            name = f"{name}-closed"
+
+    while "--" in name:
+        name = name.replace("--", "-")
+    return name.strip("-")
+
+
+def build_shop_status_embed(
+    is_open: bool,
+    author_name: str,
+    message: Optional[str] = None,
+    ticket_ch_mention: Optional[str] = None
+) -> discord.Embed:
+    """Builds a notification embed announcing whether the shop is OPEN or CLOSED."""
+    if is_open:
+        embed = discord.Embed(
+            title="🟢 STORE IS NOW OPEN",
+            description=(
+                "> ⚡ **We are officially OPEN and accepting new orders!**\n\n"
+                "Staff is on standby and ready to fulfill your orders. Check the menu below and open a ticket to place your order!"
+            ),
+            color=COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(
+            name="🌮 Taco Bell Rewards",
+            value=(
+                "• **$10.00 each** ⏐ 15 claimed rewards on every account\n"
+                "• `$15 off`, `$10 off`, `$5 off`, free items, Chalupa, Baja Blast"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🍕 Pizza Hut Preloaded Accounts",
+            value=(
+                "• **$15.00 each** ⏐ Stackable rewards ready for checkout\n"
+                "• Large & Medium pizzas, Breadsticks, Wings, Drinks & Desserts"
+            ),
+            inline=False
+        )
+        if message and message.strip():
+            embed.add_field(name="📢 Staff Announcement", value=f"> {message.strip()}", inline=False)
+
+        ticket_target = ticket_ch_mention or "ticket channel"
+        embed.add_field(
+            name="📱 How to Order",
+            value=(
+                f"• Click the order buttons below or head to {ticket_target} to open your ticket!\n"
+                "• Staff will provide login info and OTP code promptly."
+            ),
+            inline=False
+        )
+        embed.set_footer(text=f"AIO Store Status ⏐ Opened by {author_name}")
+    else:
+        embed = discord.Embed(
+            title="🔴 STORE IS CURRENTLY CLOSED",
+            description=(
+                "> 🌙 **We are currently CLOSED and not accepting new orders.**\n\n"
+                "Thank you for stopping by! Orders currently in progress will still be fulfilled by our staff."
+            ),
+            color=COLOR_ERROR,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(
+            name="⏱️ Operating Status",
+            value=(
+                "• 🚪 **New Orders:** Temporarily paused\n"
+                "• 🎫 **Active Tickets:** Being completed by on-duty staff\n"
+                "• 🔔 **Reopening:** Notifications will be posted in this channel as soon as we reopen"
+            ),
+            inline=False
+        )
+        if message and message.strip():
+            embed.add_field(name="📢 Staff Notice", value=f"> {message.strip()}", inline=False)
+        embed.set_footer(text=f"AIO Store Status ⏐ Closed by {author_name}")
+
+    return embed
+
+
+def find_shop_status_channel(
+    guild: discord.Guild,
+    current_channel: Optional[discord.TextChannel] = None
+) -> Optional[discord.TextChannel]:
+    """Finds the designated shop status channel in the guild."""
+    if current_channel:
+        cname = current_channel.name.lower()
+        if any(k in cname for k in ("🟢", "🔴", "shop-status", "store-status", "shop-open", "shop-closed")) or cname in ("status", "shop", "store"):
+            return current_channel
+
+    for ch in guild.text_channels:
+        if "🟢" in ch.name or "🔴" in ch.name:
+            return ch
+
+    for ch in guild.text_channels:
+        cname = ch.name.lower()
+        if any(k in cname for k in ("shop-status", "store-status", "shop-open", "shop-closed")):
+            return ch
+
+    for ch in guild.text_channels:
+        if "status" in ch.name.lower():
+            return ch
+
+    return current_channel
+
+
+async def update_shop_status(
+    guild: discord.Guild,
+    is_open: bool,
+    author: Union[discord.Member, discord.User],
+    message: Optional[str] = None,
+    target_channel: Optional[discord.TextChannel] = None,
+    ping_everyone: bool = False
+) -> Tuple[bool, str, Optional[discord.TextChannel], discord.Embed]:
+    """
+    Core engine to update shop status:
+    1. Resolves status channel.
+    2. Renames channel with green (🟢) or red (🔴).
+    3. Sends the announcement embed with action buttons.
+    Returns (success, result_message, target_channel, embed).
+    """
+    ch = target_channel or find_shop_status_channel(guild)
+    if not ch:
+        return False, "❌ Could not find or resolve a status channel in this server.", None, None
+
+    ticket_ch = None
+    for c in guild.text_channels:
+        if "ticket" in c.name.lower() or "open" in c.name.lower():
+            ticket_ch = c
+            break
+    ticket_mention = ticket_ch.mention if ticket_ch else None
+
+    embed = build_shop_status_embed(
+        is_open=is_open,
+        author_name=getattr(author, "display_name", str(author)),
+        message=message,
+        ticket_ch_mention=ticket_mention
+    )
+
+    old_name = ch.name
+    new_name = get_updated_status_channel_name(old_name, is_open)
+    rename_msg = ""
+
+    if new_name != old_name:
+        try:
+            await ch.edit(name=new_name, reason=f"Shop status updated to {'OPEN' if is_open else 'CLOSED'} by {author}")
+            rename_msg = f" and renamed channel to #{new_name}"
+        except discord.RateLimited:
+            rename_msg = " (⚠️ Channel rename rate-limited by Discord, embed posted successfully)"
+        except discord.Forbidden:
+            rename_msg = " (⚠️ Bot lacks permission to rename channel, embed posted successfully)"
+        except Exception as e:
+            rename_msg = f" (⚠️ Could not rename channel: {e})"
+
+    content = "@everyone" if ping_everyone else None
+    view = FoodAccountPurchaseView() if is_open else None
+
+    await ch.send(content=content, embed=embed, view=view)
+    status_str = "OPEN 🟢" if is_open else "CLOSED 🔴"
+    summary = f"✅ Shop status updated to **{status_str}** in {ch.mention}{rename_msg}!"
+    return True, summary, ch, embed
+
+
 FORMAT_SERVER_BLUEPRINT = [
     {
         "category": "📌 INFORMATION",
@@ -3968,6 +4157,7 @@ FORMAT_SERVER_BLUEPRINT = [
     {
         "category": "🛍️ SAVINGS & REWARDS",
         "channels": [
+            {"name": "🟢-shop-open", "type": "text", "topic": "Live shop opening status and operational hours. Check here to see if orders are being accepted!"},
             {"name": "🌮🍕-food-rewards", "type": "text", "topic": "Preloaded Taco Bell & Pizza Hut rewards accounts store. Order below!"},
             {"name": "⭐-vouches", "type": "text", "topic": "Customer reviews, feedback, and 5-star ratings."},
             {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."},
@@ -4029,6 +4219,8 @@ def is_preserved_channel(channel: Any, mode: str = "clean_old") -> bool:
         if ch_name in get_blueprint_channel_names():
             return True
         if ch_name.startswith(("ticket-", "order-", "cart-")):
+            return True
+        if any(s in ch_name.lower() for s in ("shop-status", "store-status", "shop-open", "shop-closed", "🟢", "🔴")):
             return True
         parent = getattr(channel, "category", None)
         if parent and getattr(parent, "name", "") == "📁 TICKETS":
@@ -4618,6 +4810,44 @@ class ModAddOrderModal(discord.ui.Modal, title="➕ Record Completed Order"):
             pass
 
 
+class ModShopStatusModal(discord.ui.Modal, title="🏪 Update Shop Status"):
+    status_input = discord.ui.TextInput(
+        label="Shop Status (Open or Closed)",
+        placeholder="Type 'open' or 'closed'",
+        required=True,
+        max_length=20
+    )
+    message_input = discord.ui.TextInput(
+        label="Optional Staff Announcement / Note",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g. Taking orders for Taco Bell & Pizza Hut! Deliveries ready.",
+        required=False,
+        max_length=1000
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_status = self.status_input.value.strip().lower()
+        if raw_status in ("open", "opened", "on", "yes", "true", "start"):
+            is_open = True
+        elif raw_status in ("closed", "close", "off", "no", "false", "stop"):
+            is_open = False
+        else:
+            await interaction.response.send_message(
+                "❌ Invalid status. Please type either `open` or `closed`.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        success, summary, ch, _ = await update_shop_status(
+            guild=interaction.guild,
+            is_open=is_open,
+            author=interaction.user,
+            message=self.message_input.value or None
+        )
+        await interaction.followup.send(summary, ephemeral=True)
+
+
 # --- COUPON OPTIMIZER HUB & PRIVATE ROOM VIEWS ---
 
 def build_coupon_hub_embed() -> discord.Embed:
@@ -5090,6 +5320,10 @@ class StaffModPanelButtonView(discord.ui.View):
     async def btn_serverinfo(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = build_serverinfo_embed(interaction.guild)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Shop Status", style=discord.ButtonStyle.secondary, emoji="🏪", custom_id="modpanel_shop_status", row=3)
+    async def btn_shop_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ModShopStatusModal())
 
 
 async def refresh_channel_content(channel: discord.TextChannel, author_id: int, clear_history: bool = True) -> str:
@@ -8154,6 +8388,115 @@ async def setup_tickets_cmd(ctx: commands.Context):
     panel_embed = build_ticket_panel_embed()
     await target_ch.send(embed=panel_embed, view=TicketLaunchView())
     await ctx.send(f"✅ Ticket launch panel ready at {target_ch.mention}!", delete_after=8)
+
+@bot.hybrid_command(
+    name="shopstatus",
+    aliases=["shop-status", "storestatus", "store-status", "status", "shop"],
+    description="Update shop status (OPEN/CLOSED), rename status channel with 🟢/🔴, and send notification embed"
+)
+@commands.guild_only()
+@app_commands.describe(
+    status="Choose OPEN (🟢) or CLOSED (🔴)",
+    message="Optional staff announcement, hours, or notice",
+    channel="Specific channel to post status in (defaults to status channel)",
+    ping_everyone="Mention @everyone with the notification (default: False)"
+)
+@app_commands.choices(
+    status=[
+        app_commands.Choice(name="🟢 OPEN", value="open"),
+        app_commands.Choice(name="🔴 CLOSED", value="closed"),
+    ]
+)
+async def shopstatus_cmd(
+    ctx: commands.Context,
+    status: str,
+    message: Optional[str] = None,
+    channel: Optional[discord.TextChannel] = None,
+    ping_everyone: Optional[bool] = False
+):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You must be a staff member or administrator to update shop status.", delete_after=6)
+        return
+
+    raw_status = status.strip().lower()
+    if raw_status in ("open", "opened", "on", "yes", "true", "start"):
+        is_open = True
+    elif raw_status in ("closed", "close", "off", "no", "false", "stop"):
+        is_open = False
+    else:
+        await ctx.send("❌ Invalid status. Please specify `open` or `closed`.\n*Example:* `/shopstatus status:open message:Taking orders now!`", delete_after=8)
+        return
+
+    success, summary, target_ch, _ = await update_shop_status(
+        guild=ctx.guild,
+        is_open=is_open,
+        author=ctx.author,
+        message=message,
+        target_channel=channel or (ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None),
+        ping_everyone=bool(ping_everyone)
+    )
+
+    await ctx.send(summary, delete_after=8)
+
+@bot.hybrid_command(
+    name="setup-status-channel",
+    aliases=["setupstatus", "setupshopstatus", "setup-status"],
+    description="Staff command: Set up or initialize the #🟢-shop-open status channel"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_status_channel_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    existing = find_shop_status_channel(guild)
+    if existing:
+        await update_shop_status(
+            guild=guild,
+            is_open=True,
+            author=ctx.author,
+            message="Welcome to the rewards store! Live status announcements will be posted here.",
+            target_channel=existing
+        )
+        await ctx.send(f"✅ Existing status channel found at {existing.mention} and refreshed!", delete_after=8)
+        return
+
+    cat = None
+    for c in guild.categories:
+        if "savings" in c.name.lower() or "rewards" in c.name.lower():
+            cat = c
+            break
+    if not cat:
+        for c in guild.categories:
+            if "info" in c.name.lower():
+                cat = c
+                break
+
+    channel_name = "🟢-shop-open"
+    try:
+        new_ch = await guild.create_text_channel(
+            channel_name,
+            category=cat,
+            topic="Live shop opening status and operational hours. Check here to see if orders are being accepted!"
+        )
+        await update_shop_status(
+            guild=guild,
+            is_open=True,
+            author=ctx.author,
+            message="Welcome to the rewards store! Live status announcements will be posted here.",
+            target_channel=new_ch
+        )
+        await ctx.send(f"✅ Shop status channel created at {new_ch.mention}!", delete_after=8)
+    except Exception as e:
+        await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
 
 @bot.hybrid_command(
     name="sync-commands",

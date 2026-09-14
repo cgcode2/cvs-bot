@@ -1817,6 +1817,143 @@ class TestAIOBot(unittest.TestCase):
             main.tickets_db.update(saved_db)
             main.save_tickets()
 
+    def test_get_updated_status_channel_name(self):
+        # Open transitions
+        self.assertEqual(main.get_updated_status_channel_name("🔴-shop-closed", is_open=True), "🟢-shop-open")
+        self.assertEqual(main.get_updated_status_channel_name("🟢-shop-open", is_open=True), "🟢-shop-open")
+        self.assertEqual(main.get_updated_status_channel_name("🔴-status", is_open=True), "🟢-status")
+        self.assertEqual(main.get_updated_status_channel_name("shop-status", is_open=True), "🟢-shop-status")
+        self.assertEqual(main.get_updated_status_channel_name("general-chat", is_open=True), "🟢-general-chat-open")
+
+        # Closed transitions
+        self.assertEqual(main.get_updated_status_channel_name("🟢-shop-open", is_open=False), "🔴-shop-closed")
+        self.assertEqual(main.get_updated_status_channel_name("🔴-shop-closed", is_open=False), "🔴-shop-closed")
+        self.assertEqual(main.get_updated_status_channel_name("🟢-status", is_open=False), "🔴-status")
+        self.assertEqual(main.get_updated_status_channel_name("shop-status", is_open=False), "🔴-shop-status")
+        self.assertEqual(main.get_updated_status_channel_name("general-chat", is_open=False), "🔴-general-chat-closed")
+
+    def test_build_shop_status_embed(self):
+        # 1. OPEN Embed
+        embed_open = main.build_shop_status_embed(
+            is_open=True,
+            author_name="StaffMod",
+            message="Taking Taco Bell & Pizza Hut orders!",
+            ticket_ch_mention="<#112233>"
+        )
+        self.assertIn("STORE IS NOW OPEN", embed_open.title)
+        self.assertEqual(embed_open.color.value, main.COLOR_SUCCESS)
+        self.assertIn("Taking Taco Bell & Pizza Hut orders!", str(embed_open.fields))
+        self.assertIn("<#112233>", str(embed_open.fields))
+        self.assertIn("StaffMod", embed_open.footer.text)
+
+        # 2. CLOSED Embed
+        embed_closed = main.build_shop_status_embed(
+            is_open=False,
+            author_name="StaffMod",
+            message="Back at 9 PM EST!"
+        )
+        self.assertIn("STORE IS CURRENTLY CLOSED", embed_closed.title)
+        self.assertEqual(embed_closed.color.value, main.COLOR_ERROR)
+        self.assertIn("Temporarily paused", str(embed_closed.fields))
+        self.assertIn("Back at 9 PM EST!", str(embed_closed.fields))
+        self.assertIn("StaffMod", embed_closed.footer.text)
+
+    def test_find_and_update_shop_status(self):
+        class MockTextChannel:
+            def __init__(self, id_val, name):
+                self.id = id_val
+                self.name = name
+                self.mention = f"<#{id_val}>"
+                self.sent_messages = []
+                self.renamed_to = []
+
+            async def send(self, content=None, embed=None, view=None):
+                self.sent_messages.append({"content": content, "embed": embed, "view": view})
+
+            async def edit(self, name=None, reason=None):
+                if name:
+                    self.renamed_to.append(name)
+                    self.name = name
+
+        class MockGuild:
+            def __init__(self):
+                self.text_channels = [
+                    MockTextChannel(1, "general-chat"),
+                    MockTextChannel(2, "🔴-shop-closed"),
+                    MockTextChannel(3, "📩-open-a-ticket")
+                ]
+
+        class MockAuthor:
+            display_name = "OwnerCody"
+            mention = "<@12345>"
+            id = 12345
+
+        guild = MockGuild()
+        author = MockAuthor()
+
+        # Find status channel
+        status_ch = main.find_shop_status_channel(guild)
+        self.assertIsNotNone(status_ch)
+        self.assertEqual(status_ch.name, "🔴-shop-closed")
+
+        # Run update_shop_status async
+        loop = asyncio.new_event_loop()
+        try:
+            success, summary, target_ch, embed = loop.run_until_complete(
+                main.update_shop_status(
+                    guild=guild,
+                    is_open=True,
+                    author=author,
+                    message="Dinner rush open!",
+                    target_channel=status_ch
+                )
+            )
+            self.assertTrue(success)
+            self.assertIn("OPEN 🟢", summary)
+            self.assertEqual(target_ch.name, "🟢-shop-open")
+            self.assertEqual(len(target_ch.sent_messages), 1)
+            self.assertIn("Dinner rush open!", str(embed.fields))
+        finally:
+            loop.close()
+
+    def test_shop_status_commands_and_views(self):
+        # 1. Verify shopstatus command registration and aliases
+        cmd = main.bot.get_command("shopstatus")
+        self.assertIsNotNone(cmd)
+        self.assertIn("shop-status", cmd.aliases)
+        self.assertIn("storestatus", cmd.aliases)
+        self.assertIn("shop", cmd.aliases)
+        self.assertIn("status", cmd.aliases)
+
+        # 2. Verify setup-status-channel command registration
+        setup_cmd = main.bot.get_command("setup-status-channel")
+        self.assertIsNotNone(setup_cmd)
+        self.assertIn("setupstatus", setup_cmd.aliases)
+
+        # 3. Verify ModShopStatusModal
+        modal = main.ModShopStatusModal()
+        self.assertEqual(modal.title, "🏪 Update Shop Status")
+        self.assertIsNotNone(modal.status_input)
+        self.assertIsNotNone(modal.message_input)
+
+        # 4. Verify Shop Status button on StaffModPanelButtonView row 3
+        panel_view = main.StaffModPanelButtonView()
+        btn = discord.utils.get(panel_view.children, custom_id="modpanel_shop_status")
+        self.assertIsNotNone(btn)
+        self.assertEqual(btn.label, "Shop Status")
+        self.assertEqual(btn.row, 3)
+
+        # 5. Verify is_preserved_channel protects status channels
+        class MockCh:
+            name = "🟢-shop-open"
+        self.assertTrue(main.is_preserved_channel(MockCh()))
+        class MockCh2:
+            name = "🔴-shop-closed"
+        self.assertTrue(main.is_preserved_channel(MockCh2()))
+        class MockCh3:
+            name = "shop-status"
+        self.assertTrue(main.is_preserved_channel(MockCh3()))
+
 
 if __name__ == '__main__':
     unittest.main()
