@@ -8484,42 +8484,72 @@ def build_trip_detail_embed(index: int) -> discord.Embed:
     embed.set_footer(text=f"AIO Bot • Trip Index {index + 1} of {len(trips)}")
     return embed
 
-def build_shopper_stats_embed(shopper_key: str) -> discord.Embed:
+def build_shopper_stats_embed(shopper_key: str, guild: Optional[discord.Guild] = None) -> discord.Embed:
     stats = get_trips_overview_stats()
     shopper = stats["shoppers"].get(shopper_key)
-    if not shopper:
-        return discord.Embed(title="📭 Shopper Not Found", description="No trip data recorded for this user.", color=COLOR_WARN)
+    if shopper:
+        user_mention = f"<@{shopper['user_id']}>" if shopper.get("user_id") else f"**{shopper['name']}**"
+        pct = round(shopper["saved"] / shopper["retail"] * 100, 1) if shopper["retail"] > 0 else 0.0
 
-    user_mention = f"<@{shopper['user_id']}>" if shopper.get("user_id") else f"**{shopper['name']}**"
-    pct = round(shopper["saved"] / shopper["retail"] * 100, 1) if shopper["retail"] > 0 else 0.0
+        embed = discord.Embed(
+            title=f"👤 Shopper Profile • {shopper['name']}",
+            description=f"Personal couponing dossier for {user_mention}.",
+            color=0x3498DB,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="🛒 Completed Trips", value=f"**`{shopper['trips_count']}`** trip(s)", inline=True)
+        embed.add_field(name="💰 Lifetime Net Saved", value=f"**`${shopper['saved']:.2f}`**", inline=True)
+        embed.add_field(name="📈 Average Efficiency", value=f"**`{pct}%`** saved", inline=True)
+        embed.add_field(name="🏷️ Total Retail Optimized", value=f"${shopper['retail']:.2f}", inline=True)
+        embed.add_field(name="💵 Total Out-of-Pocket Paid", value=f"${shopper['paid']:.2f}", inline=True)
+        embed.add_field(name="🗓️ Last Trip Date", value=f"`{shopper['last_date']}`", inline=True)
+
+        trips_list = shopper.get("trips", [])
+        if trips_list:
+            lines = []
+            for t in trips_list[-5:]:
+                t_pct = t.get("savings_pct", 0.0)
+                lines.append(f"• `{t.get('date')}` — Paid **${t.get('total_due', 0.0):.2f}**, Saved **${t.get('net_saved', 0.0):.2f}** ({t_pct}%)")
+            embed.add_field(name="📜 Recent Trips", value="\n".join(lines), inline=False)
+
+        embed.set_footer(text=f"AIO Bot • Shopper Intelligence • {shopper['name']}")
+        return embed
+
+    # If no trip history, display profile for any server member
+    member = None
+    if guild and shopper_key.isdigit():
+        member = guild.get_member(int(shopper_key))
+
+    name = member.display_name if member else f"Member {shopper_key}"
+    user_mention = member.mention if member else f"<@{shopper_key}>"
+
+    session = get_session(int(shopper_key)) if shopper_key.isdigit() else {"items": [], "coupons": []}
+    cart_items = session.get("items", [])
+    cart_coupons = session.get("coupons", [])
 
     embed = discord.Embed(
-        title=f"👤 Shopper Profile • {shopper['name']}",
-        description=f"Personal couponing dossier for {user_mention}.",
-        color=0x3498DB,
+        title=f"👤 Shopper Profile • {name}",
+        description=f"Server member couponing status for {user_mention}.",
+        color=COLOR_INFO,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.add_field(name="🛒 Completed Trips", value=f"**`{shopper['trips_count']}`** trip(s)", inline=True)
-    embed.add_field(name="💰 Lifetime Net Saved", value=f"**`${shopper['saved']:.2f}`**", inline=True)
-    embed.add_field(name="📈 Average Efficiency", value=f"**`{pct}%`** saved", inline=True)
-    embed.add_field(name="🏷️ Total Retail Optimized", value=f"${shopper['retail']:.2f}", inline=True)
-    embed.add_field(name="💵 Total Out-of-Pocket Paid", value=f"${shopper['paid']:.2f}", inline=True)
-    embed.add_field(name="🗓️ Last Trip Date", value=f"`{shopper['last_date']}`", inline=True)
+    embed.add_field(name="🛒 Completed Trips", value="`0` trips logged", inline=True)
+    embed.add_field(name="💰 Lifetime Saved", value="$0.00", inline=True)
+    embed.add_field(name="📈 Optimization Efficiency", value="N/A", inline=True)
 
-    trips_list = shopper.get("trips", [])
-    if trips_list:
-        lines = []
-        for t in trips_list[-5:]:
-            t_pct = t.get("savings_pct", 0.0)
-            lines.append(f"• `{t.get('date')}` — Paid **${t.get('total_due', 0.0):.2f}**, Saved **${t.get('net_saved', 0.0):.2f}** ({t_pct}%)")
-        embed.add_field(name="📜 Recent Trips", value="\n".join(lines), inline=False)
-
-    embed.set_footer(text=f"AIO Bot • Shopper Intelligence • {shopper['name']}")
+    cart_desc = f"**{len(cart_items)} item(s)** loaded, **{len(cart_coupons)} coupon(s)** active" if (cart_items or cart_coupons) else "*Cart is currently empty*"
+    embed.add_field(name="🛒 Active Shopping Cart", value=cart_desc, inline=False)
+    embed.add_field(
+        name="ℹ️ Note",
+        value="This member has not checked out any trips yet. When they optimize and run `/checkout`, their savings and bundle rating will appear here.",
+        inline=False
+    )
+    embed.set_footer(text=f"AIO Bot • Shopper Intelligence • {name}")
     return embed
 
 
 class ShopperFilterSelect(discord.ui.Select):
-    def __init__(self, shoppers: List[Dict[str, Any]], current_key: Optional[str] = None):
+    def __init__(self, guild: Optional[discord.Guild], shoppers: List[Dict[str, Any]], current_key: Optional[str] = None):
         options = [
             discord.SelectOption(
                 label="📊 All Shoppers Overview",
@@ -8529,7 +8559,10 @@ class ShopperFilterSelect(discord.ui.Select):
                 default=(current_key is None or current_key == "overview")
             )
         ]
-        for s in shoppers[:24]:
+        added_ids = set()
+        for s in shoppers[:15]:
+            if s.get("user_id"):
+                added_ids.add(str(s["user_id"]))
             lbl = s['name'][:25]
             desc = f"{s['trips_count']} trip(s) • ${s['saved']:.2f} saved"[:50]
             options.append(
@@ -8537,11 +8570,25 @@ class ShopperFilterSelect(discord.ui.Select):
                     label=lbl,
                     value=s['key'],
                     description=desc,
-                    emoji="👤",
+                    emoji="🏆",
                     default=(current_key == s['key'])
                 )
             )
-        super().__init__(placeholder="👤 Filter by specific shopper...", min_values=1, max_values=1, options=options, row=0)
+
+        if guild:
+            for m in guild.members:
+                if not m.bot and str(m.id) not in added_ids and len(options) < 25:
+                    options.append(
+                        discord.SelectOption(
+                            label=m.display_name[:25],
+                            value=str(m.id),
+                            description=f"@{m.name} • 0 trips logged"[:50],
+                            emoji="👤",
+                            default=(current_key == str(m.id))
+                        )
+                    )
+
+        super().__init__(placeholder="👤 Select any member on the server to view stats...", min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         chosen = self.values[0]
@@ -8553,15 +8600,16 @@ class ShopperFilterSelect(discord.ui.Select):
         else:
             view.view_mode = "shopper"
             view.selected_shopper_key = chosen
-            embed = build_shopper_stats_embed(chosen)
+            embed = build_shopper_stats_embed(chosen, interaction.guild)
         view.update_components()
         await interaction.response.edit_message(embed=embed, view=view)
 
 
 class TripsDashboardView(discord.ui.View):
-    def __init__(self, admin_user: discord.Member, initial_mode: str = "overview", trip_idx: int = 0, shopper_key: Optional[str] = None):
+    def __init__(self, admin_user: discord.Member, initial_mode: str = "overview", trip_idx: int = 0, shopper_key: Optional[str] = None, guild: Optional[discord.Guild] = None):
         super().__init__(timeout=180)
         self.admin_user = admin_user
+        self.guild = guild or admin_user.guild
         self.view_mode = initial_mode
         self.current_trip_idx = trip_idx
         self.selected_shopper_key = shopper_key
@@ -8579,8 +8627,7 @@ class TripsDashboardView(discord.ui.View):
         stats = get_trips_overview_stats()
         shoppers = list(stats["shoppers"].values())
 
-        if shoppers:
-            self.add_item(ShopperFilterSelect(shoppers, self.selected_shopper_key))
+        self.add_item(ShopperFilterSelect(self.guild, shoppers, self.selected_shopper_key))
 
         btn_overview = discord.ui.Button(
             label="Overview",
@@ -8654,7 +8701,7 @@ class TripsDashboardView(discord.ui.View):
         elif self.view_mode == "feed":
             embed = build_trip_detail_embed(self.current_trip_idx)
         elif self.view_mode == "shopper" and self.selected_shopper_key:
-            embed = build_shopper_stats_embed(self.selected_shopper_key)
+            embed = build_shopper_stats_embed(self.selected_shopper_key, self.guild)
         else:
             embed = build_trips_overview_embed()
         await interaction.response.edit_message(embed=embed, view=self)
@@ -8674,18 +8721,24 @@ async def trips_dashboard_cmd(ctx: commands.Context, shopper: Optional[discord.M
         await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can view shopper analytics.", delete_after=6)
         return
 
+    if ctx.guild and not ctx.guild.chunked:
+        try:
+            await ctx.guild.chunk()
+        except Exception:
+            pass
+
     if shopper:
         shopper_key = str(shopper.id)
-        embed = build_shopper_stats_embed(shopper_key)
-        view = TripsDashboardView(admin_user=ctx.author, initial_mode="shopper", shopper_key=shopper_key)
+        embed = build_shopper_stats_embed(shopper_key, ctx.guild)
+        view = TripsDashboardView(admin_user=ctx.author, initial_mode="shopper", shopper_key=shopper_key, guild=ctx.guild)
     else:
         embed = build_trips_overview_embed()
-        view = TripsDashboardView(admin_user=ctx.author, initial_mode="overview")
+        view = TripsDashboardView(admin_user=ctx.author, initial_mode="overview", guild=ctx.guild)
 
     await ctx.send(embed=embed, view=view)
 
 
-# --- TARGETED MASS DM SYSTEM WITH DROPDOWN USER SELECT ---
+# --- TARGETED MASS DM SYSTEM WITH DROPDOWN USER SELECT & ALL MEMBERS ---
 
 class MassDMModal(discord.ui.Modal, title="✍️ Targeted Mass DM Composer"):
     dm_title = discord.ui.TextInput(
@@ -8718,28 +8771,107 @@ class MassDMModal(discord.ui.Modal, title="✍️ Targeted Mass DM Composer"):
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
+class MassDMMemberSelect(discord.ui.Select):
+    def __init__(self, page_members: List[discord.Member], selected_ids: Set[int], page: int, total_pages: int, total_count: int):
+        options = []
+        for m in page_members:
+            is_selected = m.id in selected_ids
+            options.append(
+                discord.SelectOption(
+                    label=m.display_name[:25],
+                    description=f"@{m.name}"[:50],
+                    value=str(m.id),
+                    default=is_selected,
+                    emoji="👤"
+                )
+            )
+        super().__init__(
+            placeholder=f"👥 Select members (Pg {page+1}/{total_pages} • {total_count} members total)...",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        current_page_ids = {int(opt.value) for opt in self.options}
+        chosen_ids = {int(v) for v in self.values}
+        for uid in current_page_ids:
+            if uid in chosen_ids:
+                self.view.selected_user_ids.add(uid)
+            else:
+                self.view.selected_user_ids.discard(uid)
+
+        self.view.update_components()
+        embed = self.view.build_preview_embed()
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class MassDMRoleSelect(discord.ui.Select):
+    def __init__(self, roles: List[discord.Role]):
+        options = []
+        for r in roles[:25]:
+            if r.name == "@everyone" or len(r.members) == 0:
+                continue
+            options.append(
+                discord.SelectOption(
+                    label=f"@{r.name}"[:25],
+                    value=str(r.id),
+                    description=f"{len([m for m in r.members if not m.bot])} member(s)",
+                    emoji="🎭"
+                )
+            )
+        if not options:
+            options.append(discord.SelectOption(label="No custom roles with members", value="none"))
+        super().__init__(placeholder="🎭 Quick-select all members in a role...", min_values=1, max_values=1, options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await interaction.response.defer()
+            return
+        role_id = int(self.values[0])
+        role = interaction.guild.get_role(role_id)
+        if role:
+            for m in role.members:
+                if not m.bot:
+                    self.view.selected_user_ids.add(m.id)
+        self.view.update_components()
+        embed = self.view.build_preview_embed()
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
 class MassDMView(discord.ui.View):
     def __init__(
         self,
         sender: discord.Member,
+        all_members: Optional[List[discord.Member]] = None,
         initial_title: Optional[str] = None,
         initial_message: Optional[str] = None
     ):
         super().__init__(timeout=300)
         self.sender = sender
+        self.guild = getattr(sender, "guild", None)
+        if all_members is None:
+            if self.guild and hasattr(self.guild, "members"):
+                self.all_members = [m for m in self.guild.members if not getattr(m, "bot", False)]
+            else:
+                self.all_members = []
+        else:
+            self.all_members = all_members
         self.current_title = initial_title or "Important Announcement"
         self.current_message = initial_message or ""
-        self.selected_users: List[Union[discord.User, discord.Member]] = []
+        self.selected_user_ids: Set[int] = set()
+        self.current_page = 0
+        self.per_page = 25
+        self.total_pages = max(1, (len(self.all_members) + self.per_page - 1) // self.per_page)
+        self.update_components()
 
-        # Native UserSelect multi-picker (1 to 25 recipients)
-        self.user_select = discord.ui.UserSelect(
-            placeholder="👥 Click to select recipients from server (1 to 25)...",
-            min_values=1,
-            max_values=25,
-            row=0
-        )
-        self.user_select.callback = self.on_user_select
-        self.add_item(self.user_select)
+    @property
+    def user_select(self):
+        for item in self.children:
+            if isinstance(item, MassDMMemberSelect):
+                return item
+        return None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.sender.id or await is_owner_only(interaction.user, interaction.guild):
@@ -8747,49 +8879,90 @@ class MassDMView(discord.ui.View):
         await interaction.response.send_message("⛔ Only the staff member who initiated this broadcast can control it.", ephemeral=True)
         return False
 
-    async def on_user_select(self, interaction: discord.Interaction):
-        self.selected_users = list(self.user_select.values)
+    def update_components(self):
+        self.clear_items()
+        start = self.current_page * self.per_page
+        end = min(start + self.per_page, len(self.all_members))
+        page_members = self.all_members[start:end]
+
+        if page_members:
+            self.add_item(MassDMMemberSelect(page_members, self.selected_user_ids, self.current_page, self.total_pages, len(self.all_members)))
+
+        if self.guild and self.guild.roles:
+            self.add_item(MassDMRoleSelect(self.guild.roles))
+
+        btn_select_all = discord.ui.Button(
+            label=f"Select ALL ({len(self.all_members)})",
+            style=discord.ButtonStyle.secondary,
+            emoji="👥",
+            row=2
+        )
+        btn_select_all.callback = self.btn_select_all_click
+        self.add_item(btn_select_all)
+
+        btn_clear = discord.ui.Button(
+            label="Clear Selection",
+            style=discord.ButtonStyle.secondary,
+            emoji="🧹",
+            row=2
+        )
+        btn_clear.callback = self.btn_clear_click
+        self.add_item(btn_clear)
+
+        if self.total_pages > 1:
+            btn_prev = discord.ui.Button(label="Prev Page", style=discord.ButtonStyle.secondary, emoji="◀️", row=2)
+            btn_prev.callback = self.btn_prev_page_click
+            self.add_item(btn_prev)
+
+            btn_next = discord.ui.Button(label="Next Page", style=discord.ButtonStyle.secondary, emoji="▶️", row=2)
+            btn_next.callback = self.btn_next_page_click
+            self.add_item(btn_next)
+
+        btn_msg = discord.ui.Button(label="Set Message", style=discord.ButtonStyle.primary, emoji="✍️", row=3)
+        btn_msg.callback = self.btn_set_message_click
+        self.add_item(btn_msg)
+
+        btn_send = discord.ui.Button(label="Send Direct Messages", style=discord.ButtonStyle.success, emoji="🚀", row=3)
+        btn_send.callback = self.btn_send_click
+        self.add_item(btn_send)
+
+        btn_cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.danger, emoji="✖️", row=3)
+        btn_cancel.callback = self.btn_cancel_click
+        self.add_item(btn_cancel)
+
+    async def btn_select_all_click(self, interaction: discord.Interaction):
+        for m in self.all_members:
+            self.selected_user_ids.add(m.id)
+        self.update_components()
         embed = self.build_preview_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    def build_preview_embed(self) -> discord.Embed:
-        embed = discord.Embed(
-            title="📬 Targeted Mass DM Studio",
-            description=(
-                "Use the interactive dropdown menu below to select members, compose your message, "
-                "and dispatch direct messages."
-            ),
-            color=0x5865F2,
-            timestamp=datetime.now(timezone.utc)
-        )
+    async def btn_clear_click(self, interaction: discord.Interaction):
+        self.selected_user_ids.clear()
+        self.update_components()
+        embed = self.build_preview_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
-        if not self.selected_users:
-            recipients_text = "*(None selected yet — click the dropdown below to choose 1 to 25 members)*"
-        else:
-            names = [f"• {u.mention} (`{u.display_name}`)" for u in self.selected_users[:10]]
-            if len(self.selected_users) > 10:
-                names.append(f"*...and {len(self.selected_users)-10} more*")
-            recipients_text = f"**{len(self.selected_users)} Member(s) Selected:**\n" + "\n".join(names)
+    async def btn_prev_page_click(self, interaction: discord.Interaction):
+        self.current_page = (self.current_page - 1) % self.total_pages
+        self.update_components()
+        embed = self.build_preview_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
-        embed.add_field(name="👥 Target Recipients", value=recipients_text, inline=False)
-        embed.add_field(name="🏷️ Message Title", value=f"`{self.current_title}`", inline=True)
+    async def btn_next_page_click(self, interaction: discord.Interaction):
+        self.current_page = (self.current_page + 1) % self.total_pages
+        self.update_components()
+        embed = self.build_preview_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
-        preview_body = self.current_message if self.current_message else "*(No message entered yet — click 'Set Message' below)*"
-        if len(preview_body) > 600:
-            preview_body = preview_body[:597] + "..."
-        embed.add_field(name="📝 Message Content Preview", value=preview_body, inline=False)
-        embed.set_footer(text=f"AIO Bot Broadcast Studio • Initiated by {self.sender.display_name}")
-        return embed
-
-    @discord.ui.button(label="Set Message", style=discord.ButtonStyle.primary, emoji="✍️", row=1)
-    async def btn_set_message(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def btn_set_message_click(self, interaction: discord.Interaction):
         modal = MassDMModal(self)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Send Direct Messages", style=discord.ButtonStyle.success, emoji="🚀", row=1)
-    async def btn_send(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.selected_users:
-            await interaction.response.send_message("❌ Please select at least one recipient from the dropdown above!", ephemeral=True)
+    async def btn_send_click(self, interaction: discord.Interaction):
+        selected_members = [m for m in self.all_members if m.id in self.selected_user_ids]
+        if not selected_members:
+            await interaction.response.send_message("❌ Please select at least one recipient from the dropdown above or click 'Select ALL'!", ephemeral=True)
             return
         if not self.current_message:
             await interaction.response.send_message("❌ Please set a message body using the **Set Message** button before sending!", ephemeral=True)
@@ -8800,7 +8973,7 @@ class MassDMView(discord.ui.View):
 
         sending_embed = discord.Embed(
             title="⏳ Dispatching Direct Messages...",
-            description=f"Sending messages to **{len(self.selected_users)}** member(s). Please wait...",
+            description=f"Sending messages to **{len(selected_members)}** member(s). Please wait...",
             color=COLOR_PRIMARY
         )
         await interaction.response.edit_message(embed=sending_embed, view=self)
@@ -8809,7 +8982,7 @@ class MassDMView(discord.ui.View):
         failed_users = []
 
         guild = interaction.guild
-        for user in self.selected_users:
+        for user in selected_members:
             dm_embed = discord.Embed(
                 title=f"📬 {self.current_title}",
                 description=self.current_message,
@@ -8843,13 +9016,42 @@ class MassDMView(discord.ui.View):
             fail_lines = [f"• {u.mention} (`{u.display_name}`): DMs closed or blocked" for u, _ in failed_users[:8]]
             result_embed.add_field(name="⚠️ Failed Recipients", value="\n".join(fail_lines), inline=False)
 
-        result_embed.set_footer(text=f"Broadcast finished • Total processed: {len(self.selected_users)}")
+        result_embed.set_footer(text=f"Broadcast finished • Total processed: {len(selected_members)}")
         await interaction.message.edit(embed=result_embed, view=None)
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="✖️", row=1)
-    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def btn_cancel_click(self, interaction: discord.Interaction):
         cancel_embed = discord.Embed(title="🚫 Broadcast Cancelled", description="The targeted Mass DM was cancelled and no messages were sent.", color=COLOR_WARN)
         await interaction.response.edit_message(embed=cancel_embed, view=None)
+
+    def build_preview_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="📬 Targeted Mass DM Studio",
+            description=(
+                f"Use the interactive dropdown menu below to select from **{len(self.all_members)} server members**, "
+                "or click **Select ALL** to broadcast to everyone at once."
+            ),
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        if not self.selected_user_ids:
+            recipients_text = f"*(None selected yet — select members from dropdown below or click 'Select ALL ({len(self.all_members)})')*"
+        else:
+            selected_objs = [m for m in self.all_members if m.id in self.selected_user_ids]
+            names = [f"• {u.mention} (`{u.display_name}`)" for u in selected_objs[:10]]
+            if len(selected_objs) > 10:
+                names.append(f"*...and {len(selected_objs)-10} more*")
+            recipients_text = f"**{len(selected_objs)} of {len(self.all_members)} Member(s) Selected:**\n" + "\n".join(names)
+
+        embed.add_field(name="👥 Target Recipients", value=recipients_text, inline=False)
+        embed.add_field(name="🏷️ Message Title", value=f"`{self.current_title}`", inline=True)
+
+        preview_body = self.current_message if self.current_message else "*(No message entered yet — click 'Set Message' below)*"
+        if len(preview_body) > 600:
+            preview_body = preview_body[:597] + "..."
+        embed.add_field(name="📝 Message Content Preview", value=preview_body, inline=False)
+        embed.set_footer(text=f"AIO Bot Broadcast Studio • Page {self.current_page+1}/{self.total_pages} • Initiated by {self.sender.display_name}")
+        return embed
 
 
 @bot.hybrid_command(
@@ -8866,7 +9068,18 @@ async def massdm_cmd(ctx: commands.Context, message: Optional[str] = None):
         await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can send mass DMs.", delete_after=6)
         return
 
-    view = MassDMView(sender=ctx.author, initial_message=message)
+    all_members = [m for m in ctx.guild.members if not m.bot]
+    if len(all_members) < 5:
+        try:
+            if not ctx.guild.chunked:
+                await ctx.guild.chunk()
+            all_members = [m for m in ctx.guild.members if not m.bot]
+            if len(all_members) < 5:
+                all_members = [m async for m in ctx.guild.fetch_members(limit=None) if not m.bot]
+        except Exception:
+            pass
+
+    view = MassDMView(sender=ctx.author, all_members=all_members, initial_message=message)
     embed = view.build_preview_embed()
     await ctx.send(embed=embed, view=view)
 

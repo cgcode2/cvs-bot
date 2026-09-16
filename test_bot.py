@@ -2413,10 +2413,27 @@ class TestAIOBot(unittest.TestCase):
         self.assertTrue(trips_cmd.app_command.default_permissions.administrator)
 
         # 6. Test MassDMView and UserSelect dropdown
-        mass_view = main.MassDMView(sender=mock_admin, initial_title="Special Offer", initial_message="Check your coupons!")
+        mock_m1 = MagicMock()
+        mock_m1.id = 101
+        mock_m1.display_name = "Alice"
+        mock_m1.name = "alice"
+        mock_m1.bot = False
+
+        mock_m2 = MagicMock()
+        mock_m2.id = 102
+        mock_m2.display_name = "Bob"
+        mock_m2.name = "bob"
+        mock_m2.bot = False
+
+        mock_guild = MagicMock()
+        mock_guild.roles = []
+        mock_guild.members = [mock_m1, mock_m2]
+        mock_admin.guild = mock_guild
+
+        mass_view = main.MassDMView(sender=mock_admin, all_members=[mock_m1, mock_m2], initial_title="Special Offer", initial_message="Check your coupons!")
         self.assertIsNotNone(mass_view.user_select)
         self.assertEqual(mass_view.user_select.min_values, 1)
-        self.assertEqual(mass_view.user_select.max_values, 25)
+        self.assertEqual(mass_view.user_select.max_values, 2)
 
         # Test preview embed
         preview_embed = mass_view.build_preview_embed()
