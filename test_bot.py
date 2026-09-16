@@ -2374,6 +2374,62 @@ class TestAIOBot(unittest.TestCase):
         self.assertTrue(main.is_protected_channel("owner-vault"))
         self.assertTrue(main.is_protected_channel("private-vault"))
 
+    def test_trips_dashboard_and_massdm(self):
+        """Test trips intelligence dashboard, performance evaluation, and Mass DM system."""
+        # 1. Test performance rating assessment
+        great_trip = {"subtotal": 100.0, "net_saved": 85.0}
+        badge, note, col = main.assess_trip_performance(great_trip)
+        self.assertIn("Phenomenal Deal", badge)
+        self.assertEqual(col, main.COLOR_SUCCESS)
+
+        moderate_trip = {"subtotal": 100.0, "net_saved": 35.0}
+        m_badge, m_note, m_col = main.assess_trip_performance(moderate_trip)
+        self.assertIn("Moderate Savings", m_badge)
+
+        # 2. Test overview statistics calculation
+        stats = main.get_trips_overview_stats()
+        self.assertIn("total_trips", stats)
+        self.assertIn("total_net_saved", stats)
+        self.assertIn("shoppers", stats)
+
+        # 3. Test overview & detail embed builders
+        overview_embed = main.build_trips_overview_embed()
+        self.assertIn("Shopper Couponing Intelligence", overview_embed.title)
+
+        detail_embed = main.build_trip_detail_embed(0)
+        self.assertTrue(len(detail_embed.title) > 0)
+
+        # 4. Test trips dashboard view
+        mock_admin = MagicMock()
+        mock_admin.id = 560578688534577237
+        dash_view = main.TripsDashboardView(admin_user=mock_admin)
+        self.assertGreaterEqual(len(dash_view.children), 3)
+
+        # 5. Verify /trips command registration
+        trips_cmd = main.bot.get_command("trips")
+        self.assertIsNotNone(trips_cmd)
+        self.assertIn("tripdashboard", trips_cmd.aliases)
+        self.assertIn("shopperstats", trips_cmd.aliases)
+        self.assertTrue(trips_cmd.app_command.default_permissions.administrator)
+
+        # 6. Test MassDMView and UserSelect dropdown
+        mass_view = main.MassDMView(sender=mock_admin, initial_title="Special Offer", initial_message="Check your coupons!")
+        self.assertIsNotNone(mass_view.user_select)
+        self.assertEqual(mass_view.user_select.min_values, 1)
+        self.assertEqual(mass_view.user_select.max_values, 25)
+
+        # Test preview embed
+        preview_embed = mass_view.build_preview_embed()
+        self.assertIn("Mass DM Studio", preview_embed.title)
+        self.assertIn("Special Offer", preview_embed.fields[1].value)
+
+        # 7. Verify /massdm command registration
+        massdm_cmd = main.bot.get_command("massdm")
+        self.assertIsNotNone(massdm_cmd)
+        self.assertIn("dmusers", massdm_cmd.aliases)
+        self.assertIn("bulkdm", massdm_cmd.aliases)
+        self.assertTrue(massdm_cmd.app_command.default_permissions.administrator)
+
 
 if __name__ == '__main__':
     unittest.main()

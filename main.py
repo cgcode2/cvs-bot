@@ -2970,7 +2970,12 @@ class LoadCouponsModal(discord.ui.Modal, title="🎟️ Load Coupons"):
             ephemeral=True
         )
 
-def _do_checkout(items: List[Dict[str, Any]], coupons: List[Any]) -> tuple:
+def _do_checkout(
+    items: List[Dict[str, Any]],
+    coupons: List[Any],
+    user_id: Optional[int] = None,
+    user_name: Optional[str] = None
+) -> tuple:
     """
     Shared checkout helper — records the trip in savings_tracker and returns
     (embed, subtotal, total_due, coupon_spend, net_saved, datetime_now).
@@ -2979,6 +2984,7 @@ def _do_checkout(items: List[Dict[str, Any]], coupons: List[Any]) -> tuple:
     total_due, _ = calculate_best_bundles(items, coupons)
     coupon_spend = sum(coupon_cost(c) for c in coupons)
     net_saved    = (subtotal - total_due) - coupon_spend
+    savings_pct  = round((net_saved / subtotal * 100), 1) if subtotal > 0 else 0.0
     now = datetime.now()
 
     savings_tracker["trip_count"]        += 1
@@ -2986,7 +2992,12 @@ def _do_checkout(items: List[Dict[str, Any]], coupons: List[Any]) -> tuple:
     savings_tracker["total_paid"]        += total_due
     savings_tracker["total_coupon_cost"] += coupon_spend
     savings_tracker["total_net_saved"]   += net_saved
+    
+    trip_id = len(savings_tracker.get("trips", [])) + 1
     savings_tracker.setdefault("trips", []).append({
+        "id":           trip_id,
+        "user_id":      user_id,
+        "user_name":    user_name or "Shopper",
         "date":         now.strftime("%Y-%m-%d"),
         "time":         now.strftime("%H:%M:%S"),
         "items":        [{"name": i["name"], "price": i["price"]} for i in items],
@@ -2995,14 +3006,17 @@ def _do_checkout(items: List[Dict[str, Any]], coupons: List[Any]) -> tuple:
         "total_due":    total_due,
         "coupon_spend": coupon_spend,
         "net_saved":    net_saved,
+        "savings_pct":  savings_pct
     })
     save_savings(savings_tracker)
 
+    shopper_line = f"👤 **Shopper:** {user_name}\n" if user_name else ""
     embed = discord.Embed(
         title="✅ Trip Checkout Complete",
         description=(
+            f"{shopper_line}"
             f"🗓️ **{now.strftime('%A, %b %d, %Y @ %I:%M %p')}**\n"
-            f"💰 **Net Saved This Trip:** **${net_saved:.2f}**\n"
+            f"💰 **Net Saved This Trip:** **${net_saved:.2f}** ({savings_pct}% Saved)\n"
             f"📈 **Lifetime Saved:** **${savings_tracker['total_net_saved']:.2f}** across `{savings_tracker['trip_count']}` trip(s)"
         ),
         color=COLOR_SUCCESS,
@@ -3099,7 +3113,7 @@ class QuickCartActionView(discord.ui.View):
             return
         items   = list(session["items"])
         coupons = list(session["coupons"])
-        embed   = _do_checkout(items, coupons)[0]
+        embed   = _do_checkout(items, coupons, user_id=interaction.user.id, user_name=interaction.user.display_name)[0]
         reset_session(interaction.user.id)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -5685,7 +5699,7 @@ class CouponRoomControlView(discord.ui.View):
             return
         items = list(session["items"])
         coupons = list(session["coupons"])
-        embed = _do_checkout(items, coupons)[0]
+        embed = _do_checkout(items, coupons, user_id=interaction.user.id, user_name=interaction.user.display_name)[0]
         reset_session(interaction.user.id)
         await interaction.response.send_message(embed=embed)
 
@@ -8041,7 +8055,7 @@ async def checkout(ctx):
         await ctx.send("❌ Your cart is empty — nothing to check out!", delete_after=5)
         return
 
-    embed, subtotal, total_due, coupon_spend, net_saved, now = _do_checkout(items, coupons)
+    embed, subtotal, total_due, coupon_spend, net_saved, now = _do_checkout(items, coupons, user_id=ctx.author.id, user_name=ctx.author.display_name)
     await ctx.send(embed=embed)
 
     # Send DM receipt
@@ -8284,6 +8298,580 @@ async def delete_last_trip_cmd(ctx):
     )
     embed.set_footer(text="AIO Bot • Trip Reverted")
     await ctx.send(embed=embed)
+
+
+
+# --- SHOPPER TRIPS & INTELLIGENCE DASHBOARD ---
+
+def assess_trip_performance(trip: Dict[str, Any]) -> Tuple[str, str, int]:
+    """Evaluates how effectively coupons performed on a trip. Returns (badge, analysis, color)."""
+    subtotal = trip.get("subtotal", 0.0)
+    net_saved = trip.get("net_saved", 0.0)
+    savings_pct = trip.get("savings_pct")
+    if savings_pct is None and subtotal > 0:
+        savings_pct = round((net_saved / subtotal * 100), 1)
+    savings_pct = savings_pct or 0.0
+
+    if savings_pct >= 75:
+        return (
+            f"🔥 **Phenomenal Deal!** (`{savings_pct}%` Saved)",
+            "Coupons stacked and bundled with peak efficiency! Out-of-pocket register payment was slashed to a minimum.",
+            COLOR_SUCCESS
+        )
+    elif savings_pct >= 50:
+        return (
+            f"✅ **Great Deal!** (`{savings_pct}%` Saved)",
+            "Strong coupon coverage. The optimizer successfully reduced the majority of the retail bill.",
+            0x2ECC71
+        )
+    elif savings_pct >= 25:
+        return (
+            f"👍 **Moderate Savings** (`{savings_pct}%` Saved)",
+            "Coupons worked and saved money, though there may be room for higher-value bundle stacking.",
+            0xF1C40F
+        )
+    else:
+        return (
+            f"⚠️ **Low Optimization** (`{savings_pct}%` Saved)",
+            "Discount was relatively modest compared to retail subtotal. Consider stacking higher percentage or dollar-off coupons.",
+            COLOR_WARN
+        )
+
+def get_trips_overview_stats() -> Dict[str, Any]:
+    """Aggregates all shopper trip history, calculating aggregate and per-shopper performance."""
+    trips = savings_tracker.get("trips", [])
+    total_trips = len(trips)
+    total_retail = sum(t.get("subtotal", 0.0) for t in trips)
+    total_paid = sum(t.get("total_due", 0.0) for t in trips)
+    total_coupon_cost = sum(t.get("coupon_spend", 0.0) for t in trips)
+    total_net_saved = sum(t.get("net_saved", 0.0) for t in trips)
+    overall_savings_pct = round((total_net_saved / total_retail * 100), 1) if total_retail > 0 else 0.0
+
+    shoppers: Dict[str, Dict[str, Any]] = {}
+    for t in trips:
+        uid = str(t.get("user_id") or t.get("user_name") or "unknown")
+        name = t.get("user_name") or "Shopper"
+        if uid not in shoppers:
+            shoppers[uid] = {
+                "key": uid,
+                "name": name,
+                "user_id": t.get("user_id"),
+                "trips_count": 0,
+                "retail": 0.0,
+                "paid": 0.0,
+                "saved": 0.0,
+                "trips": [],
+                "last_date": t.get("date", "—")
+            }
+        shoppers[uid]["trips_count"] += 1
+        shoppers[uid]["retail"] += t.get("subtotal", 0.0)
+        shoppers[uid]["paid"] += t.get("total_due", 0.0)
+        shoppers[uid]["saved"] += t.get("net_saved", 0.0)
+        shoppers[uid]["trips"].append(t)
+        shoppers[uid]["last_date"] = t.get("date", "—")
+
+    return {
+        "total_trips": total_trips,
+        "total_retail": total_retail,
+        "total_paid": total_paid,
+        "total_coupon_cost": total_coupon_cost,
+        "total_net_saved": total_net_saved,
+        "overall_savings_pct": overall_savings_pct,
+        "shoppers": shoppers
+    }
+
+def build_trips_overview_embed() -> discord.Embed:
+    stats = get_trips_overview_stats()
+    trips = savings_tracker.get("trips", [])
+    embed = discord.Embed(
+        title="📊 Shopper Couponing Intelligence & Trips Dashboard",
+        description=(
+            "Live server analytics tracking member couponing performance, register savings, "
+            "and bundle efficiency across all checked-out trips."
+        ),
+        color=0x5865F2,
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    embed.add_field(
+        name="🛒 Total Trips Logged",
+        value=f"**`{stats['total_trips']}`** trips across **`{len(stats['shoppers'])}`** shopper(s)",
+        inline=True
+    )
+    embed.add_field(
+        name="💰 Lifetime Net Saved",
+        value=f"**`${stats['total_net_saved']:.2f}`** *(**{stats['overall_savings_pct']}%** saved)*",
+        inline=True
+    )
+    embed.add_field(
+        name="🏷️ Retail vs. Paid",
+        value=f"Retail: `${stats['total_retail']:.2f}`\nPaid: `${stats['total_paid']:.2f}`",
+        inline=True
+    )
+
+    if stats["shoppers"]:
+        sorted_shoppers = sorted(stats["shoppers"].values(), key=lambda s: s["saved"], reverse=True)
+        leaderboard_lines = []
+        for rank, s in enumerate(sorted_shoppers[:8], 1):
+            pct = round(s["saved"] / s["retail"] * 100, 1) if s["retail"] > 0 else 0.0
+            mention_or_name = f"<@{s['user_id']}>" if s["user_id"] else f"**{s['name']}**"
+            leaderboard_lines.append(
+                f"**#{rank}** {mention_or_name} — **${s['saved']:.2f}** saved (`{s['trips_count']}` trips, `{pct}%` avg)"
+            )
+        embed.add_field(
+            name="🏆 Top Shoppers Leaderboard",
+            value="\n".join(leaderboard_lines),
+            inline=False
+        )
+    else:
+        embed.add_field(name="🏆 Top Shoppers Leaderboard", value="*No shopper trips recorded yet.*", inline=False)
+
+    if trips:
+        last = trips[-1]
+        badge, note, _ = assess_trip_performance(last)
+        last_shopper = f"<@{last['user_id']}>" if last.get("user_id") else f"**{last.get('user_name', 'Shopper')}**"
+        item_summary = ", ".join(i["name"] for i in last.get("items", [])[:3]) or "Items"
+        if len(last.get("items", [])) > 3:
+            item_summary += f" +{len(last['items'])-3} more"
+        embed.add_field(
+            name="⚡ Latest Trip Activity",
+            value=(
+                f"• **Shopper:** {last_shopper} on `{last.get('date', '—')}`\n"
+                f"• **Items:** {item_summary}\n"
+                f"• **Performance:** {badge}\n"
+                f"• **Paid:** `${last.get('total_due', 0.0):.2f}` | **Net Saved:** `${last.get('net_saved', 0.0):.2f}`"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(text="AIO Bot • Couponing Analytics • Use buttons below to browse individual trips")
+    return embed
+
+def build_trip_detail_embed(index: int) -> discord.Embed:
+    trips = savings_tracker.get("trips", [])
+    if not trips or index < 0 or index >= len(trips):
+        return discord.Embed(title="📭 No Trip Data", description="No recorded trip matches this index.", color=COLOR_WARN)
+
+    trip = trips[index]
+    badge, note, color = assess_trip_performance(trip)
+    shopper_str = f"<@{trip['user_id']}> (`{trip.get('user_name', 'Shopper')}`)" if trip.get("user_id") else f"**{trip.get('user_name', 'Shopper')}**"
+
+    embed = discord.Embed(
+        title=f"🧾 Trip Audit • Trip #{trip.get('id', index+1)} of {len(trips)}",
+        description=f"👤 **Shopper:** {shopper_str}\n🗓️ **Date:** `{trip.get('date', '—')}` @ `{trip.get('time', '—')}`",
+        color=color,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="📊 Couponing Effectiveness", value=f"{badge}\n*{note}*", inline=False)
+
+    embed.add_field(name="🏷️ Full Retail", value=f"**${trip.get('subtotal', 0.0):.2f}**", inline=True)
+    embed.add_field(name="💵 Register Paid", value=f"**${trip.get('total_due', 0.0):.2f}**", inline=True)
+    embed.add_field(name="💰 Net Saved", value=f"**${trip.get('net_saved', 0.0):.2f}**", inline=True)
+
+    items = trip.get("items", [])
+    if items:
+        item_lines = [f"• **{it['name']}** — `${it['price']:.2f}`" for it in items[:12]]
+        if len(items) > 12:
+            item_lines.append(f"*...and {len(items)-12} more items*")
+        embed.add_field(name=f"📦 Items in Cart ({len(items)})", value="\n".join(item_lines), inline=False)
+
+    coupons = trip.get("coupons", [])
+    if coupons:
+        coupon_lines = [f"• {coupon_label(c)}" for c in coupons]
+        embed.add_field(name=f"🎟️ Coupons Applied ({len(coupons)})", value="\n".join(coupon_lines), inline=True)
+        embed.add_field(name="💸 Coupon Cost", value=f"**${trip.get('coupon_spend', 0.0):.2f}**", inline=True)
+
+    embed.set_footer(text=f"AIO Bot • Trip Index {index + 1} of {len(trips)}")
+    return embed
+
+def build_shopper_stats_embed(shopper_key: str) -> discord.Embed:
+    stats = get_trips_overview_stats()
+    shopper = stats["shoppers"].get(shopper_key)
+    if not shopper:
+        return discord.Embed(title="📭 Shopper Not Found", description="No trip data recorded for this user.", color=COLOR_WARN)
+
+    user_mention = f"<@{shopper['user_id']}>" if shopper.get("user_id") else f"**{shopper['name']}**"
+    pct = round(shopper["saved"] / shopper["retail"] * 100, 1) if shopper["retail"] > 0 else 0.0
+
+    embed = discord.Embed(
+        title=f"👤 Shopper Profile • {shopper['name']}",
+        description=f"Personal couponing dossier for {user_mention}.",
+        color=0x3498DB,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="🛒 Completed Trips", value=f"**`{shopper['trips_count']}`** trip(s)", inline=True)
+    embed.add_field(name="💰 Lifetime Net Saved", value=f"**`${shopper['saved']:.2f}`**", inline=True)
+    embed.add_field(name="📈 Average Efficiency", value=f"**`{pct}%`** saved", inline=True)
+    embed.add_field(name="🏷️ Total Retail Optimized", value=f"${shopper['retail']:.2f}", inline=True)
+    embed.add_field(name="💵 Total Out-of-Pocket Paid", value=f"${shopper['paid']:.2f}", inline=True)
+    embed.add_field(name="🗓️ Last Trip Date", value=f"`{shopper['last_date']}`", inline=True)
+
+    trips_list = shopper.get("trips", [])
+    if trips_list:
+        lines = []
+        for t in trips_list[-5:]:
+            t_pct = t.get("savings_pct", 0.0)
+            lines.append(f"• `{t.get('date')}` — Paid **${t.get('total_due', 0.0):.2f}**, Saved **${t.get('net_saved', 0.0):.2f}** ({t_pct}%)")
+        embed.add_field(name="📜 Recent Trips", value="\n".join(lines), inline=False)
+
+    embed.set_footer(text=f"AIO Bot • Shopper Intelligence • {shopper['name']}")
+    return embed
+
+
+class ShopperFilterSelect(discord.ui.Select):
+    def __init__(self, shoppers: List[Dict[str, Any]], current_key: Optional[str] = None):
+        options = [
+            discord.SelectOption(
+                label="📊 All Shoppers Overview",
+                value="overview",
+                description="View global server analytics and leaderboard",
+                emoji="🌐",
+                default=(current_key is None or current_key == "overview")
+            )
+        ]
+        for s in shoppers[:24]:
+            lbl = s['name'][:25]
+            desc = f"{s['trips_count']} trip(s) • ${s['saved']:.2f} saved"[:50]
+            options.append(
+                discord.SelectOption(
+                    label=lbl,
+                    value=s['key'],
+                    description=desc,
+                    emoji="👤",
+                    default=(current_key == s['key'])
+                )
+            )
+        super().__init__(placeholder="👤 Filter by specific shopper...", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        chosen = self.values[0]
+        view: "TripsDashboardView" = self.view
+        if chosen == "overview":
+            view.view_mode = "overview"
+            view.selected_shopper_key = None
+            embed = build_trips_overview_embed()
+        else:
+            view.view_mode = "shopper"
+            view.selected_shopper_key = chosen
+            embed = build_shopper_stats_embed(chosen)
+        view.update_components()
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class TripsDashboardView(discord.ui.View):
+    def __init__(self, admin_user: discord.Member, initial_mode: str = "overview", trip_idx: int = 0, shopper_key: Optional[str] = None):
+        super().__init__(timeout=180)
+        self.admin_user = admin_user
+        self.view_mode = initial_mode
+        self.current_trip_idx = trip_idx
+        self.selected_shopper_key = shopper_key
+        self.update_components()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.admin_user.id or await is_owner_only(interaction.user, interaction.guild) or is_staff_or_admin(interaction.user):
+            return True
+        await interaction.response.send_message("⛔ Only server staff or the bot owner can interact with this dashboard.", ephemeral=True)
+        return False
+
+    def update_components(self):
+        self.clear_items()
+        trips = savings_tracker.get("trips", [])
+        stats = get_trips_overview_stats()
+        shoppers = list(stats["shoppers"].values())
+
+        if shoppers:
+            self.add_item(ShopperFilterSelect(shoppers, self.selected_shopper_key))
+
+        btn_overview = discord.ui.Button(
+            label="Overview",
+            style=discord.ButtonStyle.primary if self.view_mode == "overview" else discord.ButtonStyle.secondary,
+            emoji="📊",
+            row=1
+        )
+        btn_overview.callback = self.btn_overview_click
+        self.add_item(btn_overview)
+
+        btn_feed = discord.ui.Button(
+            label="Trips Feed",
+            style=discord.ButtonStyle.primary if self.view_mode == "feed" else discord.ButtonStyle.secondary,
+            emoji="📜",
+            row=1
+        )
+        btn_feed.callback = self.btn_feed_click
+        self.add_item(btn_feed)
+
+        if self.view_mode == "feed" and trips:
+            btn_prev = discord.ui.Button(label="Prev", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
+            btn_prev.callback = self.btn_prev_click
+            self.add_item(btn_prev)
+
+            btn_next = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=1)
+            btn_next.callback = self.btn_next_click
+            self.add_item(btn_next)
+
+        btn_refresh = discord.ui.Button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", row=1)
+        btn_refresh.callback = self.btn_refresh_click
+        self.add_item(btn_refresh)
+
+    async def btn_overview_click(self, interaction: discord.Interaction):
+        self.view_mode = "overview"
+        self.selected_shopper_key = None
+        self.update_components()
+        embed = build_trips_overview_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def btn_feed_click(self, interaction: discord.Interaction):
+        self.view_mode = "feed"
+        trips = savings_tracker.get("trips", [])
+        if trips:
+            self.current_trip_idx = max(0, min(self.current_trip_idx, len(trips) - 1))
+            embed = build_trip_detail_embed(self.current_trip_idx)
+        else:
+            embed = discord.Embed(title="📭 No Trips Logged", description="No checked-out trips logged yet.", color=COLOR_WARN)
+        self.update_components()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def btn_prev_click(self, interaction: discord.Interaction):
+        trips = savings_tracker.get("trips", [])
+        if trips:
+            self.current_trip_idx = (self.current_trip_idx - 1) % len(trips)
+            embed = build_trip_detail_embed(self.current_trip_idx)
+            self.update_components()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def btn_next_click(self, interaction: discord.Interaction):
+        trips = savings_tracker.get("trips", [])
+        if trips:
+            self.current_trip_idx = (self.current_trip_idx + 1) % len(trips)
+            embed = build_trip_detail_embed(self.current_trip_idx)
+            self.update_components()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def btn_refresh_click(self, interaction: discord.Interaction):
+        self.update_components()
+        if self.view_mode == "overview":
+            embed = build_trips_overview_embed()
+        elif self.view_mode == "feed":
+            embed = build_trip_detail_embed(self.current_trip_idx)
+        elif self.view_mode == "shopper" and self.selected_shopper_key:
+            embed = build_shopper_stats_embed(self.selected_shopper_key)
+        else:
+            embed = build_trips_overview_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+@bot.hybrid_command(
+    name="trips",
+    aliases=["tripsdashboard", "tripdashboard", "shopperstats", "couponstats", "tripstats"],
+    description="Admin dashboard to view other shoppers' couponing trips, savings, and performance stats"
+)
+@commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(shopper="Optional user to filter stats for")
+async def trips_dashboard_cmd(ctx: commands.Context, shopper: Optional[discord.Member] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can view shopper analytics.", delete_after=6)
+        return
+
+    if shopper:
+        shopper_key = str(shopper.id)
+        embed = build_shopper_stats_embed(shopper_key)
+        view = TripsDashboardView(admin_user=ctx.author, initial_mode="shopper", shopper_key=shopper_key)
+    else:
+        embed = build_trips_overview_embed()
+        view = TripsDashboardView(admin_user=ctx.author, initial_mode="overview")
+
+    await ctx.send(embed=embed, view=view)
+
+
+# --- TARGETED MASS DM SYSTEM WITH DROPDOWN USER SELECT ---
+
+class MassDMModal(discord.ui.Modal, title="✍️ Targeted Mass DM Composer"):
+    dm_title = discord.ui.TextInput(
+        label="🏷️ Announcement Title",
+        placeholder="e.g. Exclusive CVS Deal Alert! 🎟️",
+        default="Important Server Announcement",
+        max_length=150,
+        required=True
+    )
+    dm_content = discord.ui.TextInput(
+        label="📝 Message Body (Markdown Supported)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Type your announcement, coupons, or custom note here...",
+        max_length=2000,
+        required=True
+    )
+
+    def __init__(self, parent_view: "MassDMView"):
+        super().__init__()
+        self.parent_view = parent_view
+        if self.parent_view.current_title:
+            self.dm_title.default = self.parent_view.current_title
+        if self.parent_view.current_message:
+            self.dm_content.default = self.parent_view.current_message
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.parent_view.current_title = self.dm_title.value.strip()
+        self.parent_view.current_message = self.dm_content.value.strip()
+        embed = self.parent_view.build_preview_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+
+class MassDMView(discord.ui.View):
+    def __init__(
+        self,
+        sender: discord.Member,
+        initial_title: Optional[str] = None,
+        initial_message: Optional[str] = None
+    ):
+        super().__init__(timeout=300)
+        self.sender = sender
+        self.current_title = initial_title or "Important Announcement"
+        self.current_message = initial_message or ""
+        self.selected_users: List[Union[discord.User, discord.Member]] = []
+
+        # Native UserSelect multi-picker (1 to 25 recipients)
+        self.user_select = discord.ui.UserSelect(
+            placeholder="👥 Click to select recipients from server (1 to 25)...",
+            min_values=1,
+            max_values=25,
+            row=0
+        )
+        self.user_select.callback = self.on_user_select
+        self.add_item(self.user_select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.sender.id or await is_owner_only(interaction.user, interaction.guild):
+            return True
+        await interaction.response.send_message("⛔ Only the staff member who initiated this broadcast can control it.", ephemeral=True)
+        return False
+
+    async def on_user_select(self, interaction: discord.Interaction):
+        self.selected_users = list(self.user_select.values)
+        embed = self.build_preview_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def build_preview_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="📬 Targeted Mass DM Studio",
+            description=(
+                "Use the interactive dropdown menu below to select members, compose your message, "
+                "and dispatch direct messages."
+            ),
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        if not self.selected_users:
+            recipients_text = "*(None selected yet — click the dropdown below to choose 1 to 25 members)*"
+        else:
+            names = [f"• {u.mention} (`{u.display_name}`)" for u in self.selected_users[:10]]
+            if len(self.selected_users) > 10:
+                names.append(f"*...and {len(self.selected_users)-10} more*")
+            recipients_text = f"**{len(self.selected_users)} Member(s) Selected:**\n" + "\n".join(names)
+
+        embed.add_field(name="👥 Target Recipients", value=recipients_text, inline=False)
+        embed.add_field(name="🏷️ Message Title", value=f"`{self.current_title}`", inline=True)
+
+        preview_body = self.current_message if self.current_message else "*(No message entered yet — click 'Set Message' below)*"
+        if len(preview_body) > 600:
+            preview_body = preview_body[:597] + "..."
+        embed.add_field(name="📝 Message Content Preview", value=preview_body, inline=False)
+        embed.set_footer(text=f"AIO Bot Broadcast Studio • Initiated by {self.sender.display_name}")
+        return embed
+
+    @discord.ui.button(label="Set Message", style=discord.ButtonStyle.primary, emoji="✍️", row=1)
+    async def btn_set_message(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = MassDMModal(self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Send Direct Messages", style=discord.ButtonStyle.success, emoji="🚀", row=1)
+    async def btn_send(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_users:
+            await interaction.response.send_message("❌ Please select at least one recipient from the dropdown above!", ephemeral=True)
+            return
+        if not self.current_message:
+            await interaction.response.send_message("❌ Please set a message body using the **Set Message** button before sending!", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+
+        sending_embed = discord.Embed(
+            title="⏳ Dispatching Direct Messages...",
+            description=f"Sending messages to **{len(self.selected_users)}** member(s). Please wait...",
+            color=COLOR_PRIMARY
+        )
+        await interaction.response.edit_message(embed=sending_embed, view=self)
+
+        success_users = []
+        failed_users = []
+
+        guild = interaction.guild
+        for user in self.selected_users:
+            dm_embed = discord.Embed(
+                title=f"📬 {self.current_title}",
+                description=self.current_message,
+                color=0x5865F2,
+                timestamp=datetime.now(timezone.utc)
+            )
+            if guild and guild.icon:
+                dm_embed.set_author(name=f"{guild.name} Official Broadcast", icon_url=guild.icon.url)
+            else:
+                dm_embed.set_author(name="Official Server Broadcast")
+            dm_embed.set_footer(text=f"Sent by {self.sender.display_name} • Direct Announcement")
+
+            try:
+                await user.send(embed=dm_embed)
+                success_users.append(user)
+            except Exception as e:
+                failed_users.append((user, str(e)))
+            await asyncio.sleep(0.4)
+
+        status_color = COLOR_SUCCESS if not failed_users else (COLOR_WARN if success_users else COLOR_ERROR)
+        result_embed = discord.Embed(
+            title="✅ Targeted Mass DM Complete" if not failed_users else "⚠️ Targeted Mass DM Completed with Warnings",
+            description="Direct messages have finished sending to your selected recipient list.",
+            color=status_color,
+            timestamp=datetime.now(timezone.utc)
+        )
+        result_embed.add_field(name="📨 Successfully Delivered", value=f"**{len(success_users)}** member(s)", inline=True)
+        result_embed.add_field(name="❌ Failed Deliveries", value=f"**{len(failed_users)}** member(s)", inline=True)
+
+        if failed_users:
+            fail_lines = [f"• {u.mention} (`{u.display_name}`): DMs closed or blocked" for u, _ in failed_users[:8]]
+            result_embed.add_field(name="⚠️ Failed Recipients", value="\n".join(fail_lines), inline=False)
+
+        result_embed.set_footer(text=f"Broadcast finished • Total processed: {len(self.selected_users)}")
+        await interaction.message.edit(embed=result_embed, view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="✖️", row=1)
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cancel_embed = discord.Embed(title="🚫 Broadcast Cancelled", description="The targeted Mass DM was cancelled and no messages were sent.", color=COLOR_WARN)
+        await interaction.response.edit_message(embed=cancel_embed, view=None)
+
+
+@bot.hybrid_command(
+    name="massdm",
+    aliases=["sendmassdm", "dmusers", "dmselect", "bulkdm"],
+    description="Send a targeted DM to selected server members using an interactive dropdown picker"
+)
+@commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(message="Optional pre-filled message text")
+async def massdm_cmd(ctx: commands.Context, message: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can send mass DMs.", delete_after=6)
+        return
+
+    view = MassDMView(sender=ctx.author, initial_message=message)
+    embed = view.build_preview_embed()
+    await ctx.send(embed=embed, view=view)
+
+
+
 
 
 
