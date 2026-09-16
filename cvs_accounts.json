@@ -193,7 +193,8 @@
     "birthday": "2000-09-09",
     "coupons": [
       "$4 off your entire purchase (Exp: Sep 21, 2026)"
-    ]
+    ],
+    "used_coupons": []
   },
   {
     "id": 16,
@@ -263,7 +264,9 @@
     "extraCareNumber": "4767093301716",
     "password": "0Nyi15%ir156!",
     "birthday": "2000-09-09",
-    "coupons": []
+    "coupons": [
+      "$3 off your entire purchase (Exp: Oct 07, 2026)"
+    ]
   },
   {
     "id": 22,
@@ -357,7 +360,9 @@
     "extraCareNumber": "4767093665948",
     "password": "0Nyi15%ir156!",
     "birthday": "2000-09-09",
-    "coupons": []
+    "coupons": [
+      "$3 off your entire purchase (Exp: Oct 11, 2026)"
+    ]
   },
   {
     "id": 30,
@@ -391,7 +396,9 @@
     "extraCareNumber": "4767093665993",
     "password": "0Nyi15%ir156!",
     "birthday": "2000-09-09",
-    "coupons": []
+    "coupons": [
+      "$3 off your entire purchase (Exp: Oct 11, 2026)"
+    ]
   },
   {
     "id": 33,
