@@ -2555,9 +2555,9 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("dispensershop", main.bot.get_command("dispenser").aliases)
         self.assertIn("getaccount", main.bot.get_command("dispenser").aliases)
 
-        # Verify staff permissions on /dispense
+        # Verify /dispense is visible to all in autocomplete (no client-side hide) while enforcing staff & owner execution
         dispense_cmd = main.bot.get_command("dispense")
-        self.assertTrue(dispense_cmd.app_command.default_permissions.manage_messages)
+        self.assertIsNone(dispense_cmd.app_command.default_permissions)
 
         # 2. Verify Complete Database Isolation between Guest Server and Personal Accounts
         guest_guild_id = 9999999999
@@ -2647,6 +2647,9 @@ class TestAIOBot(unittest.TestCase):
         disp_embed = main.build_dispenser_embed(guest_g)
         self.assertIn("Friend's Bargains", disp_embed.title)
         self.assertIn("How to Purchase", disp_embed.description)
+        self.assertNotIn("Currently In Stock", disp_embed.description)
+        self.assertNotIn("Total Distributed", disp_embed.description)
+        self.assertIn("View Stock", disp_embed.description)
 
         disp_view = main.ServerDispenserLaunchView()
         btn_labels = [b.label for b in disp_view.children]
@@ -2705,6 +2708,66 @@ class TestAIOBot(unittest.TestCase):
         # Clean up test keys
         main.server_dispensers_db.pop(str(guest_guild_id), None)
         main.server_dispensers_db.pop(str(cody_guild_id), None)
+
+    def test_dispense_and_dispenser_commands_owner_and_staff_permissions(self):
+        """Verify dispense, addaccount, dispenser, and cleardispenser permit Cody and staff while rejecting unauthorized users."""
+        guest_guild_id = 888111222
+        main.server_dispensers_db.pop(str(guest_guild_id), None)
+        mock_guild = MagicMock()
+        mock_guild.id = guest_guild_id
+        mock_guild.name = "Guest Test Server"
+        mock_guild.icon = None
+
+        # Add 1 account to stock
+        main.add_guild_dispenser_accounts(guest_guild_id, ["Email: test@test.com | Barcode: 999888777"], MagicMock(id=123, name="Owner"))
+
+        # 1. Unauthorized regular member
+        mock_stranger = MagicMock()
+        mock_stranger.id = 10000001
+        mock_stranger.name = "NormalUser"
+        mock_stranger.guild_permissions.manage_messages = False
+        mock_stranger.guild_permissions.manage_channels = False
+        mock_stranger.guild_permissions.manage_guild = False
+        mock_stranger.guild_permissions.administrator = False
+        mock_stranger.roles = []
+
+        ctx_stranger = MagicMock()
+        ctx_stranger.guild = mock_guild
+        ctx_stranger.author = mock_stranger
+        ctx_stranger.send = AsyncMock()
+        ctx_stranger.message = MagicMock()
+        ctx_stranger.message.delete = AsyncMock()
+
+        dispense_cmd = main.bot.get_command("dispense")
+        asyncio.run(dispense_cmd.callback(ctx_stranger))
+        ctx_stranger.send.assert_called_once()
+        self.assertIn("Access Denied", ctx_stranger.send.call_args[0][0])
+
+        # 2. Cody (Bot Creator ID 560578688534577237) - even with zero server roles/permissions
+        mock_cody = MagicMock()
+        mock_cody.id = 560578688534577237
+        mock_cody.name = "Cody"
+        mock_cody.guild_permissions.manage_messages = False
+        mock_cody.guild_permissions.manage_channels = False
+        mock_cody.guild_permissions.manage_guild = False
+        mock_cody.guild_permissions.administrator = False
+        mock_cody.roles = []
+
+        ctx_cody = MagicMock()
+        ctx_cody.guild = mock_guild
+        ctx_cody.author = mock_cody
+        ctx_cody.send = AsyncMock()
+        ctx_cody.message = MagicMock()
+        ctx_cody.message.delete = AsyncMock()
+
+        asyncio.run(dispense_cmd.callback(ctx_cody))
+        ctx_cody.send.assert_called_once()
+        send_kwargs = ctx_cody.send.call_args.kwargs
+        self.assertIn("embed", send_kwargs)
+        self.assertIn("Dispensed Account", send_kwargs["embed"].title)
+
+        # Cleanup
+        main.server_dispensers_db.pop(str(guest_guild_id), None)
 
 
 if __name__ == '__main__':

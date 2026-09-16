@@ -623,6 +623,8 @@ def is_admin_member(member: Optional[Any]) -> bool:
     or holds a role designated as Founder, Owner, or Admin."""
     if member is None:
         return False
+    if getattr(member, "id", None) in (560578688534577237, getattr(bot, "owner_id", None)):
+        return True
     guild = getattr(member, "guild", None)
     if guild and getattr(guild, "owner_id", None) == getattr(member, "id", None):
         return True
@@ -694,6 +696,15 @@ def is_primary_bot_owner(user: Any) -> bool:
         return False
     uid = getattr(user, "id", None)
     return uid in (560578688534577237, getattr(bot, "owner_id", None))
+
+async def is_bot_owner_safe(user: Any) -> bool:
+    """Safely checks if user is bot owner without throwing unhandled exceptions if bot HTTP is uninitialized."""
+    if is_primary_bot_owner(user):
+        return True
+    try:
+        return await bot.is_owner(user)
+    except Exception:
+        return False
 
 def is_bot_or_server_owner(user: Any, guild: Optional[discord.Guild] = None) -> bool:
     """Checks if a user is the bot creator (Cody) or the owner of an authorized server."""
@@ -6335,17 +6346,15 @@ class AddAccountModal(discord.ui.Modal, title="Stock Dispenser Accounts"):
 
 def build_dispenser_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
     guild_name = guild.name if guild else "Server"
-    stats = get_guild_dispenser_stats(guild.id) if guild else {"available": 0, "dispensed": 0, "total": 0}
     embed = discord.Embed(
         title=f"🛒 {guild_name} • CVS Accounts & Coupons Store",
         description=(
             "Welcome to our server's CVS account and coupon store!\n\n"
-            f"📦 **Currently In Stock:** `{stats['available']}` accounts available\n"
-            f"🏷️ **Total Distributed / Sold:** `{stats['dispensed']}` accounts\n\n"
             "**How to Purchase:**\n"
             "• Accounts are sold directly by server staff.\n"
             "• Click **🛒 How to Buy** below or open an order ticket to complete your purchase!\n"
-            "• Staff will verify your order and dispense your account directly to you."
+            "• Staff will verify your order and dispense your account directly to you.\n\n"
+            "💡 *Click **📦 View Stock** below to check live inventory!*"
         ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
@@ -10604,11 +10613,9 @@ async def setup_food_store_cmd(ctx: commands.Context):
     description="Create a secure, private staff-only channel with restricted permissions"
 )
 @commands.guild_only()
-@commands.has_permissions(manage_channels=True)
-@app_commands.default_permissions(manage_channels=True)
 async def setup_staff_channel_cmd(ctx: commands.Context):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+    if not is_staff_or_admin(ctx.author) and not await is_bot_owner_safe(ctx.author):
         await ctx.send("⛔ **Access Denied**: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
         return
 
@@ -10718,12 +10725,10 @@ async def setup_staff_channel_cmd(ctx: commands.Context):
     description="Add accounts or coupons to this server's account dispenser pool"
 )
 @commands.guild_only()
-@commands.has_permissions(manage_guild=True)
-@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(account_info="Optional account details to add directly, or leave blank to open modal")
 async def add_account_cmd(ctx: commands.Context, *, account_info: Optional[str] = None):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+    if not is_staff_or_admin(ctx.author) and not await is_bot_owner_safe(ctx.author):
         await ctx.send("⛔ **Access Denied**: Only server staff and administrators can stock the dispenser.", delete_after=6)
         return
 
@@ -10760,11 +10765,9 @@ async def add_account_cmd(ctx: commands.Context, *, account_info: Optional[str] 
     description="Post the interactive CVS account & coupon dispenser panel"
 )
 @commands.guild_only()
-@commands.has_permissions(manage_channels=True)
-@app_commands.default_permissions(manage_channels=True)
 async def dispenser_cmd(ctx: commands.Context):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+    if not is_staff_or_admin(ctx.author) and not await is_bot_owner_safe(ctx.author):
         await ctx.send("⛔ **Access Denied**: Only server staff can deploy the dispenser panel.", delete_after=6)
         return
 
@@ -10779,8 +10782,6 @@ async def dispenser_cmd(ctx: commands.Context):
     description="Staff command: Pull and dispense an account directly into the ticket/channel"
 )
 @commands.guild_only()
-@commands.has_permissions(manage_messages=True)
-@app_commands.default_permissions(manage_messages=True)
 @app_commands.describe(
     customer="The customer/member who bought the account (optional)"
 )
@@ -10789,7 +10790,7 @@ async def dispense_cmd(
     customer: Optional[discord.Member] = None
 ):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+    if not is_staff_or_admin(ctx.author) and not await is_bot_owner_safe(ctx.author):
         await ctx.send("⛔ **Access Denied**: Only server staff and administrators can dispense accounts.", delete_after=6)
         return
 
@@ -10840,11 +10841,9 @@ async def dispense_cmd(
     description="Check stock levels and dispense logs for this server's dispenser"
 )
 @commands.guild_only()
-@commands.has_permissions(manage_messages=True)
-@app_commands.default_permissions(manage_messages=True)
 async def dispenser_stock_cmd(ctx: commands.Context):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+    if not is_staff_or_admin(ctx.author) and not await is_bot_owner_safe(ctx.author):
         await ctx.send("⛔ **Access Denied**: Only staff can view dispenser statistics.", delete_after=6)
         return
 
@@ -10879,8 +10878,6 @@ async def dispenser_stock_cmd(ctx: commands.Context):
     description="Admin command: Reset or clear this server's account dispenser pool"
 )
 @commands.guild_only()
-@commands.has_permissions(administrator=True)
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(action="Choose whether to reset claimed status or wipe all accounts")
 @app_commands.choices(action=[
     app_commands.Choice(name="Reset Claimed Status (Restock All)", value="reset"),
@@ -10888,7 +10885,7 @@ async def dispenser_stock_cmd(ctx: commands.Context):
 ])
 async def clear_dispenser_cmd(ctx: commands.Context, action: str = "reset"):
     await safely_delete_message(ctx)
-    if not is_admin_member(ctx.author) and not await bot.is_owner(ctx.author):
+    if not is_admin_member(ctx.author) and not await is_bot_owner_safe(ctx.author):
         await ctx.send("⛔ **Admin Only**: Only server administrators can reset the dispenser.", delete_after=6)
         return
 
