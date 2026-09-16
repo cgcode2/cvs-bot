@@ -2447,6 +2447,75 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("bulkdm", massdm_cmd.aliases)
         self.assertTrue(massdm_cmd.app_command.default_permissions.administrator)
 
+    def test_guest_server_isolation_and_zero_leaks(self):
+        """Test multi-server scoping: guest/friend servers only have Moderation/Tickets and zero CVS leaks."""
+        import asyncio
+
+        # 1. Verify Slash Command Tree Scoping
+        global_cmd_names = {c.name for c in main.bot.tree.get_commands()}
+        g1 = main.discord.Object(id=731326405937201183)  # Coupon Optimizer
+        g2 = main.discord.Object(id=1514110480346513470) # Bargain Bites
+        g_friend = main.discord.Object(id=9999999999)    # Friend server
+
+        g1_cmd_names = {c.name for c in main.bot.tree.get_commands(guild=g1)}
+        g_friend_cmd_names = {c.name for c in main.bot.tree.get_commands(guild=g_friend)}
+
+        # Friend server MUST have exactly 0 private guild commands
+        self.assertEqual(len(g_friend_cmd_names), 0)
+
+        # Private CVS commands MUST NOT be in global slash commands
+        private_sensitive_cmds = ["accounts", "stock", "organizecoupons", "used", "unusecoupon", "optimize", "calc", "cart", "checkout", "massdm", "foodpanel", "shop"]
+        for p_cmd in private_sensitive_cmds:
+            self.assertNotIn(p_cmd, global_cmd_names, f"Security Leak: {p_cmd} is visible globally!")
+            self.assertIn(p_cmd, g1_cmd_names, f"Expected {p_cmd} in authorized server g1")
+
+        # Global commands MUST include moderation and ticket commands
+        expected_global = ["warn", "timeout", "kick", "ban", "purge", "nukechannel", "modpanel", "ticketpanel", "close", "claim", "setup-tickets", "ping", "help"]
+        for g_cmd in expected_global:
+            self.assertIn(g_cmd, global_cmd_names, f"Expected {g_cmd} to be available globally for friend's server")
+
+        # 2. Verify Prefix Command Execution Guard in Guest Server
+        mock_guest_ctx = MagicMock()
+        mock_guest_ctx.guild = MagicMock()
+        mock_guest_ctx.guild.id = 9999999999  # Friend's server ID
+        mock_guest_ctx.interaction = None
+        mock_guest_ctx.bot = main.bot
+
+        for p_cmd in ["stock", "accounts", "optimize", "cart", "calc"]:
+            cmd_obj = main.bot.get_command(p_cmd)
+            self.assertIsNotNone(cmd_obj)
+            can_run = asyncio.run(cmd_obj.can_run(mock_guest_ctx))
+            self.assertFalse(can_run, f"Security Breach: {p_cmd} was runnable in guest server!")
+
+        # 3. Verify Help Menu Scrubbing in Guest Server
+        perms = main.discord.Permissions.all()
+        # Authorized server help view
+        auth_help = main.HelpMenuView(author_perms=perms, is_owner=True, is_cvs=True)
+        auth_select = auth_help.children[0]
+        auth_opt_vals = [opt.value for opt in auth_select.options]
+        self.assertIn("coupons", auth_opt_vals)
+        self.assertIn("games", auth_opt_vals)
+
+        # Guest server help view
+        guest_help = main.HelpMenuView(author_perms=perms, is_owner=True, is_cvs=False)
+        guest_select = guest_help.children[0]
+        guest_opt_vals = [opt.value for opt in guest_select.options]
+        self.assertNotIn("coupons", guest_opt_vals, "Security Leak: coupons visible in guest help menu!")
+        self.assertNotIn("games", guest_opt_vals)
+        self.assertIn("mod", guest_opt_vals)
+        self.assertIn("tickets", guest_opt_vals)
+
+        # 4. Verify Friend Server Owner Cannot Access Cody's Owner Commands
+        friend_server_owner = MagicMock()
+        friend_server_owner.id = 8888888888  # Friend's user ID
+        friend_server_owner.guild = MagicMock()
+        friend_server_owner.guild.id = 9999999999 # Friend's server ID
+        friend_server_owner.guild.owner_id = 8888888888
+
+        self.assertFalse(main.is_primary_bot_owner(friend_server_owner))
+        self.assertFalse(main.is_bot_or_server_owner(friend_server_owner))
+        self.assertFalse(asyncio.run(main.is_owner_only(friend_server_owner)))
+
 
 if __name__ == '__main__':
     unittest.main()

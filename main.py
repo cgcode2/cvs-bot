@@ -516,31 +516,55 @@ def is_admin_member(member: Optional[Any]) -> bool:
             return True
     return False
 
-def is_bot_or_server_owner(user: Any, guild: Optional[discord.Guild] = None) -> bool:
-    """Checks if a user is the bot application owner, server owner, or primary admin (Cody)."""
+CVS_ALLOWED_GUILD_IDS: Set[int] = {731326405937201183, 1514110480346513470}
+_extra_cvs_env = os.environ.get("CVS_ALLOWED_GUILDS", "")
+if _extra_cvs_env:
+    for _gid in _extra_cvs_env.split(","):
+        _gid = _gid.strip()
+        if _gid.isdigit():
+            CVS_ALLOWED_GUILD_IDS.add(int(_gid))
+
+def is_cvs_guild(guild_or_id: Any) -> bool:
+    """Returns True if the guild is an authorized CVS / Coupon Optimizer server."""
+    if guild_or_id is None:
+        return False
+    gid = getattr(guild_or_id, "id", guild_or_id)
+    return gid in CVS_ALLOWED_GUILD_IDS
+
+def is_primary_bot_owner(user: Any) -> bool:
+    """Checks strictly if the user is Cody (the bot creator) or bot.owner_id."""
     if user is None:
         return False
     uid = getattr(user, "id", None)
-    if uid in (560578688534577237, getattr(bot, "owner_id", None)):
+    return uid in (560578688534577237, getattr(bot, "owner_id", None))
+
+def is_bot_or_server_owner(user: Any, guild: Optional[discord.Guild] = None) -> bool:
+    """Checks if a user is the bot creator (Cody) or the owner of an authorized server."""
+    if user is None:
+        return False
+    if is_primary_bot_owner(user):
         return True
     g = guild or getattr(user, "guild", None)
-    if g and getattr(g, "owner_id", None) == uid:
+    uid = getattr(user, "id", None)
+    if g and is_cvs_guild(g) and getattr(g, "owner_id", None) == uid:
         return True
     return False
 
 async def is_owner_only(ctx_or_user: Any, guild: Optional[discord.Guild] = None) -> bool:
-    """Async check verifying user is strictly the bot owner or server owner."""
+    """Async check verifying user is strictly Cody (the bot creator) or server owner in an authorized CVS server."""
     if ctx_or_user is None:
         return False
-    g = guild or getattr(ctx_or_user, "guild", None)
-    if is_bot_or_server_owner(ctx_or_user, g):
+    if is_primary_bot_owner(ctx_or_user):
         return True
     user = getattr(ctx_or_user, "author", None) or getattr(ctx_or_user, "user", None)
-    if user and is_bot_or_server_owner(user, g):
+    if user and is_primary_bot_owner(user):
+        return True
+    g = guild or getattr(ctx_or_user, "guild", None)
+    target_user = user or ctx_or_user
+    if g and is_cvs_guild(g) and getattr(g, "owner_id", None) == getattr(target_user, "id", None):
         return True
     try:
-        target = user or ctx_or_user
-        if await bot.is_owner(target):
+        if await bot.is_owner(target_user):
             return True
     except Exception:
         pass
@@ -3856,23 +3880,26 @@ class SlotsSpinView(discord.ui.View):
                 pass
 
 class HelpCategorySelect(discord.ui.Select):
-    def __init__(self, author_perms: discord.Permissions, is_owner: bool):
+    def __init__(self, author_perms: discord.Permissions, is_owner: bool, is_cvs: bool = True):
         self.author_perms = author_perms
         self.is_owner = is_owner
-        options = [
-            discord.SelectOption(label="Coupon Optimizer", value="coupons", description="Smart cart calculation & coupon bundling", emoji="🛍️"),
-            discord.SelectOption(label="Server Moderation", value="mod", description="Server control, anti-raid, filters & mod cases", emoji="🛡️"),
-            discord.SelectOption(label="Games & Arcade", value="games", description="Blackjack, Connect 4, Trivia, Slots, RPS & Dice", emoji="🎮"),
-            discord.SelectOption(label="Embeds & Utilities", value="utils", description="Custom rich embeds, latency & diagnostics", emoji="🎨"),
-        ]
+        self.is_cvs = is_cvs
+        options = []
+        if is_cvs:
+            options.append(discord.SelectOption(label="Coupon Optimizer", value="coupons", description="Smart cart calculation & coupon bundling", emoji="🛍️"))
+        options.append(discord.SelectOption(label="Server Moderation", value="mod", description="Server control, anti-raid, filters & mod cases", emoji="🛡️"))
+        options.append(discord.SelectOption(label="Ticket Support", value="tickets", description="Interactive support tickets, claims & transcripts", emoji="🎫"))
+        if is_cvs:
+            options.append(discord.SelectOption(label="Games & Arcade", value="games", description="Blackjack, Connect 4, Trivia, Slots, RPS & Dice", emoji="🎮"))
+        options.append(discord.SelectOption(label="Embeds & Utilities", value="utils", description="Custom rich embeds, latency & diagnostics", emoji="🎨"))
         if is_owner:
-            options.append(discord.SelectOption(label="Owner Commands", value="owner", description="Private room setup and owner tools", emoji="👑"))
+            options.append(discord.SelectOption(label="Owner Commands", value="owner", description="Operator management and owner tools", emoji="👑"))
         super().__init__(placeholder="📖 Select a command category to view...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         cat = self.values[0]
         embed = discord.Embed(color=COLOR_PRIMARY)
-        if cat == "coupons":
+        if cat == "coupons" and self.is_cvs:
             embed.title = "🛍️ Coupon Optimizer Guide"
             embed.description = "Save maximum money at the register with optimal coupon bundles."
             embed.add_field(name="Interactive Panel", value="`/panel` or `!panel` — open the interactive button & modal shopping interface", inline=False)
@@ -3882,6 +3909,15 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Checkout & History", value="`/checkout` or `!checkout` — save trip & get receipt\n`/savings` or `!savings` — lifetime stats\n`/history` or `!history` — view past trips", inline=False)
             embed.add_field(name="Instant Calculator", value="`/calc` or `!calc [items] | [coupons]` (e.g. `!calc Fairlife 4.49, Shampoo 6.59 | 8 5` or `/calc ...`)", inline=False)
             embed.add_field(name="Cart Management", value="`/cart` — view current cart\n`/undo` — remove last item added\n`/remove [name]` — remove item by name\n`/clear` — wipe cart & coupons", inline=False)
+        elif cat == "tickets":
+            embed.title = "🎫 Support Ticket System"
+            embed.description = "Member inquiry, customer service, and support ticket management tools."
+            embed.add_field(name="Interactive Panel", value="`/ticketpanel` (or `/panel`) — deploy interactive panel with a 1-click **📩 Open Ticket** button", inline=False)
+            embed.add_field(name="Open Ticket", value="`/ticket` or `!ticket` — open a dedicated private ticket channel directly", inline=False)
+            embed.add_field(name="Close Ticket", value="`/close` or `!close` — close the active ticket channel", inline=False)
+            embed.add_field(name="Claim Ticket", value="`/claim` or `!claim` — staff claim responsibility for the ticket", inline=False)
+            embed.add_field(name="Ticket Transcript", value="`/transcript` or `!transcript` — generate a full text log of the conversation", inline=False)
+            embed.add_field(name="Automated Setup", value="`/setup-tickets` — automatically create the support ticket categories and logs", inline=False)
         elif cat == "mod":
             embed.title = "🛡️ Server Moderation Suite"
             embed.description = "Administrative security, anti-raid, and discipline tools. Works with `!` or `/`."
@@ -3892,8 +3928,8 @@ class HelpCategorySelect(discord.ui.Select):
             embed.add_field(name="Member Discipline", value="`/kick` or `!kick [@member] [reason]`\n`/ban` or `!ban [@member] [reason]`\n`/unban` or `!unban [user_id_or_name]`\n`/timeout` or `!timeout [@member] [duration]` (e.g. `10m`, `1h`, `1d`)\n`/untimeout` or `!untimeout [@member]`", inline=False)
             embed.add_field(name="Role Management", value="`/giverole [@member] [@role]` (or `/role give`) — grant a role to a member\n`/removerole [@member] [@role]` (or `/role remove`) — revoke a role\n`/fixroles` — audit role hierarchy & repair bot positioning", inline=False)
             embed.add_field(name="Warnings System", value="`/warn` or `!warn [@member] [reason]` — log a warning\n`/warnings` or `!warnings [@member]` — view warning record\n`/clearwarnings` or `!clearwarnings [@member]` — wipe records", inline=False)
-            embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/ticketpanel` or `!tickets` — deploy interactive support ticket panel\n`/dm [user] [msg]` or `!dm` — direct message member from bot\n`/nukechannel` or `!nukechannel` — recreate & wipe channel\n`/purge [amount] [member] [channel]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
-        elif cat == "games":
+            embed.add_field(name="Channel & Message Management", value="`/modpanel` or `!modpanel` — interactive menu\n`/ticketpanel` or `!tickets` — deploy interactive support ticket panel\n`/dm [user] [msg]` or `!dm` — direct message member from bot\n`/nukechannel` or `!nukechannel` (alias `/nuke`) — recreate & wipe channel\n`/purge [amount] [member] [channel]` — bulk delete\n`/lock` & `/unlock` / `/slowmode [sec]`", inline=False)
+        elif cat == "games" and self.is_cvs:
             embed.title = "🎮 Arcade, Casino & Economy"
             embed.description = "Interactive mini-games and full coin economy system powered by Discord buttons."
             embed.add_field(name="🪙 Coin Economy & Banking", value="`/balance` or `!bal [@member]` — check coin wallet\n`/daily` or `!daily` — claim daily 250 free coins (24h cooldown)\n`/pay` or `!pay [@member] [amount]` — transfer coins\n`/leaderboard` or `!top` — top 10 richest members", inline=False)
@@ -3922,19 +3958,20 @@ class HelpCategorySelect(discord.ui.Select):
                 ),
                 inline=False
             )
-            embed.add_field(name="Private Optimizer Hub", value="`/setup` — create `#🛒-coupon-optimizer` hub\n`[🛒 Open Private Optimizer Room]` — instant personal room for shopping & savings", inline=False)
-            embed.add_field(name="CVS Accounts Database", value="`/accounts [query]` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans, search, pagination & custom card formatter", inline=False)
-            embed.add_field(name="Database Management", value="`/delete-last-trip` (or `!undotrip`) — delete last recorded trip and revert lifetime savings stats", inline=False)
-            embed.add_field(name="CPU Benchmark & Stress Test", value="`/run-stress-test` (or `!stresstest`, `!benchmark`) — benchmark algorithm latency across permutation graphs", inline=False)
+            if self.is_cvs:
+                embed.add_field(name="Private Optimizer Hub", value="`/setup` — create `#🛒-coupon-optimizer` hub\n`[🛒 Open Private Optimizer Room]` — instant personal room for shopping & savings", inline=False)
+                embed.add_field(name="CVS Accounts Database", value="`/accounts [query]` (or `!accounts`, `!cards`) — browse imported CVS ExtraCare accounts with barcode scans, search, pagination & custom card formatter", inline=False)
+                embed.add_field(name="Database Management", value="`/delete-last-trip` (or `!undotrip`) — delete last recorded trip and revert lifetime savings stats", inline=False)
+                embed.add_field(name="CPU Benchmark & Stress Test", value="`/run-stress-test` (or `!stresstest`, `!benchmark`) — benchmark algorithm latency across permutation graphs", inline=False)
 
         embed.set_footer(text="AIO Bot • Use ! or / for commands")
         await interaction.response.edit_message(embed=embed, view=self.view)
 
 
 class HelpMenuView(discord.ui.View):
-    def __init__(self, author_perms: discord.Permissions, is_owner: bool):
+    def __init__(self, author_perms: discord.Permissions, is_owner: bool, is_cvs: bool = True):
         super().__init__(timeout=None)
-        self.add_item(HelpCategorySelect(author_perms, is_owner))
+        self.add_item(HelpCategorySelect(author_perms, is_owner, is_cvs))
 
 
 class VouchModal(discord.ui.Modal, title="Submit a Review / Vouch"):
@@ -6030,13 +6067,16 @@ class StaffModPanelButtonView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         try:
-            bot.tree.clear_commands(guild=guild)
-            await bot.tree.sync(guild=guild)
+            if is_cvs_guild(guild):
+                await bot.tree.sync(guild=guild)
+            else:
+                bot.tree.clear_commands(guild=guild)
+                await bot.tree.sync(guild=guild)
             await bot.tree.sync()
             await interaction.followup.send(
-                "✅ **Duplicate Slash Commands Purged!**\n"
-                "• All guild-specific command copies have been deleted from Discord.\n"
-                "• Only single global commands remain.\n"
+                "✅ **Slash Commands Successfully Synced!**\n"
+                "• Private guild tools synced to authorized servers.\n"
+                "• Global moderation and ticket commands updated.\n"
                 "• *(Tip: If duplicate commands still show in your Discord client, press `Ctrl+R` or restart Discord to refresh the client cache.)*",
                 ephemeral=True
             )
@@ -6966,18 +7006,21 @@ async def on_ready():
         print(f"⚠️ Note on giveaways background loop: {e}", file=sys.stderr, flush=True)
 
     # Application slash command tree sync
-    # Clear any guild-specific command copies so Discord only displays global commands (eliminates duplicate / commands)
     try:
         for g in bot.guilds:
             try:
-                bot.tree.clear_commands(guild=g)
-                await bot.tree.sync(guild=g)
-                print(f'🧹 Purged duplicate guild commands for server: {g.name} ({g.id})', flush=True)
+                if is_cvs_guild(g):
+                    synced_g = await bot.tree.sync(guild=g)
+                    print(f'🔒 Synced {len(synced_g)} private CVS/optimizer commands to authorized server: {g.name} ({g.id})', flush=True)
+                else:
+                    bot.tree.clear_commands(guild=g)
+                    await bot.tree.sync(guild=g)
+                    print(f'🧹 Purged private guild commands for guest server: {g.name} ({g.id})', flush=True)
             except Exception as ge:
-                print(f'ℹ️ Guild slash cleanup notice for {g.name}: {ge}', file=sys.stderr, flush=True)
+                print(f'ℹ️ Guild slash sync notice for {g.name}: {ge}', file=sys.stderr, flush=True)
 
         synced = await bot.tree.sync()
-        print(f'✅ Synced {len(synced)} global application slash command(s) with zero duplicates.', flush=True)
+        print(f'🌐 Synced {len(synced)} global application slash command(s) with zero duplicates.', flush=True)
     except Exception as e:
         print(f'⚠️ Slash command sync notice: {e}', file=sys.stderr, flush=True)
 
@@ -6995,8 +7038,10 @@ async def on_ready():
         except Exception:
             pass
 
-    # Auto-repair channels and outdated panels on startup
+    # Auto-repair channels and outdated panels on startup (ONLY for authorized CVS/primary servers)
     for g in bot.guilds:
+        if not is_cvs_guild(g):
+            continue
         try:
             for ch in g.text_channels:
                 cname = ch.name.lower()
@@ -7242,18 +7287,22 @@ async def open_modpanel(ctx):
 async def help_command(ctx):
     await safely_delete_message(ctx)
     author_perms = ctx.channel.permissions_for(ctx.author) if ctx.guild else discord.Permissions.none()
-    is_owner = await bot.is_owner(ctx.author)
+    is_owner = is_primary_bot_owner(ctx.author) or await bot.is_owner(ctx.author)
+    is_cvs = is_cvs_guild(ctx.guild)
     embed = discord.Embed(
         title="📖 AIO Bot — Command Center",
         description="Select a category from the dropdown menu below to view command guides.",
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.add_field(name="Coupon Optimizer", value="• Optimal checkout bundles & savings.", inline=True)
+    if is_cvs:
+        embed.add_field(name="Coupon Optimizer", value="• Optimal checkout bundles & savings.", inline=True)
     embed.add_field(name="Moderation Suite", value="• Anti-raid, filters, cases & staff tools.", inline=True)
-    embed.add_field(name="Games & Economy", value="• Blackjack, Slots, Connect 4, Trivia & bank.", inline=True)
+    embed.add_field(name="Ticket System", value="• Support tickets, claims & transcripts.", inline=True)
+    if is_cvs:
+        embed.add_field(name="Games & Economy", value="• Blackjack, Slots, Connect 4, Trivia & bank.", inline=True)
     embed.set_footer(text="AIO Bot • Commands work with / or !")
-    view = HelpMenuView(author_perms, is_owner)
+    view = HelpMenuView(author_perms, is_owner, is_cvs)
     await ctx.send(embed=embed, view=view)
 
 # --- EMBED CREATOR ---
@@ -10424,14 +10473,17 @@ async def sync_commands_cmd(ctx: commands.Context):
     try:
         if ctx.guild:
             try:
-                bot.tree.clear_commands(guild=ctx.guild)
-                await bot.tree.sync(guild=ctx.guild)
+                if is_cvs_guild(ctx.guild):
+                    synced_g = await bot.tree.sync(guild=ctx.guild)
+                else:
+                    bot.tree.clear_commands(guild=ctx.guild)
+                    await bot.tree.sync(guild=ctx.guild)
             except Exception as ge:
-                print(f"Notice clearing guild commands: {ge}", file=sys.stderr)
+                print(f"Notice syncing guild commands: {ge}", file=sys.stderr)
 
         synced_global = await bot.tree.sync()
         status_text = (
-            f"✅ Purged duplicate guild commands in this server and cleanly synced **{len(synced_global)}** global slash commands!\n"
+            f"✅ Cleanly synced **{len(synced_global)}** global slash commands and configured server command trees!\n"
             f"*(Tip: If your Discord client still displays cached duplicates in the menu, press `Ctrl+R` or restart Discord to refresh.)*"
         )
         await msg.edit(content=status_text)
@@ -11530,6 +11582,8 @@ async def on_command_error(ctx, error):
     elif isinstance(error, (commands.RoleNotFound, commands.ChannelNotFound, commands.MemberNotFound)):
         await ctx.send(f"❌ {error}", delete_after=8)
     elif isinstance(error, commands.CheckFailure):
+        if getattr(ctx.command, "name", "") in CVS_COMMAND_NAMES:
+            return
         await ctx.send(f"⛔ Permission Error: You do not meet the permission requirements for this command.", delete_after=8)
     else:
         print(f"❌ Command Error in '{ctx.command}': {type(error).__name__} | Details: {error}", file=sys.stderr)
@@ -11549,6 +11603,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     elif isinstance(error, app_commands.NoPrivateMessage):
         msg = "⛔ This command can only be used inside a server channel."
     elif isinstance(error, app_commands.CheckFailure):
+        if interaction.command and getattr(interaction.command, "name", "") in CVS_COMMAND_NAMES:
+            return
         msg = "⛔ Permission Error: You do not meet the permission requirements for this command."
     else:
         print(f"❌ App Command Error in '/{interaction.command.name if interaction.command else 'unknown'}': {type(error).__name__} | Details: {error}", file=sys.stderr)
@@ -11927,7 +11983,46 @@ async def automod_toggle_cmd(ctx: commands.Context, setting: Literal["invites", 
         automod_config_db["scams_blocked"] = new_val
         save_automod_config()
         state_str = "🟢 **Enabled**" if new_val else "🔴 **Disabled**"
-        await ctx.send(f"🚨 Phishing/scam link blocker is now {state_str}.", delete_after=8)
+# --- MULTI-SERVER ISOLATION & GUEST SERVER RESTRICTION ---
+
+CVS_COMMAND_NAMES: Set[str] = {
+    "accounts", "stock", "organizecoupons", "used", "unusecoupon",
+    "optimize", "calc", "cart", "checkout", "additem", "add", "remove", "undo", "clear",
+    "coupons", "deals", "finddeals", "savings", "history", "trips", "delete-last-trip",
+    "massdm", "tacobell", "foodpanel", "shop", "invoice", "addorder", "orderstats",
+    "clearorder", "paid", "deliver", "complete", "setup-food-store", "setup-vault",
+    "setup-all-features", "formatserver", "deletechannels", "resetchannel",
+    "setup-rules", "setup-welcome", "setup-status-channel", "setup-giveaways",
+    "balance", "pay", "daily", "leaderboard", "slots", "blackjack", "rps", "connect4", "trivia", "case",
+    "otp", "vouch", "testwelcome", "run-stress-test", "permit", "revoke", "giveaway", "giverole", "removerole", "role", "note"
+}
+
+def setup_command_scoping():
+    """
+    Partitions bot commands so private CVS tools, accounts, and server formats
+    are strictly scoped to CVS_ALLOWED_GUILD_IDS, leaving only Moderation and
+    the Ticket System accessible globally in guest/friend servers.
+    """
+    for cmd_name in CVS_COMMAND_NAMES:
+        cmd = bot.get_command(cmd_name)
+        if not cmd:
+            continue
+
+        # 1. Prefix command guard: drops execution if called outside authorized servers
+        def _make_guild_check():
+            async def _cvs_guild_check(ctx: commands.Context) -> bool:
+                return bool(ctx.guild and is_cvs_guild(ctx.guild))
+            return _cvs_guild_check
+
+        cmd.add_check(_make_guild_check())
+
+        # 2. Discord Slash Tree Scoping: Remove from global autocomplete, bind only to authorized server IDs
+        if cmd.app_command:
+            bot.tree.remove_command(cmd_name)
+            for gid in CVS_ALLOWED_GUILD_IDS:
+                bot.tree.add_command(cmd.app_command, guild=discord.Object(id=gid))
+
+setup_command_scoping()
 
 
 def main():
