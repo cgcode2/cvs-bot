@@ -312,12 +312,12 @@ def is_protected_channel(channel: Any) -> bool:
         return False
     if isinstance(channel, str):
         clean_name = channel.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
-        return "formautomation" in clean_name
+        return "formautomation" in clean_name or "ownervault" in clean_name or "privatevault" in clean_name
 
     name = getattr(channel, "name", "")
     if isinstance(name, str):
         clean_name = name.lower().replace("-", "").replace("_", "").replace(" ", "").replace("#", "")
-        if "formautomation" in clean_name:
+        if "formautomation" in clean_name or "ownervault" in clean_name or "privatevault" in clean_name:
             return True
 
     # Also check parent category if applicable
@@ -514,6 +514,36 @@ def is_admin_member(member: Optional[Any]) -> bool:
         r_name = getattr(r, "name", "").lower()
         if r_name in admin_roles or "founder" in r_name or "admin" in r_name:
             return True
+    return False
+
+def is_bot_or_server_owner(user: Any, guild: Optional[discord.Guild] = None) -> bool:
+    """Checks if a user is the bot application owner, server owner, or primary admin (Cody)."""
+    if user is None:
+        return False
+    uid = getattr(user, "id", None)
+    if uid in (560578688534577237, getattr(bot, "owner_id", None)):
+        return True
+    g = guild or getattr(user, "guild", None)
+    if g and getattr(g, "owner_id", None) == uid:
+        return True
+    return False
+
+async def is_owner_only(ctx_or_user: Any, guild: Optional[discord.Guild] = None) -> bool:
+    """Async check verifying user is strictly the bot owner or server owner."""
+    if ctx_or_user is None:
+        return False
+    g = guild or getattr(ctx_or_user, "guild", None)
+    if is_bot_or_server_owner(ctx_or_user, g):
+        return True
+    user = getattr(ctx_or_user, "author", None) or getattr(ctx_or_user, "user", None)
+    if user and is_bot_or_server_owner(user, g):
+        return True
+    try:
+        target = user or ctx_or_user
+        if await bot.is_owner(target):
+            return True
+    except Exception:
+        pass
     return False
 
 def resolve_member_from_input(guild: Optional[discord.Guild], query: str) -> Optional[discord.Member]:
@@ -1240,6 +1270,94 @@ async def setup_giveaways_channel(guild: discord.Guild) -> Tuple[Optional[discor
         color=0xF1C40F
     )
     welcome_embed.set_footer(text="AIO Bot Giveaway System")
+    try:
+        await new_ch.send(embed=welcome_embed)
+    except Exception:
+        pass
+
+    return new_ch, True
+
+def get_owner_vault_channel(guild: Optional[discord.Guild]) -> Optional[discord.TextChannel]:
+    """Finds existing strictly private owner vault channel in the guild."""
+    if not guild:
+        return None
+    for ch in guild.text_channels:
+        if ch.name in ("🔒-owner-vault", "🔒-my-accounts", "owner-vault", "private-vault"):
+            return ch
+    return None
+
+async def setup_owner_vault_channel(guild: discord.Guild) -> Tuple[Optional[discord.TextChannel], bool]:
+    """Creates or configures a strictly private #🔒-owner-vault channel restricted exclusively to the owner and bot."""
+    existing = get_owner_vault_channel(guild)
+    if existing:
+        return existing, False
+
+    cat = (
+        discord.utils.get(guild.categories, name="Private") or
+        discord.utils.get(guild.categories, name="🔒 PRIVATE CVS") or
+        discord.utils.get(guild.categories, name="🛡️ STAFF ZONE")
+    )
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            embed_links=True,
+            attach_files=True,
+            manage_messages=True,
+            read_message_history=True
+        )
+    }
+
+    owner_member = None
+    if getattr(guild, "owner", None):
+        owner_member = guild.owner
+    elif getattr(guild, "owner_id", None):
+        owner_member = guild.get_member(guild.owner_id)
+
+    if not owner_member and getattr(bot, "owner_id", None):
+        owner_member = guild.get_member(bot.owner_id)
+
+    if not owner_member:
+        owner_member = guild.get_member(560578688534577237)
+
+    if owner_member:
+        overwrites[owner_member] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            embed_links=True,
+            attach_files=True
+        )
+
+    try:
+        new_ch = await guild.create_text_channel(
+            "🔒-owner-vault",
+            category=cat,
+            topic="Private Owner Vault • Personal CVS ExtraCare accounts management. Restricted exclusively to Cody.",
+            overwrites=overwrites
+        )
+    except Exception as e:
+        print(f"⚠️ Error creating owner vault channel: {e}", file=sys.stderr)
+        return None, False
+
+    welcome_embed = discord.Embed(
+        title="🔒 Private Owner Vault • Personal Accounts",
+        description=(
+            "Welcome to your private account hub! 🛡️\n\n"
+            "This channel is **strictly private** and only visible to **you** and **AIO Bot**.\n"
+            "All commands displaying or managing personal CVS accounts are locked down so that **only you** can execute them.\n\n"
+            "**Available Owner Commands:**\n"
+            "• `/stock` — Browse active coupons, cardholder names, phones, & 1-click Mark Used\n"
+            "• `/accounts` — Card barcode viewer & ExtraCare details with pagination\n"
+            "• `/organizecoupons` — Group accounts by coupon type ($4 off, $3 off, 40% off)\n"
+            "• `/used` — Manually mark coupons as used by name or phone\n\n"
+            "🔐 *Non-owners and server members cannot view or execute these commands anywhere on the server.*"
+        ),
+        color=0x2B2D31
+    )
+    welcome_embed.set_footer(text="AIO Bot • Private Owner Security Protocol")
     try:
         await new_ch.send(embed=welcome_embed)
     except Exception:
@@ -2160,9 +2278,9 @@ class CVSAccountsPaginationView(discord.ui.View):
         self.add_item(self.dropdown)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if await bot.is_owner(interaction.user) or is_staff_or_admin(interaction.user):
+        if await is_owner_only(interaction.user, interaction.guild):
             return True
-        await interaction.response.send_message("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", ephemeral=True)
+        await interaction.response.send_message("⛔ Security Error: Only the bot owner can view private CVS accounts.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
@@ -2358,9 +2476,9 @@ class CouponOrganizerView(discord.ui.View):
         self.add_item(self.dropdown)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if await bot.is_owner(interaction.user) or is_staff_or_admin(interaction.user):
+        if await is_owner_only(interaction.user, interaction.guild):
             return True
-        await interaction.response.send_message("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", ephemeral=True)
+        await interaction.response.send_message("⛔ Security Error: Only the bot owner can view private CVS accounts.", ephemeral=True)
         return False
 
 
@@ -2538,9 +2656,9 @@ class CVSStockView(discord.ui.View):
         self.add_item(self.dropdown)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if await bot.is_owner(interaction.user) or is_staff_or_admin(interaction.user):
+        if await is_owner_only(interaction.user, interaction.guild):
             return True
-        await interaction.response.send_message("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", ephemeral=True)
+        await interaction.response.send_message("⛔ Security Error: Only the bot owner can view private CVS stock.", ephemeral=True)
         return False
 
     @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
@@ -8791,15 +8909,15 @@ async def roll_cmd(ctx, dice: Optional[str] = "1d6"):
 @bot.hybrid_command(
     name="accounts",
     aliases=["cvsaccounts", "myaccounts", "cards", "cvsaccount", "cvscard", "extracare", "barcode"],
-    description="Browse or search imported CVS ExtraCare accounts with barcodes & pagination"
+    description="Browse or search imported CVS ExtraCare accounts with barcodes & pagination (Owner Only)"
 )
 @commands.guild_only()
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(query="Optional search term or ExtraCare account number")
 async def list_accounts_cmd(ctx, query: Optional[str] = None):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
-        await ctx.send("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", delete_after=6)
+    if not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Security Error: Only the bot owner can view private CVS accounts.", delete_after=6)
         return
 
     if not cvs_accounts_db:
@@ -8822,15 +8940,15 @@ async def list_accounts_cmd(ctx, query: Optional[str] = None):
 @bot.hybrid_command(
     name="organizecoupons",
     aliases=["couponaccounts", "couponinventory", "couponsbyaccount", "accountcoupons", "sortcoupons"],
-    description="Organize and browse CVS accounts grouped by active coupons"
+    description="Organize and browse CVS accounts grouped by active coupons (Owner Only)"
 )
 @commands.guild_only()
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(coupon="Optional coupon filter (e.g. 4, 3, entire purchase, none)")
 async def organize_coupons_cmd(ctx: commands.Context, coupon: Optional[str] = None):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
-        await ctx.send("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", delete_after=6)
+    if not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Security Error: Only the bot owner can view private CVS accounts.", delete_after=6)
         return
 
     if not cvs_accounts_db:
@@ -8845,15 +8963,15 @@ async def organize_coupons_cmd(ctx: commands.Context, coupon: Optional[str] = No
 @bot.hybrid_command(
     name="stock",
     aliases=["cvsstock", "couponsstock", "activestock", "stockcoupons"],
-    description="View live CVS coupon stock (Name, Phone, Coupon, Expiry) with 1-click Mark Used"
+    description="View live CVS coupon stock (Name, Phone, Coupon, Expiry) with 1-click Mark Used (Owner Only)"
 )
 @commands.guild_only()
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(filter="Optional filter: 4 ($4 off), 3 ($3 off), 40 (40% off), other, or all")
 async def stock_cmd(ctx: commands.Context, filter: Optional[str] = "all"):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
-        await ctx.send("⛔ Security Error: Only server staff or the bot owner can view stock.", delete_after=6)
+    if not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Security Error: Only the bot owner can view private CVS stock.", delete_after=6)
         return
 
     if not cvs_accounts_db:
@@ -8869,11 +8987,11 @@ async def stock_cmd(ctx: commands.Context, filter: Optional[str] = "all"):
 @bot.hybrid_command(
     name="used",
     aliases=["usecoupon", "usedcoupon", "markused", "markcouponused", "redeemcoupon"],
-    description="Mark a coupon as used/redeemed on a CVS account by name, phone, or ID"
+    description="Mark a coupon as used/redeemed on a CVS account by name, phone, or ID (Owner Only)"
 )
 @commands.guild_only()
-@commands.has_permissions(manage_messages=True)
-@app_commands.default_permissions(manage_messages=True)
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     account="Cardholder name, phone, or ID (e.g. Corey, Melinda, 2246387825)",
     coupon="Specific coupon used (optional, defaults to active coupon on account)",
@@ -8886,8 +9004,8 @@ async def used_cmd(
     savings: Optional[str] = None
 ):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
-        await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can manage accounts.", delete_after=6)
+    if not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Security Error: Only the bot owner can manage private CVS accounts.", delete_after=6)
         return
 
     if not cvs_accounts_db:
@@ -8937,19 +9055,19 @@ async def used_cmd(
 @bot.hybrid_command(
     name="unusecoupon",
     aliases=["undocoupon", "unmarkused"],
-    description="Revert a used coupon back to active on a CVS account"
+    description="Revert a used coupon back to active on a CVS account (Owner Only)"
 )
 @commands.guild_only()
-@commands.has_permissions(manage_messages=True)
-@app_commands.default_permissions(manage_messages=True)
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     coupon="The coupon name/description to revert back to active",
     account="Account ID, Name, or ExtraCare Number (optional)"
 )
 async def unusecoupon_cmd(ctx: commands.Context, coupon: str, account: Optional[str] = None):
     await safely_delete_message(ctx)
-    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
-        await ctx.send("⛔ Permission Denied: Only server staff or the bot owner can manage accounts.", delete_after=6)
+    if not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Security Error: Only the bot owner can manage private CVS accounts.", delete_after=6)
         return
 
     success, msg, acc = unmark_coupon_used(account_query=account or 1, coupon_name=coupon)
@@ -8958,6 +9076,29 @@ async def unusecoupon_cmd(ctx: commands.Context, coupon: str, account: Optional[
         return
 
     await ctx.send(f"✅ Reverted coupon **'{coupon}'** back to active for Account #{acc['id']} **{acc.get('name')}**!", delete_after=8)
+
+
+@bot.hybrid_command(
+    name="setup-vault",
+    aliases=["setupvault", "setupownervault", "setup-owner-vault"],
+    description="Set up or verify the strictly private #🔒-owner-vault channel (Owner Only)"
+)
+@commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def setup_vault_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not await is_owner_only(ctx.author, ctx.guild):
+        await ctx.send("⛔ Security Error: Only the bot owner can configure the private vault.", delete_after=6)
+        return
+    ch, created = await setup_owner_vault_channel(ctx.guild)
+    if ch:
+        if created:
+            await ctx.send(f"✅ Created private owner vault: {ch.mention} (only visible to you and the bot).", delete_after=8)
+        else:
+            await ctx.send(f"ℹ️ Private owner vault already active: {ch.mention}.", delete_after=8)
+    else:
+        await ctx.send("❌ Failed to create private owner vault. Please check bot permissions.", delete_after=8)
+
 
 
 # --- SETUP & CHANNELS ---

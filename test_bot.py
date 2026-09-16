@@ -2333,6 +2333,47 @@ class TestAIOBot(unittest.TestCase):
             acc_test["used_coupons"].pop()
         main.save_cvs_accounts(main.cvs_accounts_db)
 
+    def test_owner_only_security_and_vault(self):
+        """Test owner-only security checks, command restrictions, and protected vault channel."""
+        import asyncio
+
+        # 1. Owner detection
+        owner_member = MagicMock()
+        owner_member.id = 560578688534577237
+        owner_member.guild = MagicMock()
+        owner_member.guild.owner_id = 560578688534577237
+        self.assertTrue(main.is_bot_or_server_owner(owner_member))
+
+        # 2. Non-owner staff member (should FAIL owner-only check)
+        staff_member = MagicMock()
+        staff_member.id = 999999999999
+        staff_member.guild = MagicMock()
+        staff_member.guild.owner_id = 560578688534577237
+        staff_member.guild_permissions = MagicMock()
+        staff_member.guild_permissions.administrator = True
+        staff_member.roles = [MagicMock(name="Staff")]
+        # is_staff_or_admin is True, BUT is_bot_or_server_owner is False
+        self.assertTrue(main.is_staff_or_admin(staff_member))
+        self.assertFalse(main.is_bot_or_server_owner(staff_member))
+
+        # 3. Async is_owner_only check
+        res_owner = asyncio.run(main.is_owner_only(owner_member))
+        self.assertTrue(res_owner)
+        res_staff = asyncio.run(main.is_owner_only(staff_member))
+        self.assertFalse(res_staff)
+
+        # 4. Command registration and administrator permissions
+        owner_commands = ["accounts", "stock", "organizecoupons", "used", "unusecoupon", "setup-vault"]
+        for cmd_name in owner_commands:
+            cmd = main.bot.get_command(cmd_name)
+            self.assertIsNotNone(cmd, f"Command '{cmd_name}' not found!")
+            self.assertTrue(cmd.app_command.default_permissions.administrator, f"Command '{cmd_name}' must require administrator default permissions!")
+
+        # 5. Protected channel test for owner vault
+        self.assertTrue(main.is_protected_channel("🔒-owner-vault"))
+        self.assertTrue(main.is_protected_channel("owner-vault"))
+        self.assertTrue(main.is_protected_channel("private-vault"))
+
 
 if __name__ == '__main__':
     unittest.main()
