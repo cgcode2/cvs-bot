@@ -184,12 +184,21 @@ def mark_coupon_used(
         if not target_acc:
             target_acc = cvs_accounts_db[0]
 
+    if not target_acc and coupon_name:
+        acc_cand = get_cvs_account(coupon_name)
+        if acc_cand:
+            target_acc = acc_cand
+            coupon_name = ""
+
     if not target_acc:
         return False, f"Could not find CVS account matching '{account_query}'.", None
 
     clean_coupon = coupon_name.strip()
     if not clean_coupon:
-        return False, "Coupon name/description cannot be empty.", None
+        if target_acc.get("coupons"):
+            clean_coupon = target_acc["coupons"][0]
+        else:
+            return False, f"Account #{target_acc.get('id')} ({target_acc.get('name')}) has no active coupons loaded.", None
 
     c_lower = clean_coupon.lower()
 
@@ -2353,6 +2362,246 @@ class CouponOrganizerView(discord.ui.View):
             return True
         await interaction.response.send_message("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", ephemeral=True)
         return False
+
+
+def get_stock_accounts(filter_type: str = "all") -> List[Dict[str, Any]]:
+    """Returns CVS accounts that have active coupons, optionally filtered by coupon type."""
+    accs = [a for a in cvs_accounts_db if a.get("coupons")]
+    f_clean = filter_type.lower().strip()
+    if f_clean == "4":
+        return [a for a in accs if any("4 off" in str(c).lower() for c in a.get("coupons", []))]
+    elif f_clean == "3":
+        return [a for a in accs if any("3 off" in str(c).lower() for c in a.get("coupons", []))]
+    elif f_clean in ("40", "40%"):
+        return [a for a in accs if any("40%" in str(c).lower() for c in a.get("coupons", []))]
+    elif f_clean == "other":
+        return [a for a in accs if not any(k in str(c).lower() for k in ["4 off", "3 off", "40%"] for c in a.get("coupons", []))]
+    return accs
+
+
+def build_stock_embed(page: int = 0, filter_type: str = "all", per_page: int = 10) -> Tuple[discord.Embed, int, int]:
+    stock = get_stock_accounts(filter_type)
+    total_items = len(stock)
+    total_pages = max(1, (total_items + per_page - 1) // per_page)
+    current_page = max(0, min(page, total_pages - 1))
+
+    start_idx = current_page * per_page
+    end_idx = min(start_idx + per_page, total_items)
+    page_items = stock[start_idx:end_idx]
+
+    filter_title = "All Active Stock"
+    if filter_type == "4":
+        filter_title = "$4 Off Entire Purchase"
+    elif filter_type == "3":
+        filter_title = "$3 Off Entire Purchase"
+    elif filter_type in ("40", "40%"):
+        filter_title = "40% Off 1 Item"
+    elif filter_type == "other":
+        filter_title = "Special Offers ($8 & $5 Off)"
+
+    embed = discord.Embed(
+        title=f"📦 CVS Coupon Stock • {filter_title}",
+        description=(
+            f"> 🎟️ **Available In Stock:** `{total_items}` accounts loaded with active coupons\n"
+            "> 💡 **To Mark Used:** Pick an account from the dropdown below or run `/used account:<name>`"
+        ),
+        color=COLOR_SUCCESS if total_items > 0 else COLOR_WARN,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
+
+    if not page_items:
+        embed.description = "📭 No active coupons found in this category."
+    else:
+        for idx, a in enumerate(page_items, start_idx + 1):
+            phone_raw = a.get('phone', '')
+            phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else (phone_raw or "—")
+            card = str(a.get('extraCareNumber', ''))
+            last4 = card[-4:] if len(card) >= 4 else card
+            c_list = a.get('coupons', [])
+            c_str = ", ".join(c_list)
+            clean_c = re.sub(r'\(Exp:.*?\)', '', c_str).strip()
+            exp_m = re.search(r'Exp:?\s*([A-Za-z0-9\s\,]+?)\)', c_str)
+            exp = exp_m.group(1).strip() if exp_m else "Active"
+
+            link_str = f" • [1-Click Link]({a['coupon_link']})" if a.get('coupon_link') else ""
+            val = f"📞 **Phone:** `{phone_fmt}` ⏐ **Card:** `ends {last4}`\n🎟️ **Coupon:** `{clean_c}`\n⏳ **Expires:** `{exp}`{link_str}"
+            embed.add_field(
+                name=f"`{idx:02d}.` {a.get('name', 'Account')}",
+                value=val,
+                inline=False
+            )
+
+    embed.set_footer(text=f"AIO Bot • Page {current_page + 1} of {total_pages} • Total in Stock: {total_items}")
+    return embed, current_page, total_pages
+
+
+class StockMarkUsedSelect(discord.ui.Select):
+    def __init__(self, page_accounts: List[Dict[str, Any]]):
+        options = []
+        for acc in page_accounts:
+            c_list = acc.get("coupons", [])
+            c_str = ", ".join(c_list) if c_list else "Coupon"
+            clean_c = re.sub(r'\(Exp:.*?\)', '', c_str).strip()
+            exp_m = re.search(r'Exp:?\s*([A-Za-z0-9\s\,]+?)\)', c_str)
+            exp = f" | Exp: {exp_m.group(1).strip()}" if exp_m else ""
+
+            phone_raw = acc.get('phone', '')
+            phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else phone_raw
+            label = f"{acc.get('name', 'Account')} — {clean_c}"[:100]
+            desc = f"📞 {phone_fmt} • Ends {str(acc.get('extraCareNumber', ''))[-4:]}{exp}"[:100]
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=str(acc["id"]),
+                    description=desc,
+                    emoji="🏷️"
+                )
+            )
+        super().__init__(
+            placeholder="🏷️ Quick Mark as Used: Choose account from this list...",
+            min_values=1,
+            max_values=1,
+            options=options if options else [discord.SelectOption(label="No active coupons on this page", value="none")],
+            disabled=not bool(options),
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await interaction.response.send_message("No active coupons to mark on this page.", ephemeral=True)
+            return
+
+        acc_id = int(self.values[0])
+        acc = get_cvs_account(str(acc_id))
+        if not acc:
+            await interaction.response.send_message("❌ Account not found.", ephemeral=True)
+            return
+
+        c_list = acc.get("coupons", [])
+        if not c_list:
+            await interaction.response.send_message(f"⚠️ **{acc.get('name')}** has no active coupons loaded.", ephemeral=True)
+            return
+
+        coupon_to_use = c_list[0]
+        clean_coupon = re.sub(r'\(Exp:.*?\)', '', coupon_to_use).strip()
+
+        success, msg, updated_acc = mark_coupon_used(
+            account_query=acc_id,
+            coupon_name=coupon_to_use,
+            user_tag=str(interaction.user)
+        )
+
+        if not success:
+            await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
+            return
+
+        embed, cur_p, tot_p = build_stock_embed(self.view.current_page, self.view.filter_type)
+        self.view.current_page = cur_p
+        self.view.total_pages = tot_p
+        self.view.update_select()
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+        await interaction.followup.send(
+            f"✅ **Marked as Used!**\n• **Cardholder:** {acc.get('name')} (`{acc.get('phone')}`)\n• **Coupon:** {clean_coupon}\nInventory updated!",
+            ephemeral=True
+        )
+
+
+class CVSStockView(discord.ui.View):
+    def __init__(self, page: int = 0, filter_type: str = "all"):
+        super().__init__(timeout=240)
+        self.current_page = page
+        self.filter_type = filter_type
+
+        stock = get_stock_accounts(self.filter_type)
+        per_page = 10
+        self.total_pages = max(1, (len(stock) + per_page - 1) // per_page)
+
+        start_idx = self.current_page * per_page
+        end_idx = min(start_idx + per_page, len(stock))
+        page_items = stock[start_idx:end_idx]
+
+        self.dropdown = StockMarkUsedSelect(page_items)
+        self.add_item(self.dropdown)
+
+    def update_select(self):
+        self.remove_item(self.dropdown)
+        stock = get_stock_accounts(self.filter_type)
+        per_page = 10
+        self.total_pages = max(1, (len(stock) + per_page - 1) // per_page)
+        self.current_page = max(0, min(self.current_page, self.total_pages - 1))
+        start_idx = self.current_page * per_page
+        end_idx = min(start_idx + per_page, len(stock))
+        page_items = stock[start_idx:end_idx]
+        self.dropdown = StockMarkUsedSelect(page_items)
+        self.add_item(self.dropdown)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if await bot.is_owner(interaction.user) or is_staff_or_admin(interaction.user):
+            return True
+        await interaction.response.send_message("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, emoji="◀️", row=1)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+        else:
+            self.current_page = self.total_pages - 1
+        embed, cur_p, tot_p = build_stock_embed(self.current_page, self.filter_type)
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji="▶️", row=1)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+        else:
+            self.current_page = 0
+        embed, cur_p, tot_p = build_stock_embed(self.current_page, self.filter_type)
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="All Stock", style=discord.ButtonStyle.success, emoji="📋", row=1)
+    async def all_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.filter_type = "all"
+        self.current_page = 0
+        embed, cur_p, tot_p = build_stock_embed(self.current_page, self.filter_type)
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="$4 Off", style=discord.ButtonStyle.secondary, emoji="🎟️", row=2)
+    async def four_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.filter_type = "4"
+        self.current_page = 0
+        embed, cur_p, tot_p = build_stock_embed(self.current_page, self.filter_type)
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="$3 Off", style=discord.ButtonStyle.secondary, emoji="🎟️", row=2)
+    async def three_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.filter_type = "3"
+        self.current_page = 0
+        embed, cur_p, tot_p = build_stock_embed(self.current_page, self.filter_type)
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="40% Off", style=discord.ButtonStyle.secondary, emoji="🎟️", row=2)
+    async def forty_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.filter_type = "40"
+        self.current_page = 0
+        embed, cur_p, tot_p = build_stock_embed(self.current_page, self.filter_type)
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Other ($8/$5)", style=discord.ButtonStyle.secondary, emoji="💰", row=2)
+    async def other_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.filter_type = "other"
+        self.current_page = 0
+        embed, cur_p, tot_p = build_stock_embed(self.current_page, self.filter_type)
+        self.update_select()
+        await interaction.response.edit_message(embed=embed, view=self)
 
 
 class MarkCouponUsedModal(discord.ui.Modal):
@@ -8594,22 +8843,46 @@ async def organize_coupons_cmd(ctx: commands.Context, coupon: Optional[str] = No
 
 
 @bot.hybrid_command(
+    name="stock",
+    aliases=["cvsstock", "couponsstock", "activestock", "stockcoupons"],
+    description="View live CVS coupon stock (Name, Phone, Coupon, Expiry) with 1-click Mark Used"
+)
+@commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(filter="Optional filter: 4 ($4 off), 3 ($3 off), 40 (40% off), other, or all")
+async def stock_cmd(ctx: commands.Context, filter: Optional[str] = "all"):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Security Error: Only server staff or the bot owner can view stock.", delete_after=6)
+        return
+
+    if not cvs_accounts_db:
+        await ctx.send("📭 No CVS accounts currently loaded in database.", delete_after=8)
+        return
+
+    f_type = (filter or "all").lower().strip()
+    embed, cur_p, tot_p = build_stock_embed(page=0, filter_type=f_type)
+    view = CVSStockView(page=0, filter_type=f_type)
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
     name="used",
     aliases=["usecoupon", "usedcoupon", "markused", "markcouponused", "redeemcoupon"],
-    description="Mark a coupon as used/redeemed on a CVS account from /accounts"
+    description="Mark a coupon as used/redeemed on a CVS account by name, phone, or ID"
 )
 @commands.guild_only()
 @commands.has_permissions(manage_messages=True)
 @app_commands.default_permissions(manage_messages=True)
 @app_commands.describe(
-    coupon="The coupon name or description that was used (e.g. $4 off Colgate, 40% off 1 item)",
-    account="Account ID, Name, or ExtraCare Number (optional, defaults to matched or first account)",
-    savings="Dollar amount saved by this coupon (optional, e.g. 4.00, 10.50)"
+    account="Cardholder name, phone, or ID (e.g. Corey, Melinda, 2246387825)",
+    coupon="Specific coupon used (optional, defaults to active coupon on account)",
+    savings="Dollar amount saved by this coupon (optional, e.g. 4.00, 3.00)"
 )
 async def used_cmd(
     ctx: commands.Context,
-    coupon: str,
-    account: Optional[str] = None,
+    account: str,
+    coupon: Optional[str] = None,
     savings: Optional[str] = None
 ):
     await safely_delete_message(ctx)
@@ -8630,7 +8903,7 @@ async def used_cmd(
 
     success, msg, acc = mark_coupon_used(
         account_query=account,
-        coupon_name=coupon,
+        coupon_name=coupon or "",
         savings=sav_val,
         user_tag=str(ctx.author)
     )
@@ -8639,16 +8912,19 @@ async def used_cmd(
         await ctx.send(f"❌ {msg}", delete_after=8)
         return
 
+    used_c = (acc.get("used_coupons") or [{}])[-1].get("coupon", coupon or "Coupon")
     embed = discord.Embed(
         title="✅ Coupon Marked as Used",
-        description=f"Coupon **{coupon}** has been successfully redeemed and logged.",
+        description=f"Coupon **{used_c}** on **{acc.get('name')}** has been successfully redeemed and logged.",
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.add_field(name="💳 CVS Account", value=f"#{acc['id']} **{acc.get('name', 'Cardholder')}**", inline=True)
-    embed.add_field(name="🔢 ExtraCare Card", value=f"`{acc.get('extraCareNumber', '—')}`", inline=True)
+    embed.add_field(name="👤 Cardholder", value=f"**{acc.get('name')}** (`#{acc.get('id')}`)", inline=True)
+    phone_fmt = f"({acc['phone'][:3]}) {acc['phone'][3:6]}-{acc['phone'][6:]}" if len(acc.get('phone', '')) == 10 else acc.get('phone', '—')
+    embed.add_field(name="📞 Phone", value=f"`{phone_fmt}`", inline=True)
     if sav_val:
-        embed.add_field(name="💰 Savings Logged", value=f"`${sav_val:.2f}`", inline=True)
+        embed.add_field(name="💰 Savings Logged", value=f"**${sav_val:.2f}**", inline=True)
+    embed.add_field(name="🔢 ExtraCare Card", value=f"`{acc.get('extraCareNumber', '—')}`", inline=True)
 
     rem = acc.get("coupons", [])
     if rem:

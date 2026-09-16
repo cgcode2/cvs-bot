@@ -2289,6 +2289,50 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("4 off", four_embed.title.lower())
         self.assertGreaterEqual(len(four_embed.fields), 9)
 
+    def test_stock_command(self):
+        all_stock = main.get_stock_accounts("all")
+        self.assertGreaterEqual(len(all_stock), 30)
+
+        four_stock = main.get_stock_accounts("4")
+        self.assertGreaterEqual(len(four_stock), 13)
+
+        three_stock = main.get_stock_accounts("3")
+        self.assertGreaterEqual(len(three_stock), 13)
+
+        forty_stock = main.get_stock_accounts("40")
+        self.assertGreaterEqual(len(forty_stock), 5)
+
+        # Stock embed test
+        embed, cur_p, tot_p = main.build_stock_embed(page=0, filter_type="all", per_page=10)
+        self.assertIn("Coupon Stock", embed.title)
+        self.assertEqual(cur_p, 0)
+        self.assertGreaterEqual(tot_p, 3)
+        self.assertEqual(len(embed.fields), 10)
+
+        # First field has phone, card, coupon, and expires
+        first_field = embed.fields[0]
+        self.assertIn("Phone:", first_field.value)
+        self.assertIn("Card:", first_field.value)
+        self.assertIn("Coupon:", first_field.value)
+        self.assertIn("Expires:", first_field.value)
+
+        # Stock view test
+        view = main.CVSStockView(page=0, filter_type="all")
+        self.assertIsNotNone(view.dropdown)
+        self.assertEqual(len(view.dropdown.options), 10)
+
+        # Test mark_coupon_used by name without coupon or ID
+        acc_test = main.get_cvs_account("Corey")
+        self.assertIsNotNone(acc_test)
+        orig_coupons = list(acc_test.get("coupons", []))
+        success, msg, acc_updated = main.mark_coupon_used(account_query="Corey")
+        self.assertTrue(success)
+        # Restore for test cleanliness
+        acc_test["coupons"] = orig_coupons
+        if "used_coupons" in acc_test and acc_test["used_coupons"]:
+            acc_test["used_coupons"].pop()
+        main.save_cvs_accounts(main.cvs_accounts_db)
+
 
 if __name__ == '__main__':
     unittest.main()
