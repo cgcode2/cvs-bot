@@ -6481,7 +6481,7 @@ class DispensedAccountView(discord.ui.View):
                 ephemeral=True
             )
             try:
-                await interaction.channel.send(f"🗑️ *Account details marked as used by {interaction.user.mention} and deleted from this ticket.*")
+                await interaction.channel.send(f"🗑️ *Account marked as used by {interaction.user.mention}.*")
             except Exception:
                 pass
         except Exception as e:
@@ -10808,10 +10808,7 @@ async def dispense_cmd(
 
     delivery_embed = discord.Embed(
         title=f"🎁 Dispensed Account #{account_id}",
-        description=(
-            f"```text\n{content}\n```\n"
-            f"⚠️ **Note for Customer:** Once you have used this account at the register, click **Mark as Used** below to delete these details from this channel."
-        ),
+        description=f"```text\n{content}\n```",
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
