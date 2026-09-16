@@ -2516,6 +2516,23 @@ class TestAIOBot(unittest.TestCase):
         self.assertFalse(main.is_bot_or_server_owner(friend_server_owner))
         self.assertFalse(asyncio.run(main.is_owner_only(friend_server_owner)))
 
+        # 5. Verify Mod Panel in Guest Server contains ZERO personal store/hub elements
+        guest_g = MagicMock()
+        guest_g.id = 9999999999
+        guest_mod_embed = main.build_staff_modpanel_embed(guest_g)
+        self.assertNotIn("Store & Billing", guest_mod_embed.description)
+        self.assertNotIn("Refresh Store", guest_mod_embed.description)
+        self.assertNotIn("Refresh Hub", guest_mod_embed.description)
+        self.assertNotIn("Open Shop", guest_mod_embed.description)
+
+        guest_mod_view = main.StaffModPanelButtonView(guest_g)
+        guest_button_labels = [b.label for b in guest_mod_view.children]
+        self.assertEqual(len(guest_button_labels), 13)
+        for leak_btn in ["Create Invoice", "Add Order", "Order Stats", "Refresh Store", "Refresh Hub", "Open Shop", "Close Shop"]:
+            self.assertNotIn(leak_btn, guest_button_labels)
+        for expected_btn in ["Warn", "Timeout", "Kick", "Ban", "Purge", "Lock Channel", "Unlock Channel", "Slowmode", "Server Lockdown", "Refresh Tickets", "DM Member", "Server Info", "Clear Slash Dupes"]:
+            self.assertIn(expected_btn, guest_button_labels)
+
 
 if __name__ == '__main__':
     unittest.main()

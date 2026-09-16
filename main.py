@@ -5763,10 +5763,10 @@ class CouponRoomControlView(discord.ui.View):
 
 # --- STAFF MOD PANEL BUTTON VIEW & EMBED ---
 
-def build_staff_modpanel_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🎛️ Staff Control Center",
-        description=(
+def build_staff_modpanel_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
+    is_guest = (guild is not None and not is_cvs_guild(guild))
+    if not is_guest:
+        desc = (
             "Centralized server moderation, security, and administration console.\n\n"
             "**Member Discipline:**\n"
             "• Warn, Timeout, Kick *(Admin Only)*, Ban *(Admin Only)*, Purge\n\n"
@@ -5777,7 +5777,20 @@ def build_staff_modpanel_embed() -> discord.Embed:
             "**Panels & Shop Controls:**\n"
             "• Refresh Store, Refresh Tickets, Refresh Hub, Server Info\n"
             "• 🟢 Open Shop / 🔴 Close Shop"
-        ),
+        )
+    else:
+        desc = (
+            "Centralized server moderation, security, and administration console.\n\n"
+            "**Member Discipline:**\n"
+            "• Warn, Timeout, Kick *(Admin Only)*, Ban *(Admin Only)*, Purge\n\n"
+            "**Channel & Server Security:**\n"
+            "• Lock, Unlock, Slowmode, Server Lockdown *(Admin Only)*\n\n"
+            "**Server & Ticket Tools:**\n"
+            "• Refresh Tickets, Direct Message Member, Server Info, Sync Commands"
+        )
+    embed = discord.Embed(
+        title="🎛️ Staff Control Center",
+        description=desc,
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
@@ -5864,8 +5877,28 @@ def build_rules_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
 
 class StaffModPanelButtonView(discord.ui.View):
     """Persistent button-driven moderation, billing, and channel control center."""
-    def __init__(self):
+    def __init__(self, guild: Optional[discord.Guild] = None):
         super().__init__(timeout=None)
+        self.guild = guild
+        if guild is not None and not is_cvs_guild(guild):
+            store_button_ids = {
+                "modpanel_invoice",
+                "modpanel_addorder",
+                "modpanel_orderstats",
+                "modpanel_refresh_food",
+                "modpanel_refresh_coupon",
+                "modpanel_open_shop",
+                "modpanel_close_shop"
+            }
+            self._children = [item for item in self._children if getattr(item, "custom_id", None) not in store_button_ids]
+            for item in self._children:
+                cid = getattr(item, "custom_id", "")
+                if cid in ("modpanel_warn", "modpanel_timeout", "modpanel_kick", "modpanel_ban", "modpanel_purge"):
+                    item.row = 0
+                elif cid in ("modpanel_lock", "modpanel_unlock", "modpanel_slowmode", "modpanel_lockdown"):
+                    item.row = 1
+                elif cid in ("modpanel_refresh_tickets", "modpanel_dm", "modpanel_serverinfo", "modpanel_clear_slash_dupes"):
+                    item.row = 2
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not is_staff_member(interaction.user):
@@ -5979,14 +6012,23 @@ class StaffModPanelButtonView(discord.ui.View):
     # --- ROW 2: STORE, BILLING & ROLES ---
     @discord.ui.button(label="Create Invoice", style=discord.ButtonStyle.success, emoji="💵", custom_id="modpanel_invoice", row=2)
     async def btn_invoice(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ Store & billing features are not enabled in this server.", ephemeral=True)
+            return
         await interaction.response.send_modal(ModInvoiceModal())
 
     @discord.ui.button(label="Add Order", style=discord.ButtonStyle.success, emoji="➕", custom_id="modpanel_addorder", row=2)
     async def btn_addorder(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ Store & billing features are not enabled in this server.", ephemeral=True)
+            return
         await interaction.response.send_modal(ModAddOrderModal())
 
     @discord.ui.button(label="Order Stats", style=discord.ButtonStyle.primary, emoji="📈", custom_id="modpanel_orderstats", row=2)
     async def btn_orderstats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ Store & billing features are not enabled in this server.", ephemeral=True)
+            return
         embed = build_order_stats_embed(interaction.guild)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -5996,6 +6038,9 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Refresh Store", style=discord.ButtonStyle.success, emoji="🌮", custom_id="modpanel_refresh_food", row=2)
     async def btn_refresh_food(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ Store features are not enabled in this server.", ephemeral=True)
+            return
         if not is_admin_member(interaction.user):
             await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can refresh the store channel.", ephemeral=True)
             return
@@ -6030,6 +6075,9 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Refresh Hub", style=discord.ButtonStyle.primary, emoji="🛒", custom_id="modpanel_refresh_coupon", row=3)
     async def btn_refresh_coupon(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ Coupon hub features are not enabled in this server.", ephemeral=True)
+            return
         if not is_admin_member(interaction.user):
             await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can refresh the coupon hub.", ephemeral=True)
             return
@@ -6053,10 +6101,16 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Open Shop", style=discord.ButtonStyle.success, emoji="🟢", custom_id="modpanel_open_shop", row=3)
     async def btn_open_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ Store features are not enabled in this server.", ephemeral=True)
+            return
         await interaction.response.send_modal(ModOpenShopModal())
 
     @discord.ui.button(label="Close Shop", style=discord.ButtonStyle.danger, emoji="🔴", custom_id="modpanel_close_shop", row=3)
     async def btn_close_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ Store features are not enabled in this server.", ephemeral=True)
+            return
         await interaction.response.send_modal(ModCloseShopModal())
 
     @discord.ui.button(label="Clear Slash Dupes", style=discord.ButtonStyle.secondary, emoji="🧹", custom_id="modpanel_clear_slash_dupes", row=4)
@@ -6134,12 +6188,13 @@ async def refresh_channel_content(channel: discord.TextChannel, author_id: int, 
         return "🛒 CVS Coupon Optimizer Hub"
 
     elif "mod-panel" in ch_name or "modpanel" in ch_name:
-        mod_embed = build_staff_modpanel_embed()
-        await channel.send(embed=mod_embed, view=StaffModPanelButtonView())
+        guild = getattr(channel, "guild", None)
+        mod_embed = build_staff_modpanel_embed(guild)
+        await channel.send(embed=mod_embed, view=StaffModPanelButtonView(guild))
         return "🎛️ Staff Control Center & Moderation Panel"
 
     elif "rule" in ch_name:
-        rules_embed = build_rules_embed(channel.guild)
+        rules_embed = build_rules_embed(getattr(channel, "guild", None))
         await channel.send(embed=rules_embed)
         return "📜 Server Rules & Guidelines"
 
@@ -7279,8 +7334,8 @@ async def open_panel(ctx):
 @app_commands.default_permissions(manage_channels=True)
 async def open_modpanel(ctx):
     await safely_delete_message(ctx)
-    embed = build_staff_modpanel_embed()
-    view = StaffModPanelButtonView()
+    embed = build_staff_modpanel_embed(ctx.guild)
+    view = StaffModPanelButtonView(ctx.guild)
     await ctx.send(embed=embed, view=view)
 
 @bot.hybrid_command(name="help", description="Show the AIO Bot interactive help menu")
@@ -10103,8 +10158,8 @@ async def setup_mod_panel_cmd(ctx: commands.Context):
             await existing.purge(limit=10)
         except Exception:
             pass
-        mod_embed = build_staff_modpanel_embed()
-        await existing.send(embed=mod_embed, view=StaffModPanelButtonView())
+        mod_embed = build_staff_modpanel_embed(guild)
+        await existing.send(embed=mod_embed, view=StaffModPanelButtonView(guild))
         await ctx.send(f"✅ Staff Control Center & Moderation Panel refreshed at {existing.mention}! All actions are accessible via buttons.", delete_after=8)
         return
 
@@ -10115,8 +10170,8 @@ async def setup_mod_panel_cmd(ctx: commands.Context):
             topic="Staff control center: execute moderation, billing, role fixes, and panel refreshes via buttons.",
             overwrites=staff_overwrites
         )
-        mod_embed = build_staff_modpanel_embed()
-        await new_channel.send(embed=mod_embed, view=StaffModPanelButtonView())
+        mod_embed = build_staff_modpanel_embed(guild)
+        await new_channel.send(embed=mod_embed, view=StaffModPanelButtonView(guild))
         await ctx.send(f"✅ Staff Control Center & Moderation Panel created at {new_channel.mention}! All actions are accessible via buttons.", delete_after=8)
     except Exception as e:
         await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
