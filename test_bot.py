@@ -2264,6 +2264,14 @@ class TestAIOBot(unittest.TestCase):
         button_custom_ids = [item.custom_id for item in panel_view.children if hasattr(item, "custom_id")]
         self.assertIn("modpanel_clear_slash_dupes", button_custom_ids)
 
+    def test_rules_embed(self):
+        embed = main.build_rules_embed(None)
+        self.assertIn("Rules", embed.title)
+        self.assertTrue(len(embed.fields) >= 5)
+        field_names = [f.name for f in embed.fields]
+        self.assertTrue(any("Respect" in name for name in field_names))
+        self.assertTrue(any("Spam" in name for name in field_names))
+
 
 if __name__ == '__main__':
     unittest.main()

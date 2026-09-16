@@ -5232,6 +5232,60 @@ def build_ticket_panel_embed() -> discord.Embed:
     return embed
 
 
+def build_rules_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
+    guild_name = guild.name if guild else "Community"
+    embed = discord.Embed(
+        title=f"📜 {guild_name} • Official Server Rules",
+        description=(
+            "> Welcome to the server! Please take a moment to read and follow our community guidelines to ensure a safe, respectful, and enjoyable experience for everyone.\n\n"
+            "*By remaining in this server, you agree to follow all rules listed below.*"
+        ),
+        color=COLOR_PRIMARY,
+        timestamp=datetime.now(timezone.utc)
+    )
+    if guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+
+    embed.add_field(
+        name="1️⃣ Respect & Civility",
+        value="Treat all members and staff with respect. Harassment, hate speech, slurs, toxicity, personal attacks, and excessive profanity are strictly prohibited.",
+        inline=False
+    )
+    embed.add_field(
+        name="2️⃣ No Spam or Advertising",
+        value="No spamming, copypastas, mass-mentioning, or self-promotion. Unsolicited direct messaging (DM advertising) to members will result in an immediate ban.",
+        inline=False
+    )
+    embed.add_field(
+        name="3️⃣ Store & Ticket Etiquette",
+        value="Open order and support tickets only when you are ready to make a purchase or require help. Please do not create troll tickets or spam staff pings.",
+        inline=False
+    )
+    embed.add_field(
+        name="4️⃣ Account & Delivery Security",
+        value="Do not publicly post account credentials, passwords, or one-time codes in public channels. Keep all transaction details inside your private order ticket.",
+        inline=False
+    )
+    embed.add_field(
+        name="5️⃣ Use Appropriate Channels",
+        value="Keep discussions in their designated channels (e.g. general discussion in `#💬-general-chat`, bot commands in `#🤖-bot-commands`, feedback in `#⭐-vouches`).",
+        inline=False
+    )
+    embed.add_field(
+        name="6️⃣ Discord Terms of Service",
+        value="All members must abide by the official [Discord Terms of Service](https://discord.com/terms) and [Community Guidelines](https://discord.com/guidelines).",
+        inline=False
+    )
+    embed.add_field(
+        name="⚖️ Enforcement & Staff Discretion",
+        value="Staff members and administrators reserve the right to warn, timeout, kick, or ban any member who violates these rules or disrupts the server.",
+        inline=False
+    )
+
+    embed.set_footer(text=f"{guild_name} • Thank you for being a valued part of our community!")
+    return embed
+
+
 class StaffModPanelButtonView(discord.ui.View):
     """Persistent button-driven moderation, billing, and channel control center."""
     def __init__(self):
@@ -5504,6 +5558,11 @@ async def refresh_channel_content(channel: discord.TextChannel, author_id: int, 
         mod_embed = build_staff_modpanel_embed()
         await channel.send(embed=mod_embed, view=StaffModPanelButtonView())
         return "🎛️ Staff Control Center & Moderation Panel"
+
+    elif "rule" in ch_name:
+        rules_embed = build_rules_embed(channel.guild)
+        await channel.send(embed=rules_embed)
+        return "📜 Server Rules & Guidelines"
 
     else:
         for sec in FORMAT_SERVER_BLUEPRINT:
@@ -8684,6 +8743,41 @@ async def setup_food_store_cmd(ctx: commands.Context):
     food_embed = build_food_accounts_embed()
     await target_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
     await ctx.send(f"✅ Food Rewards Store panel ready at {target_ch.mention}!", delete_after=8)
+
+@bot.hybrid_command(
+    name="setup-rules",
+    aliases=["rules", "postrules", "setuprules"],
+    description="Staff command: Post or refresh the official rules embed in #📜-rules"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.describe(channel="Channel to post rules in (defaults to #📜-rules or current channel)")
+async def setup_rules_cmd(ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: Staff permissions required to configure rules.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    target_ch = channel
+    if not target_ch:
+        target_ch = discord.utils.get(guild.text_channels, name="📜-rules") or discord.utils.get(guild.text_channels, name="rules")
+    if not target_ch:
+        target_ch = ctx.channel
+
+    try:
+        await target_ch.purge(limit=10)
+    except Exception:
+        pass
+
+    embed = build_rules_embed(guild)
+    await target_ch.send(embed=embed)
+    if target_ch.id != ctx.channel.id:
+        await ctx.send(f"✅ Rules successfully posted in {target_ch.mention}!", delete_after=5)
 
 @bot.hybrid_command(
     name="setup-tickets",
