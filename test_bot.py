@@ -2272,6 +2272,23 @@ class TestAIOBot(unittest.TestCase):
         self.assertTrue(any("Respect" in name for name in field_names))
         self.assertTrue(any("Spam" in name for name in field_names))
 
+    def test_coupon_organizer(self):
+        grouped = main.group_accounts_by_coupon()
+        self.assertIn("$4 off your entire purchase (Exp: Sep 21, 2026)", grouped)
+        self.assertIn("$3 off your entire purchase (Exp: Sep 21, 2026)", grouped)
+        self.assertGreaterEqual(len(grouped["$4 off your entire purchase (Exp: Sep 21, 2026)"]), 9)
+        self.assertGreaterEqual(len(grouped["$3 off your entire purchase (Exp: Sep 21, 2026)"]), 13)
+
+        # Overview embed test
+        overview_embed = main.build_coupon_organizer_embed("all")
+        self.assertIn("Organized by Active Coupons", overview_embed.title)
+        self.assertTrue(len(overview_embed.fields) >= 2)
+
+        # Filtered embed test
+        four_embed = main.build_coupon_organizer_embed("4")
+        self.assertIn("4 off", four_embed.title.lower())
+        self.assertGreaterEqual(len(four_embed.fields), 9)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -2197,6 +2197,164 @@ class CVSAccountsPaginationView(discord.ui.View):
         await interaction.response.send_modal(CVSAccountModal())
 
 
+def group_accounts_by_coupon() -> Dict[str, List[Dict[str, Any]]]:
+    """Groups all CVS accounts by the active coupons they currently have on them."""
+    grouped = {}
+    no_coupons = []
+
+    for acc in cvs_accounts_db:
+        coupons = acc.get("coupons", [])
+        if not coupons:
+            no_coupons.append(acc)
+        else:
+            for c in coupons:
+                c_clean = str(c).strip()
+                grouped.setdefault(c_clean, []).append(acc)
+
+    # Sort groups by count descending
+    sorted_groups = dict(sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True))
+    if no_coupons:
+        sorted_groups["📭 No Active Coupons"] = no_coupons
+
+    return sorted_groups
+
+
+def build_coupon_organizer_embed(category_filter: Optional[str] = None) -> discord.Embed:
+    grouped = group_accounts_by_coupon()
+    total_accs = len(cvs_accounts_db)
+    accs_with_coupons = sum(1 for a in cvs_accounts_db if a.get("coupons"))
+
+    if not category_filter or category_filter.lower() in ("all", "overview"):
+        embed = discord.Embed(
+            title="🎟️ CVS Accounts Organized by Active Coupons",
+            description=(
+                f"> **Total Accounts:** `{total_accs}` ⏐ **With Active Coupons:** `{accs_with_coupons}` ⏐ **Without Coupons:** `{total_accs - accs_with_coupons}`\n\n"
+                "Browse accounts organized by their active coupon below. Select a category from the dropdown to view full account details."
+            ),
+            color=COLOR_PRIMARY,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
+
+        for coupon_name, acc_list in grouped.items():
+            is_none = "no active coupons" in coupon_name.lower()
+            icon = "📭" if is_none else "🎟️"
+            lines = []
+            for a in acc_list:
+                phone_raw = a.get('phone', '')
+                phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else phone_raw
+                card = str(a.get('extraCareNumber', ''))
+                last4 = card[-4:] if len(card) >= 4 else card
+                lines.append(f"`#{a['id']:02d}` **{a.get('name', 'Account')}** ⏐ 📞 `{phone_fmt}` ⏐ Card ends `{last4}`")
+
+            val_text = "\n".join(lines)
+            if len(val_text) > 1000:
+                val_text = val_text[:980] + f"\n*...and {len(lines) - val_text[:980].count(chr(10))} more*"
+
+            embed.add_field(
+                name=f"{icon} {coupon_name} ({len(acc_list)} accounts)",
+                value=val_text or "None",
+                inline=False
+            )
+
+        embed.set_footer(text="AIO Bot • Use /organizecoupons <category> or choose from dropdown")
+        return embed
+    else:
+        q = category_filter.lower().strip()
+        matched_category = None
+        for cat in grouped.keys():
+            if q in cat.lower() or cat.lower() in q:
+                matched_category = cat
+                break
+        if not matched_category:
+            matched_category = list(grouped.keys())[0] if grouped else "All"
+
+        acc_list = grouped.get(matched_category, [])
+        is_none = "no active coupons" in matched_category.lower()
+        icon = "📭" if is_none else "🎟️"
+
+        embed = discord.Embed(
+            title=f"{icon} {matched_category}",
+            description=f"> Showing **{len(acc_list)}** account(s) matching this category.\nUse `/accounts id:<number>` to view scannable barcodes.",
+            color=COLOR_SUCCESS if not is_none else COLOR_WARN,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
+
+        for a in acc_list[:25]:
+            phone_raw = a.get('phone', '')
+            phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else phone_raw
+            card = str(a.get('extraCareNumber', ''))
+            formatted_card = " ".join([card[i:i+4] for i in range(0, len(card), 4)])
+
+            val = f"📞 **Phone:** `{phone_fmt}`\n🔢 **Card:** `{formatted_card}` (ends `{card[-4:]}`)\n📧 **Email:** `{a.get('email', '')}`"
+            if a.get('coupon_link'):
+                val += f"\n🔗 **[1-Click Send to Card]({a['coupon_link']})**"
+
+            embed.add_field(
+                name=f"#{a['id']:02d} • {a.get('name', 'Account')}",
+                value=val,
+                inline=True
+            )
+
+        embed.set_footer(text=f"AIO Bot • Showing {len(acc_list)} accounts in category")
+        return embed
+
+
+class CouponCategorySelect(discord.ui.Select):
+    def __init__(self, current_selection: str = "all"):
+        grouped = group_accounts_by_coupon()
+        options = [
+            discord.SelectOption(
+                label="Overview (All Categories)",
+                value="all",
+                description="View all coupon categories and summaries",
+                emoji="📋",
+                default=(current_selection == "all")
+            )
+        ]
+        for cat, accs in list(grouped.items())[:24]:
+            is_none = "no active coupons" in cat.lower()
+            emoji = "📭" if is_none else "🎟️"
+            clean_label = cat[:95]
+            desc = f"{len(accs)} accounts"
+            options.append(
+                discord.SelectOption(
+                    label=clean_label,
+                    value=clean_label[:90],
+                    description=desc,
+                    emoji=emoji,
+                    default=(current_selection.lower() in clean_label.lower())
+                )
+            )
+        super().__init__(placeholder="📂 Filter by Coupon Category...", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        sel = self.values[0]
+        embed = build_coupon_organizer_embed(sel)
+        self.view.update_select(sel)
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class CouponOrganizerView(discord.ui.View):
+    def __init__(self, selected_category: Optional[str] = "all"):
+        super().__init__(timeout=180)
+        self.selected_category = selected_category or "all"
+        self.dropdown = CouponCategorySelect(self.selected_category)
+        self.add_item(self.dropdown)
+
+    def update_select(self, new_selection: str):
+        self.remove_item(self.dropdown)
+        self.dropdown = CouponCategorySelect(new_selection)
+        self.add_item(self.dropdown)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if await bot.is_owner(interaction.user) or is_staff_or_admin(interaction.user):
+            return True
+        await interaction.response.send_message("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", ephemeral=True)
+        return False
+
+
 class MarkCouponUsedModal(discord.ui.Modal):
     coupon_input = discord.ui.TextInput(
         label="Coupon Name / Description Used",
@@ -8410,6 +8568,29 @@ async def list_accounts_cmd(ctx, query: Optional[str] = None):
     view = CVSAccountsPaginationView(current_idx=idx)
     embed, file = format_account_card(cvs_accounts_db[idx])
     await ctx.send(embed=embed, file=file, view=view)
+
+
+@bot.hybrid_command(
+    name="organizecoupons",
+    aliases=["couponaccounts", "couponinventory", "couponsbyaccount", "accountcoupons", "sortcoupons"],
+    description="Organize and browse CVS accounts grouped by active coupons"
+)
+@commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(coupon="Optional coupon filter (e.g. 4, 3, entire purchase, none)")
+async def organize_coupons_cmd(ctx: commands.Context, coupon: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Security Error: Only server staff or the bot owner can view CVS accounts.", delete_after=6)
+        return
+
+    if not cvs_accounts_db:
+        await ctx.send("📭 No CVS accounts currently loaded.", delete_after=8)
+        return
+
+    embed = build_coupon_organizer_embed(coupon)
+    view = CouponOrganizerView(selected_category=coupon or "all")
+    await ctx.send(embed=embed, view=view)
 
 
 @bot.hybrid_command(
