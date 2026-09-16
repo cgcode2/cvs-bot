@@ -6410,6 +6410,75 @@ class ServerDispenserLaunchView(discord.ui.View):
         )
 
 
+class DispensedAccountView(discord.ui.View):
+    """Interactive view attached to dispensed account embeds allowing customer or staff to delete once used."""
+    def __init__(self, buyer_id: Optional[int] = None, account_id: Optional[int] = None, guild_id: Optional[int] = None):
+        super().__init__(timeout=None)
+        self.buyer_id = buyer_id
+        self.account_id = account_id
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="Mark as Used", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="dispense_mark_used_btn")
+    async def btn_mark_used(self, interaction: discord.Interaction, button: discord.ui.Button):
+        acc_id = self.account_id
+        buyer_id = self.buyer_id
+
+        # If not set in instance (e.g. persistent view across restart), extract from message
+        if interaction.message and interaction.message.embeds:
+            emb = interaction.message.embeds[0]
+            if not acc_id and emb.title and "#" in emb.title:
+                m = re.search(r'#(\d+)', emb.title)
+                if m:
+                    try:
+                        acc_id = int(m.group(1))
+                    except Exception:
+                        pass
+            if not buyer_id:
+                for f in emb.fields:
+                    if f.name and "customer" in f.name.lower():
+                        m_user = re.search(r'<@!?(\d+)>', f.value)
+                        if m_user:
+                            try:
+                                buyer_id = int(m_user.group(1))
+                            except Exception:
+                                pass
+
+        is_staff = is_staff_member(interaction.user) or is_admin_member(interaction.user)
+        is_buyer = (buyer_id is not None and interaction.user.id == buyer_id)
+
+        if not is_staff and not is_buyer and buyer_id is not None:
+            await interaction.response.send_message(
+                "⛔ **Access Denied**: Only the customer who received this account or server staff can mark it as used.",
+                ephemeral=True
+            )
+            return
+
+        # Clean from database so dispensed accounts are not saved permanently
+        guild = interaction.guild
+        gid = str(self.guild_id or (guild.id if guild else ""))
+        if gid and gid in server_dispensers_db:
+            accs = server_dispensers_db[gid].get("accounts", [])
+            if acc_id:
+                server_dispensers_db[gid]["accounts"] = [a for a in accs if a.get("id") != acc_id]
+            else:
+                server_dispensers_db[gid]["accounts"] = [a for a in accs if not a.get("dispensed", False)]
+            save_server_dispensers()
+
+        # Delete message from ticket
+        try:
+            await interaction.message.delete()
+            await interaction.response.send_message(
+                "✅ **Account marked as used!** Credentials have been permanently deleted.",
+                ephemeral=True
+            )
+            try:
+                await interaction.channel.send(f"🗑️ *Account details marked as used by {interaction.user.mention} and deleted from this ticket.*")
+            except Exception:
+                pass
+        except Exception as e:
+            await interaction.response.send_message(f"⚠️ Could not delete message: {e}", ephemeral=True)
+
+
 async def refresh_channel_content(channel: discord.TextChannel, author_id: int, clear_history: bool = True) -> str:
     """
     Clears channel messages (if clear_history=True) and posts the latest
@@ -7328,6 +7397,7 @@ async def on_ready():
         bot.add_view(TicketReviewLaunchView())
         bot.add_view(GiveawayEntryView())
         bot.add_view(ServerDispenserLaunchView())
+        bot.add_view(DispensedAccountView())
         print('✅ Persistent interactive views registered successfully.', flush=True)
     except Exception as e:
         print(f"ℹ️ Note on persistent views registration: {e}", file=sys.stderr, flush=True)
@@ -10706,19 +10776,17 @@ async def dispenser_cmd(ctx: commands.Context):
 @bot.hybrid_command(
     name="dispense",
     aliases=["dispenseaccount", "pullaccount", "dispense-account"],
-    description="Staff command: Pull and dispense an account to a customer who purchased"
+    description="Staff command: Pull and dispense an account directly into the ticket/channel"
 )
 @commands.guild_only()
 @commands.has_permissions(manage_messages=True)
 @app_commands.default_permissions(manage_messages=True)
 @app_commands.describe(
-    customer="The customer/member who bought the account (optional)",
-    dm_customer="Whether to automatically DM the account credentials to the customer (default: False)"
+    customer="The customer/member who bought the account (optional)"
 )
 async def dispense_cmd(
     ctx: commands.Context,
-    customer: Optional[discord.Member] = None,
-    dm_customer: bool = False
+    customer: Optional[discord.Member] = None
 ):
     await safely_delete_message(ctx)
     if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
@@ -10740,7 +10808,8 @@ async def dispense_cmd(
     delivery_embed = discord.Embed(
         title=f"🎁 Dispensed Account #{account_id}",
         description=(
-            f"```text\n{content}\n```"
+            f"```text\n{content}\n```\n"
+            f"⚠️ **Note for Customer:** Once you have used this account at the register, click **Mark as Used** below to delete these details from this channel."
         ),
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
@@ -10749,29 +10818,20 @@ async def dispense_cmd(
         delivery_embed.add_field(name="👤 Customer", value=customer.mention, inline=True)
     delivery_embed.add_field(name="🛡️ Dispensed By", value=ctx.author.mention, inline=True)
     delivery_embed.add_field(name="📦 Remaining In Stock", value=f"**{stats['available']}** accounts", inline=True)
-    delivery_embed.set_footer(text=f"{guild.name} • Account Delivery")
+    delivery_embed.set_footer(text=f"{guild.name} • Account Delivery • ID #{account_id}")
 
-    dm_status = ""
-    if dm_customer and customer and not customer.bot:
-        try:
-            buyer_embed = discord.Embed(
-                title=f"🎉 Your Account & Coupons Have Arrived!",
-                description=(
-                    f"Thank you for your purchase from **{guild.name}**!\n\n"
-                    f"Here are your account credentials:\n"
-                    f"```text\n{content}\n```\n"
-                    f"⚠️ **Important:** Please save these details immediately."
-                ),
-                color=COLOR_SUCCESS,
-                timestamp=datetime.now(timezone.utc)
-            )
-            buyer_embed.set_footer(text=f"{guild.name} • Dispensed by {ctx.author.display_name}")
-            await customer.send(embed=buyer_embed)
-            dm_status = f"\n📬 *Successfully sent via DM to {customer.mention}!*"
-        except Exception:
-            dm_status = f"\n⚠️ *Note: Could not DM {customer.mention} (their DMs are closed). Details are posted above.*"
+    view = DispensedAccountView(
+        buyer_id=customer.id if customer else None,
+        account_id=account_id,
+        guild_id=guild.id
+    )
 
-    await ctx.send(f"✅ **Account #{account_id} successfully dispensed!**{dm_status}", embed=delivery_embed)
+    mention_text = customer.mention if customer else ""
+    await ctx.send(
+        content=f"🎉 {mention_text} **Your account details are ready below:**" if mention_text else None,
+        embed=delivery_embed,
+        view=view
+    )
 
 
 @bot.hybrid_command(

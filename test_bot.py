@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 import os
 import json
 import time
@@ -2652,6 +2652,55 @@ class TestAIOBot(unittest.TestCase):
         btn_labels = [b.label for b in disp_view.children]
         self.assertIn("How to Buy", btn_labels)
         self.assertIn("View Stock", btn_labels)
+
+        # 6. Test DispensedAccountView & "Mark as Used" Button
+        dispensed_view = main.DispensedAccountView(
+            buyer_id=77777,
+            account_id=1,
+            guild_id=guest_guild_id
+        )
+        self.assertEqual(len(dispensed_view.children), 1)
+        self.assertEqual(dispensed_view.children[0].label, "Mark as Used")
+
+        # Unauthorized user clicks Mark as Used
+        mock_stranger_interaction = MagicMock()
+        mock_stranger_user = MagicMock()
+        mock_stranger_user.id = 999999
+        mock_stranger_user.guild = None
+        mock_stranger_perms = MagicMock()
+        mock_stranger_perms.manage_channels = False
+        mock_stranger_perms.administrator = False
+        mock_stranger_perms.manage_messages = False
+        mock_stranger_user.guild_permissions = mock_stranger_perms
+        mock_stranger_user.roles = []
+        mock_stranger_interaction.user = mock_stranger_user
+        mock_stranger_interaction.guild.id = guest_guild_id
+        mock_stranger_interaction.response.send_message = AsyncMock()
+
+        asyncio.run(dispensed_view.children[0].callback(mock_stranger_interaction))
+        mock_stranger_interaction.response.send_message.assert_called_once()
+        self.assertIn("Access Denied", mock_stranger_interaction.response.send_message.call_args[0][0])
+
+        # Authorized buyer clicks Mark as Used -> deletes message and wipes account from DB
+        mock_buyer_interaction = MagicMock()
+        mock_buyer_interaction.user.id = 77777
+        mock_buyer_interaction.guild.id = guest_guild_id
+        mock_buyer_interaction.message.delete = AsyncMock()
+        mock_buyer_interaction.response.send_message = AsyncMock()
+        mock_buyer_interaction.channel.send = AsyncMock()
+
+        # Check account 1 exists in DB before clicking
+        acc_ids_before = [a["id"] for a in main.server_dispensers_db[str(guest_guild_id)]["accounts"]]
+        self.assertIn(1, acc_ids_before)
+
+        asyncio.run(dispensed_view.children[0].callback(mock_buyer_interaction))
+        mock_buyer_interaction.message.delete.assert_called_once()
+        mock_buyer_interaction.response.send_message.assert_called_once()
+        self.assertIn("Account marked as used", mock_buyer_interaction.response.send_message.call_args[0][0])
+
+        # Verify account 1 has been permanently removed from DB (not saved!)
+        acc_ids_after = [a["id"] for a in main.server_dispensers_db[str(guest_guild_id)]["accounts"]]
+        self.assertNotIn(1, acc_ids_after)
 
         # Clean up test keys
         main.server_dispensers_db.pop(str(guest_guild_id), None)
