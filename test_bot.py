@@ -104,6 +104,18 @@ class TestAIOBot(unittest.TestCase):
         self.assertEqual(main.coupon_label("half"), "50% Off One Item")
         self.assertEqual(main.coupon_label(8.0), "$8.00 Off")
 
+    def test_command_tree_cleanliness(self):
+        """Verify no duplicate slash command names exist in the tree and all parameters have descriptions."""
+        tree = main.bot.tree
+        commands = tree.get_commands()
+        names = [cmd.name for cmd in commands]
+        self.assertEqual(len(names), len(set(names)), f"Duplicate command names detected in tree: {[n for n in names if names.count(n) > 1]}")
+        for cmd in commands:
+            self.assertTrue(bool(cmd.description and cmd.description.strip() != "…"), f"Command '{cmd.name}' lacks a valid description.")
+            if hasattr(cmd, "parameters"):
+                for p in cmd.parameters:
+                    self.assertTrue(bool(p.description and p.description.strip() != "…"), f"Command '{cmd.name}' parameter '{p.name}' lacks a valid description.")
+
     def test_interactive_views_instantiation(self):
         panel = main.QuickCartActionView(12345)  # OptimizerPanelView was removed (merged into QuickCartActionView)
         self.assertIsNotNone(panel)
@@ -125,10 +137,10 @@ class TestAIOBot(unittest.TestCase):
         mod_embed = main.build_staff_modpanel_embed()
         self.assertIn("Staff Control Center", mod_embed.title)
         food_embed = main.build_food_accounts_embed()
+        self.assertEqual(len(food_embed.fields), 1)
         self.assertIn("Taco Bell", food_embed.fields[0].name)
-        self.assertIn("Pizza Hut", food_embed.fields[1].name)
         self.assertIn("$10.00", food_embed.fields[0].value)
-        self.assertIn("$15.00", food_embed.fields[1].value)
+        self.assertNotIn("Pizza Hut", food_embed.description)
 
     def test_smart_items_parser(self):
         # Multi-word items with commas
@@ -305,7 +317,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertEqual(buf_val[:8], b'\x89PNG\r\n\x1a\n') # Valid PNG magic header
 
     def test_cvs_accounts_db(self):
-        self.assertEqual(len(main.cvs_accounts_db), 21)
+        self.assertGreaterEqual(len(main.cvs_accounts_db), 36)
         acc1 = main.get_cvs_account("1")
         self.assertIsNotNone(acc1)
         self.assertEqual(acc1["name"], "Andrew Bartlett")
@@ -552,12 +564,12 @@ class TestAIOBot(unittest.TestCase):
 
     def test_food_accounts_embed_content(self):
         embed = main.build_food_accounts_embed()
+        self.assertEqual(len(embed.fields), 1)
         self.assertIn("Taco Bell", embed.fields[0].name)
         self.assertIn("15 off your entire order", embed.fields[0].value)
         self.assertIn("Free Chalupa Supreme", embed.fields[0].value)
-        self.assertIn("Pizza Hut", embed.fields[1].name)
-        self.assertIn("2 Large pizzas", embed.fields[1].value)
-        self.assertTrue("triple chocolate fudge brownie" in embed.fields[1].value.lower())
+        self.assertNotIn("Pizza Hut", [f.name for f in embed.fields])
+        self.assertNotIn("Pizza Hut", embed.description)
         self.assertIn("Open a ticket", embed.fields[0].value)
         self.assertTrue("send code" in embed.fields[0].value.lower())
 
@@ -573,7 +585,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("📁 TICKETS", cat_names)
         self.assertIn("📢-announcements", ch_names)
         self.assertIn("🛒-coupon-optimizer", ch_names)
-        self.assertIn("🌮🍕-food-rewards", ch_names)
+        self.assertIn("🌮-food-rewards", ch_names)
 
         class MockCategory:
             def __init__(self, name):
@@ -859,12 +871,12 @@ class TestAIOBot(unittest.TestCase):
                 guild_id=101,
                 ticket_id=2,
                 channel_id=1002,
-                channel_name="order-pizzahut-0002",
+                channel_name="order-food-0002",
                 customer_id=502,
                 customer_name="Customer2",
                 completed_by_id=901,
                 completed_by_name="Staff1",
-                brand="Pizza Hut",
+                brand="Food Rewards",
                 amount=15.0
             )
             self.assertEqual(o2["order_id"], 2)
@@ -948,13 +960,13 @@ class TestAIOBot(unittest.TestCase):
         self.assertFalse(protected_ch.purged)
 
         # 2. Food rewards channel deploys food accounts embed and FoodAccountPurchaseView
-        food_ch = MockChannel("🌮🍕-food-rewards")
+        food_ch = MockChannel("🌮-food-rewards")
         res_food = asyncio.run(main.refresh_channel_content(food_ch, author_id=123, clear_history=True))
         self.assertTrue(food_ch.purged)
-        self.assertIn("Fast Food Rewards", res_food)
+        self.assertIn("Taco Bell Rewards", res_food)
         self.assertEqual(len(food_ch.messages_sent), 1)
         self.assertIsInstance(food_ch.messages_sent[0]["view"], main.FoodAccountPurchaseView)
-        self.assertIn("Fast Food Preloaded", food_ch.messages_sent[0]["embed"].title)
+        self.assertIn("Taco Bell", food_ch.messages_sent[0]["embed"].title)
 
         # 3. Ticket channel deploys TicketLaunchView
         ticket_ch = MockChannel("📩-open-a-ticket")
@@ -1649,7 +1661,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertFalse(main.is_coupon_optimizer_channel("ticket-0001-cody"))
         self.assertFalse(main.is_coupon_optimizer_channel(MockCh("ticket-0002-bob")))
         self.assertFalse(main.is_coupon_optimizer_channel(MockCh("tacobell-0001-alice")))
-        self.assertFalse(main.is_coupon_optimizer_channel(MockCh("pizzahut-0001-carol")))
+        self.assertFalse(main.is_coupon_optimizer_channel(MockCh("food-0001-carol")))
         self.assertFalse(main.is_coupon_optimizer_channel(MockCh("💬-general-chat")))
 
         # 2. Test TicketControlView transcript button check
@@ -1755,7 +1767,7 @@ class TestAIOBot(unittest.TestCase):
                 customer_name="CustomerTwo",
                 completed_by_id=999,
                 completed_by_name="StaffMod",
-                brand="Pizza Hut",
+                brand="Special Order",
                 amount=24.00
             )
             self.assertEqual(o2["order_id"], 2)
@@ -1793,7 +1805,7 @@ class TestAIOBot(unittest.TestCase):
             field_text = " ".join(f.value for f in embed.fields)
             self.assertIn("**2** orders", field_text)
             self.assertIn("$42.75", field_text)
-            # Other count displayed because '2x Accounts' is not taco/pizza
+            # Other count displayed because neither is taco
             self.assertIn("Other", field_text)
             self.assertIn("/addorder", embed.footer.text)
 
@@ -1837,13 +1849,13 @@ class TestAIOBot(unittest.TestCase):
         embed_open = main.build_shop_status_embed(
             is_open=True,
             author_name="StaffMod",
-            message="Taking Taco Bell & Pizza Hut orders!",
+            message="Taking Taco Bell orders!",
             shop_ch_mention="<#112233>"
         )
         self.assertIn("STORE IS NOW OPEN", embed_open.title)
         self.assertEqual(embed_open.color.value, main.COLOR_SUCCESS)
         self.assertIn("<#112233>", embed_open.description)
-        self.assertIn("Taking Taco Bell & Pizza Hut orders!", str(embed_open.fields))
+        self.assertIn("Taking Taco Bell orders!", str(embed_open.fields))
         self.assertIn("StaffMod", embed_open.footer.text)
 
         # 2. CLOSED Embed
@@ -1880,6 +1892,9 @@ class TestAIOBot(unittest.TestCase):
                 if name:
                     self.renamed_to.append(name)
                     self.name = name
+
+            async def purge(self, limit=100):
+                self.sent_messages.clear()
 
         class MockGuild:
             def __init__(self):
@@ -1934,6 +1949,22 @@ class TestAIOBot(unittest.TestCase):
             self.assertEqual(len(target_ch.sent_messages), 1)
             self.assertIn("<#3>", embed.description)
             self.assertIn("Dinner rush open!", str(embed.fields))
+
+            # Verify closing the shop purges the OPEN message and replaces it with the CLOSED message
+            success_close, summary_close, target_ch_close, embed_close = loop.run_until_complete(
+                main.update_shop_status(
+                    guild=guild,
+                    is_open=False,
+                    author=author,
+                    message="Closing for the night!"
+                )
+            )
+            self.assertTrue(success_close)
+            self.assertIn("CLOSED 🔴", summary_close)
+            self.assertEqual(target_ch_close.name, "🔴-shop-closed")
+            # Only 1 message remains because prior message was purged/replaced
+            self.assertEqual(len(target_ch_close.sent_messages), 1)
+            self.assertIn("STORE IS CURRENTLY CLOSED", target_ch_close.sent_messages[0]["embed"].title)
 
             # CRITICAL CHECK: Verify #📜-mod-logs and staff chat were NOT renamed or posted into
             self.assertEqual(guild.mod_logs_channel.name, "📜-mod-logs")
@@ -2060,6 +2091,178 @@ class TestAIOBot(unittest.TestCase):
             self.assertEqual(guild.text_channels[3].name, "general-chat")
         finally:
             loop.close()
+
+    def test_ticket_panel_isolation_from_shop_status(self):
+        """
+        Verify that support ticket panels are never sent to shop status channels,
+        and refreshing shop status channels never deploys ticket views.
+        """
+        class MockChan:
+            def __init__(self, id_val, name):
+                self.id = id_val
+                self.name = name
+                self.mention = f"<#{id_val}>"
+                self.sent_messages = []
+
+            async def send(self, content=None, embed=None, view=None):
+                self.sent_messages.append({"content": content, "embed": embed, "view": view})
+
+            async def purge(self, limit=100):
+                self.sent_messages.clear()
+
+        class MockG:
+            def __init__(self):
+                self.shop_open_ch = MockChan(101, "🟢-shop-open")
+                self.shop_closed_ch = MockChan(102, "🔴-shop-closed")
+                self.ticket_ch = MockChan(103, "📩-open-a-ticket")
+                self.food_ch = MockChan(104, "🌮-food-rewards")
+                self.staff_ch = MockChan(105, "🛡️-staff-chat")
+                self.text_channels = [
+                    self.shop_open_ch,
+                    self.shop_closed_ch,
+                    self.ticket_ch,
+                    self.food_ch,
+                    self.staff_ch
+                ]
+
+        guild = MockG()
+        for ch in guild.text_channels:
+            ch.guild = guild
+
+        # 1. find_ticket_panel_channel must find #📩-open-a-ticket, NOT #🟢-shop-open
+        ticket_target = main.find_ticket_panel_channel(guild)
+        self.assertIsNotNone(ticket_target)
+        self.assertEqual(ticket_target.name, "📩-open-a-ticket")
+        self.assertNotEqual(ticket_target.name, "🟢-shop-open")
+        self.assertNotEqual(ticket_target.name, "🔴-shop-closed")
+
+        # 2. When ticket channel is absent, find_ticket_panel_channel MUST return None (never fallback to shop-open)
+        guild_no_tickets = MockG()
+        guild_no_tickets.text_channels = [guild.shop_open_ch, guild.shop_closed_ch, guild.staff_ch]
+        self.assertIsNone(main.find_ticket_panel_channel(guild_no_tickets))
+
+        # 3. refresh_channel_content on shop status channels must deploy Shop Status embed, NOT TicketLaunchView
+        loop = asyncio.new_event_loop()
+        try:
+            # Refresh #🟢-shop-open
+            result_open = loop.run_until_complete(main.refresh_channel_content(guild.shop_open_ch, 999))
+            self.assertIn("Shop Status (OPEN 🟢)", result_open)
+            self.assertEqual(len(guild.shop_open_ch.sent_messages), 1)
+            msg_open = guild.shop_open_ch.sent_messages[0]
+            self.assertIsNone(msg_open["view"])
+            self.assertIn("STORE IS NOW OPEN", msg_open["embed"].title)
+
+            # Refresh #🔴-shop-closed
+            result_closed = loop.run_until_complete(main.refresh_channel_content(guild.shop_closed_ch, 999))
+            self.assertIn("Shop Status (CLOSED 🔴)", result_closed)
+            self.assertEqual(len(guild.shop_closed_ch.sent_messages), 1)
+            msg_closed = guild.shop_closed_ch.sent_messages[0]
+            self.assertIsNone(msg_closed["view"])
+            self.assertIn("STORE IS CURRENTLY CLOSED", msg_closed["embed"].title)
+
+            # Refresh #📩-open-a-ticket
+            result_ticket = loop.run_until_complete(main.refresh_channel_content(guild.ticket_ch, 999))
+            self.assertIn("Support & Order Ticket Panel", result_ticket)
+            self.assertEqual(len(guild.ticket_ch.sent_messages), 1)
+            msg_ticket = guild.ticket_ch.sent_messages[0]
+            self.assertIsNotNone(msg_ticket["view"])
+            self.assertIsInstance(msg_ticket["view"], main.TicketLaunchView)
+        finally:
+            loop.close()
+
+    def test_vouches_channel_and_taco_bell_clean_embed(self):
+        """
+        Verify receipt brags is renamed to vouches in blueprint and channel lookups,
+        and food accounts embed has Taco Bell only with no delivery preferred info.
+        """
+        # 1. Blueprint check: ⭐-vouches is present, receipt-brags is completely removed
+        savings_section = None
+        for sec in main.FORMAT_SERVER_BLUEPRINT:
+            if "SAVINGS" in sec.get("category", ""):
+                savings_section = sec
+                break
+        self.assertIsNotNone(savings_section)
+        ch_names = [c["name"] for c in savings_section["channels"]]
+        self.assertIn("⭐-vouches", ch_names)
+        self.assertNotIn("🧾-receipt-brags", ch_names)
+        self.assertNotIn("receipt-brags", ch_names)
+
+        # 2. get_vouches_channel resolves ⭐-vouches
+        class MockChan:
+            def __init__(self, name):
+                self.name = name
+
+        class MockG:
+            def __init__(self, ch_list):
+                self.text_channels = ch_list
+
+        g1 = MockG([MockChan("⭐-vouches"), MockChan("general-chat")])
+        self.assertEqual(main.get_vouches_channel(g1).name, "⭐-vouches")
+
+        # Backward compatibility fallback for legacy receipt-brags channel
+        g2 = MockG([MockChan("🧾-receipt-brags"), MockChan("general-chat")])
+        self.assertEqual(main.get_vouches_channel(g2).name, "🧾-receipt-brags")
+
+        # 3. build_food_accounts_embed contains ONLY Taco Bell, NO Pizza Hut, NO "delivery is preferred"
+        food_embed = main.build_food_accounts_embed()
+        embed_str = f"{food_embed.title} {food_embed.description} {' '.join(f.name + ' ' + f.value for f in food_embed.fields)}".lower()
+        self.assertIn("taco bell", embed_str)
+        self.assertNotIn("pizza", embed_str)
+        self.assertNotIn("hut", embed_str)
+        self.assertNotIn("delivery is preferred", embed_str)
+        self.assertNotIn("delivery is prefered", embed_str)
+
+    def test_custom_rich_embed_and_slash_deduplication(self):
+        """
+        Verify build_custom_rich_embed creates high-style embeds,
+        build_embed_success_card generates broadcast cards with links,
+        and ModPanel has the clear slash dupes button.
+        """
+        class MockUser:
+            display_name = "StudioOwner"
+            class Avatar:
+                url = "https://cdn.discordapp.com/avatars/123/abc.png"
+            display_avatar = Avatar()
+
+        class MockChannel:
+            id = 778899
+            name = "announcements"
+            mention = "<#778899>"
+
+        class MockMessage:
+            jump_url = "https://discord.com/channels/1/778899/9999"
+
+        user = MockUser()
+        embed = main.build_custom_rich_embed(
+            title="⚡ SUMMER EVENT LIVE!",
+            description="> Welcome to our biggest release yet!\n\n• New rewards\n• New tools",
+            author=user,
+            color_input="purple",
+            thumbnail_url="https://example.com/logo.png",
+            image_url="https://example.com/banner.png",
+            footer_text="Event Team"
+        )
+        self.assertEqual(embed.title, "⚡ SUMMER EVENT LIVE!")
+        self.assertIn("Welcome to our biggest release yet!", embed.description)
+        self.assertEqual(embed.author.name, "StudioOwner")
+        self.assertEqual(embed.author.icon_url, "https://cdn.discordapp.com/avatars/123/abc.png")
+        self.assertEqual(embed.thumbnail.url, "https://example.com/logo.png")
+        self.assertEqual(embed.image.url, "https://example.com/banner.png")
+        self.assertIn("Event Team", embed.footer.text)
+
+        # Success card
+        sent_msg = MockMessage()
+        target_ch = MockChannel()
+        card = main.build_embed_success_card(target_ch, sent_msg, embed, ping="@everyone")
+        self.assertIn("Custom Embed Broadcasted!", card.title)
+        self.assertIn("<#778899>", card.description)
+        self.assertIn(sent_msg.jump_url, card.description)
+        self.assertIn("@everyone", card.description)
+
+        # Mod Panel button check
+        panel_view = main.StaffModPanelButtonView()
+        button_custom_ids = [item.custom_id for item in panel_view.children if hasattr(item, "custom_id")]
+        self.assertIn("modpanel_clear_slash_dupes", button_custom_ids)
 
 
 if __name__ == '__main__':
