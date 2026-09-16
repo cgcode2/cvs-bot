@@ -2539,7 +2539,7 @@ class TestAIOBot(unittest.TestCase):
 
         # 1. Verify Global Availability of Guest Server Commands
         global_cmd_names = {c.name for c in main.bot.tree.get_commands()}
-        for expected_global in ["setup-staff-channel", "dispenser", "addaccount", "dispenserstock", "cleardispenser"]:
+        for expected_global in ["setup-staff-channel", "dispenser", "dispense", "addaccount", "dispenserstock", "cleardispenser"]:
             self.assertIn(expected_global, global_cmd_names, f"Expected {expected_global} to be globally accessible!")
             cmd_obj = main.bot.get_command(expected_global)
             self.assertIsNotNone(cmd_obj)
@@ -2547,10 +2547,17 @@ class TestAIOBot(unittest.TestCase):
         # Verify aliases
         self.assertIn("staffchannel", main.bot.get_command("setup-staff-channel").aliases)
         self.assertIn("setupstaff", main.bot.get_command("setup-staff-channel").aliases)
+        self.assertIn("dispenseaccount", main.bot.get_command("dispense").aliases)
+        self.assertIn("pullaccount", main.bot.get_command("dispense").aliases)
+        self.assertIn("dispense-account", main.bot.get_command("dispense").aliases)
         self.assertIn("addcoupons", main.bot.get_command("addaccount").aliases)
         self.assertIn("stockaccount", main.bot.get_command("addaccount").aliases)
         self.assertIn("dispensershop", main.bot.get_command("dispenser").aliases)
         self.assertIn("getaccount", main.bot.get_command("dispenser").aliases)
+
+        # Verify staff permissions on /dispense
+        dispense_cmd = main.bot.get_command("dispense")
+        self.assertTrue(dispense_cmd.app_command.default_permissions.manage_messages)
 
         # 2. Verify Complete Database Isolation between Guest Server and Personal Accounts
         guest_guild_id = 9999999999
@@ -2587,18 +2594,23 @@ class TestAIOBot(unittest.TestCase):
         # ZERO CROSS-TALK: Verify Cody's personal CVS accounts database was NOT touched
         self.assertEqual(len(main.cvs_accounts_db), cody_accounts_before)
 
-        # 3. Test Dispensing an account in Guest Server
+        # 3. Test Staff Dispensing an account to Customer in Guest Server
         mock_buyer = MagicMock()
         mock_buyer.id = 77777
-        mock_buyer.name = "LuckyShopper"
+        mock_buyer.name = "PayingCustomer"
 
-        ok, msg, account = main.dispense_guild_account(guest_guild_id, mock_buyer)
+        mock_staff = MagicMock()
+        mock_staff.id = 99991
+        mock_staff.name = "StaffMember"
+
+        ok, msg, account = main.dispense_guild_account(guest_guild_id, user=mock_buyer, staff=mock_staff)
         self.assertTrue(ok)
         self.assertEqual(msg, "success")
         self.assertIsNotNone(account)
         self.assertIn("Phone: 555-0199", account["content"])
         self.assertTrue(account["dispensed"])
         self.assertEqual(account["dispensed_to"], 77777)
+        self.assertEqual(account["dispensed_by"], 99991)
 
         # Check stock decreased to 1 in Guest Server, Cody's server still 0
         self.assertEqual(main.get_guild_dispenser_stats(guest_guild_id)["available"], 1)
@@ -2607,13 +2619,13 @@ class TestAIOBot(unittest.TestCase):
         # Dispense second account
         mock_buyer2 = MagicMock()
         mock_buyer2.id = 88888
-        mock_buyer2.name = "Shopper2"
-        ok2, msg2, account2 = main.dispense_guild_account(guest_guild_id, mock_buyer2)
+        mock_buyer2.name = "Customer2"
+        ok2, msg2, account2 = main.dispense_guild_account(guest_guild_id, user=mock_buyer2, staff=mock_staff)
         self.assertTrue(ok2)
         self.assertIn("Phone: 555-0188", account2["content"])
 
         # Try to dispense when out of stock
-        ok3, msg3, account3 = main.dispense_guild_account(guest_guild_id, mock_buyer2)
+        ok3, msg3, account3 = main.dispense_guild_account(guest_guild_id, user=mock_buyer2, staff=mock_staff)
         self.assertFalse(ok3)
         self.assertIn("Out of Stock", msg3)
         self.assertIsNone(account3)
@@ -2626,7 +2638,7 @@ class TestAIOBot(unittest.TestCase):
         self.assertEqual(parsed[1], "Account B | Barcode 2")
         self.assertEqual(parsed[2], "Account C | Barcode 3")
 
-        # 5. Verify Dispenser View Buttons and Embed
+        # 5. Verify Dispenser View Buttons and Embed (Selling only, members cannot claim)
         guest_g = MagicMock()
         guest_g.name = "Friend's Bargains"
         guest_g.id = guest_guild_id
@@ -2634,11 +2646,11 @@ class TestAIOBot(unittest.TestCase):
 
         disp_embed = main.build_dispenser_embed(guest_g)
         self.assertIn("Friend's Bargains", disp_embed.title)
-        self.assertIn("In Stock", disp_embed.description)
+        self.assertIn("How to Purchase", disp_embed.description)
 
         disp_view = main.ServerDispenserLaunchView()
         btn_labels = [b.label for b in disp_view.children]
-        self.assertIn("Claim Account", btn_labels)
+        self.assertIn("How to Buy", btn_labels)
         self.assertIn("View Stock", btn_labels)
 
         # Clean up test keys

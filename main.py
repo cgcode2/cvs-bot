@@ -223,26 +223,11 @@ def get_guild_dispenser_stats(guild_id: Union[int, str]) -> Dict[str, Any]:
 
 def dispense_guild_account(
     guild_id: Union[int, str],
-    user: Union[discord.Member, discord.User]
+    user: Optional[Union[discord.Member, discord.User]] = None,
+    staff: Optional[Union[discord.Member, discord.User]] = None
 ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     dispenser = get_guild_dispenser(guild_id)
     accounts = dispenser.get("accounts", [])
-
-    # Cooldown check
-    cooldown_hours = dispenser.get("settings", {}).get("cooldown_hours", 0)
-    if cooldown_hours > 0 and getattr(user, "id", None):
-        user_id = user.id
-        now = datetime.now(timezone.utc)
-        for a in reversed(accounts):
-            if a.get("dispensed_to") == user_id and a.get("dispensed_at"):
-                try:
-                    d_time = datetime.fromisoformat(a["dispensed_at"])
-                    diff_hours = (now - d_time).total_seconds() / 3600.0
-                    if diff_hours < cooldown_hours:
-                        remaining = round(cooldown_hours - diff_hours, 1)
-                        return False, f"⏳ Cooldown active: You can claim another account in **{remaining} hours**.", None
-                except Exception:
-                    pass
 
     # Find first available account
     available_acc = None
@@ -252,11 +237,13 @@ def dispense_guild_account(
             break
 
     if not available_acc:
-        return False, "⚠️ **Out of Stock!** There are currently no accounts available in this server's dispenser. Please check back later when staff restocks.", None
+        return False, "⚠️ **Out of Stock!** There are currently no accounts available in this server's dispenser. Use `/addaccount` to restock.", None
 
     available_acc["dispensed"] = True
-    available_acc["dispensed_to"] = getattr(user, "id", None)
-    available_acc["dispensed_to_name"] = str(user)
+    available_acc["dispensed_to"] = getattr(user, "id", None) if user else None
+    available_acc["dispensed_to_name"] = str(user) if user else "Customer"
+    available_acc["dispensed_by"] = getattr(staff, "id", None) if staff else None
+    available_acc["dispensed_by_name"] = str(staff) if staff else "Staff"
     available_acc["dispensed_at"] = datetime.now(timezone.utc).isoformat()
     save_server_dispensers()
 
@@ -6350,60 +6337,47 @@ def build_dispenser_embed(guild: Optional[discord.Guild] = None) -> discord.Embe
     guild_name = guild.name if guild else "Server"
     stats = get_guild_dispenser_stats(guild.id) if guild else {"available": 0, "dispensed": 0, "total": 0}
     embed = discord.Embed(
-        title=f"🎁 {guild_name} • Account & Coupon Dispenser",
+        title=f"🛒 {guild_name} • CVS Accounts & Coupons Store",
         description=(
-            "Welcome to the automated account and coupon dispenser!\n\n"
-            "Click **🎁 Claim Account** below to instantly receive a CVS account with loaded coupons.\n\n"
-            f"📦 **In Stock:** `{stats['available']}` accounts available\n"
-            f"🏷️ **Total Distributed:** `{stats['dispensed']}` accounts claimed\n\n"
-            "🔒 *Your account details will be sent directly to you in a private message.*"
+            "Welcome to our server's CVS account and coupon store!\n\n"
+            f"📦 **Currently In Stock:** `{stats['available']}` accounts available\n"
+            f"🏷️ **Total Distributed / Sold:** `{stats['dispensed']}` accounts\n\n"
+            "**How to Purchase:**\n"
+            "• Accounts are sold directly by server staff.\n"
+            "• Click **🛒 How to Buy** below or open an order ticket to complete your purchase!\n"
+            "• Staff will verify your order and dispense your account directly to you."
         ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
     if guild and guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
-    embed.set_footer(text=f"{guild_name} • Account Dispenser • Click below to claim")
+    embed.set_footer(text=f"{guild_name} • Account Store • Open a ticket to buy")
     return embed
 
 
 class ServerDispenserLaunchView(discord.ui.View):
-    """Persistent button view for the public account dispenser."""
+    """Persistent button view for the public account store / dispenser."""
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Claim Account", style=discord.ButtonStyle.success, emoji="🎁", custom_id="dispenser_claim_btn", row=0)
-    async def btn_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="How to Buy", style=discord.ButtonStyle.success, emoji="🛒", custom_id="dispenser_buy_btn", row=0)
+    async def btn_buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
-            return
-
-        ok, msg, account = dispense_guild_account(guild.id, interaction.user)
-        if not ok or not account:
-            await interaction.response.send_message(msg, ephemeral=True)
-            return
-
-        content = account.get("content", "").strip()
-        account_id = account.get("id", 1)
-        dm_embed = discord.Embed(
-            title="🎉 Your Account & Coupons Have Arrived!",
+        ch = find_ticket_panel_channel(guild)
+        ch_mention = ch.mention if ch else "the support ticket channel"
+        embed = discord.Embed(
+            title="🛒 How to Purchase an Account",
             description=(
-                f"Here are your dispensed account details:\n\n"
-                f"```text\n{content}\n```\n"
-                f"⚠️ **Important Note:** Save these details right now. Do not share or redistribute your account credentials."
+                "All accounts are for sale and delivered securely by server staff upon payment.\n\n"
+                f"**Step 1:** Head to {ch_mention} and open an order ticket.\n"
+                "**Step 2:** Let staff know which account/coupon bundle you want.\n"
+                "**Step 3:** Once confirmed, staff will instantly dispense your account details directly to you!"
             ),
-            color=COLOR_SUCCESS,
-            timestamp=datetime.now(timezone.utc)
+            color=COLOR_PRIMARY
         )
-        dm_embed.set_footer(text=f"{guild.name} • Dispenser ID #{account_id}")
-        await interaction.response.send_message(embed=dm_embed, ephemeral=True)
-
-        try:
-            new_embed = build_dispenser_embed(guild)
-            await interaction.message.edit(embed=new_embed, view=self)
-        except Exception:
-            pass
+        embed.set_footer(text="AIO Bot • Account Store")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="View Stock", style=discord.ButtonStyle.secondary, emoji="📦", custom_id="dispenser_stock_btn", row=0)
     async def btn_stock(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6419,10 +6393,21 @@ class ServerDispenserLaunchView(discord.ui.View):
             timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="Available In Stock", value=f"**{stats['available']}** accounts", inline=True)
-        embed.add_field(name="Total Dispensed", value=f"**{stats['dispensed']}** accounts", inline=True)
-        embed.add_field(name="Total Stocked", value=f"**{stats['total']}** accounts", inline=True)
-        embed.set_footer(text="AIO Bot • Account Dispenser")
+        embed.add_field(name="Total Sold / Dispensed", value=f"**{stats['dispensed']}** accounts", inline=True)
+        embed.add_field(name="Total Loaded", value=f"**{stats['total']}** accounts", inline=True)
+        embed.set_footer(text="AIO Bot • Account Store")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # Legacy claim button fallback - prevent any member from taking free accounts
+    @discord.ui.button(label="Claim Account", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="dispenser_claim_btn", row=0)
+    async def btn_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ch = find_ticket_panel_channel(interaction.guild)
+        ch_mention = ch.mention if ch else "the support ticket channel"
+        await interaction.response.send_message(
+            f"⛔ **Accounts are for sale only!** Members cannot freely claim accounts.\n"
+            f"Please open an order ticket in {ch_mention} to purchase an account from staff.",
+            ephemeral=True
+        )
 
 
 async def refresh_channel_content(channel: discord.TextChannel, author_id: int, clear_history: bool = True) -> str:
@@ -10716,6 +10701,77 @@ async def dispenser_cmd(ctx: commands.Context):
     embed = build_dispenser_embed(ctx.guild)
     view = ServerDispenserLaunchView()
     await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
+    name="dispense",
+    aliases=["dispenseaccount", "pullaccount", "dispense-account"],
+    description="Staff command: Pull and dispense an account to a customer who purchased"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(
+    customer="The customer/member who bought the account (optional)",
+    dm_customer="Whether to automatically DM the account credentials to the customer (default: False)"
+)
+async def dispense_cmd(
+    ctx: commands.Context,
+    customer: Optional[discord.Member] = None,
+    dm_customer: bool = False
+):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ **Access Denied**: Only server staff and administrators can dispense accounts.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    target_user = customer or ctx.author
+
+    ok, msg, account = dispense_guild_account(guild.id, user=target_user, staff=ctx.author)
+    if not ok or not account:
+        await ctx.send(msg, delete_after=8)
+        return
+
+    content = account.get("content", "").strip()
+    account_id = account.get("id", 1)
+    stats = get_guild_dispenser_stats(guild.id)
+
+    delivery_embed = discord.Embed(
+        title=f"🎁 Dispensed Account #{account_id}",
+        description=(
+            f"```text\n{content}\n```"
+        ),
+        color=COLOR_SUCCESS,
+        timestamp=datetime.now(timezone.utc)
+    )
+    if customer:
+        delivery_embed.add_field(name="👤 Customer", value=customer.mention, inline=True)
+    delivery_embed.add_field(name="🛡️ Dispensed By", value=ctx.author.mention, inline=True)
+    delivery_embed.add_field(name="📦 Remaining In Stock", value=f"**{stats['available']}** accounts", inline=True)
+    delivery_embed.set_footer(text=f"{guild.name} • Account Delivery")
+
+    dm_status = ""
+    if dm_customer and customer and not customer.bot:
+        try:
+            buyer_embed = discord.Embed(
+                title=f"🎉 Your Account & Coupons Have Arrived!",
+                description=(
+                    f"Thank you for your purchase from **{guild.name}**!\n\n"
+                    f"Here are your account credentials:\n"
+                    f"```text\n{content}\n```\n"
+                    f"⚠️ **Important:** Please save these details immediately."
+                ),
+                color=COLOR_SUCCESS,
+                timestamp=datetime.now(timezone.utc)
+            )
+            buyer_embed.set_footer(text=f"{guild.name} • Dispensed by {ctx.author.display_name}")
+            await customer.send(embed=buyer_embed)
+            dm_status = f"\n📬 *Successfully sent via DM to {customer.mention}!*"
+        except Exception:
+            dm_status = f"\n⚠️ *Note: Could not DM {customer.mention} (their DMs are closed). Details are posted above.*"
+
+    await ctx.send(f"✅ **Account #{account_id} successfully dispensed!**{dm_status}", embed=delivery_embed)
 
 
 @bot.hybrid_command(
