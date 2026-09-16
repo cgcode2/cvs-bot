@@ -126,6 +126,142 @@ cvs_accounts_db: List[Dict[str, Any]] = load_json_file(CVS_ACCOUNTS_FILE, [])
 def save_cvs_accounts(data: List[Dict[str, Any]]) -> None:
     save_json_file(CVS_ACCOUNTS_FILE, data)
 
+# --- SERVER-ISOLATED DISPENSER DATABASE ---
+# Kept 100% separate from Cody's personal CVS accounts (cvs_accounts.json).
+# Keyed strictly by str(guild_id) to ensure zero cross-talk between servers.
+SERVER_DISPENSERS_FILE = "server_dispensers.json"
+server_dispensers_db: Dict[str, Dict[str, Any]] = load_json_file(SERVER_DISPENSERS_FILE, {})
+
+def save_server_dispensers(data: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+    if data is None:
+        data = server_dispensers_db
+    save_json_file(SERVER_DISPENSERS_FILE, data)
+
+def get_guild_dispenser(guild_id: Union[int, str]) -> Dict[str, Any]:
+    gid = str(guild_id)
+    if gid not in server_dispensers_db or not isinstance(server_dispensers_db[gid], dict):
+        server_dispensers_db[gid] = {
+            "accounts": [],
+            "settings": {
+                "cooldown_hours": 0,
+                "role_required": None
+            }
+        }
+    if "accounts" not in server_dispensers_db[gid] or not isinstance(server_dispensers_db[gid]["accounts"], list):
+        server_dispensers_db[gid]["accounts"] = []
+    if "settings" not in server_dispensers_db[gid] or not isinstance(server_dispensers_db[gid]["settings"], dict):
+        server_dispensers_db[gid]["settings"] = {"cooldown_hours": 0, "role_required": None}
+    return server_dispensers_db[gid]
+
+def parse_dispenser_entries(raw_text: str) -> List[str]:
+    raw_text = raw_text.strip()
+    if not raw_text:
+        return []
+    # If separated by delimiter lines like '---' or '==='
+    if "\n---" in raw_text or "\n===" in raw_text:
+        parts = re.split(r'\n\s*[-=]{3,}\s*\n?', raw_text)
+        return [p.strip() for p in parts if p.strip()]
+    # If separated by double-newlines (blank lines between accounts)
+    if "\n\n" in raw_text:
+        parts = raw_text.split("\n\n")
+        cleaned = [p.strip() for p in parts if p.strip()]
+        if len(cleaned) > 1:
+            return cleaned
+    # If single lines and multiple lines exist
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if len(lines) > 1 and all(len(line) < 200 for line in lines):
+        return lines
+    return [raw_text]
+
+def add_guild_dispenser_accounts(
+    guild_id: Union[int, str],
+    entries: List[str],
+    user: Optional[Union[discord.Member, discord.User]] = None
+) -> int:
+    dispenser = get_guild_dispenser(guild_id)
+    added_count = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_id = getattr(user, "id", None)
+    user_name = str(user) if user else "Unknown"
+
+    current_ids = [a.get("id", 0) for a in dispenser["accounts"] if isinstance(a.get("id"), int)]
+    next_id = (max(current_ids) + 1) if current_ids else 1
+
+    for raw in entries:
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        dispenser["accounts"].append({
+            "id": next_id,
+            "content": cleaned,
+            "added_by": user_id,
+            "added_by_name": user_name,
+            "added_at": now_iso,
+            "dispensed": False,
+            "dispensed_to": None,
+            "dispensed_to_name": None,
+            "dispensed_at": None
+        })
+        next_id += 1
+        added_count += 1
+
+    if added_count > 0:
+        save_server_dispensers()
+    return added_count
+
+def get_guild_dispenser_stats(guild_id: Union[int, str]) -> Dict[str, Any]:
+    dispenser = get_guild_dispenser(guild_id)
+    accounts = dispenser.get("accounts", [])
+    available = [a for a in accounts if not a.get("dispensed", False)]
+    dispensed = [a for a in accounts if a.get("dispensed", False)]
+    return {
+        "total": len(accounts),
+        "available": len(available),
+        "dispensed": len(dispensed),
+        "recent_dispensed": dispensed[-5:] if dispensed else []
+    }
+
+def dispense_guild_account(
+    guild_id: Union[int, str],
+    user: Union[discord.Member, discord.User]
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    dispenser = get_guild_dispenser(guild_id)
+    accounts = dispenser.get("accounts", [])
+
+    # Cooldown check
+    cooldown_hours = dispenser.get("settings", {}).get("cooldown_hours", 0)
+    if cooldown_hours > 0 and getattr(user, "id", None):
+        user_id = user.id
+        now = datetime.now(timezone.utc)
+        for a in reversed(accounts):
+            if a.get("dispensed_to") == user_id and a.get("dispensed_at"):
+                try:
+                    d_time = datetime.fromisoformat(a["dispensed_at"])
+                    diff_hours = (now - d_time).total_seconds() / 3600.0
+                    if diff_hours < cooldown_hours:
+                        remaining = round(cooldown_hours - diff_hours, 1)
+                        return False, f"⏳ Cooldown active: You can claim another account in **{remaining} hours**.", None
+                except Exception:
+                    pass
+
+    # Find first available account
+    available_acc = None
+    for a in accounts:
+        if not a.get("dispensed", False):
+            available_acc = a
+            break
+
+    if not available_acc:
+        return False, "⚠️ **Out of Stock!** There are currently no accounts available in this server's dispenser. Please check back later when staff restocks.", None
+
+    available_acc["dispensed"] = True
+    available_acc["dispensed_to"] = getattr(user, "id", None)
+    available_acc["dispensed_to_name"] = str(user)
+    available_acc["dispensed_at"] = datetime.now(timezone.utc).isoformat()
+    save_server_dispensers()
+
+    return True, "success", available_acc
+
 def get_cvs_account(query: str) -> Optional[Dict[str, Any]]:
     q = str(query).strip().lower()
     for acc in cvs_accounts_db:
@@ -530,6 +666,40 @@ def is_cvs_guild(guild_or_id: Any) -> bool:
         return False
     gid = getattr(guild_or_id, "id", guild_or_id)
     return gid in CVS_ALLOWED_GUILD_IDS
+
+CVS_COMMAND_NAMES: Set[str] = {
+    "accounts", "stock", "organizecoupons", "used", "unusecoupon",
+    "optimize", "calc", "cart", "checkout", "additem", "add", "remove", "undo", "clear",
+    "coupons", "deals", "finddeals", "savings", "history", "trips", "delete-last-trip",
+    "massdm", "tacobell", "foodpanel", "shop", "invoice", "addorder", "orderstats",
+    "clearorder", "paid", "deliver", "complete", "setup-food-store", "setup-vault",
+    "setup-all-features", "formatserver", "deletechannels", "resetchannel",
+    "setup-rules", "setup-welcome", "setup-status-channel", "setup-giveaways",
+    "balance", "pay", "daily", "leaderboard", "slots", "blackjack", "rps", "connect4", "trivia", "case",
+    "otp", "vouch", "testwelcome", "run-stress-test", "permit", "revoke", "giveaway", "giverole", "removerole", "role", "note"
+}
+
+_orig_tree_add_command = bot.tree.add_command
+
+def _scoped_tree_add_command(command, /, *, guild=discord.utils.MISSING, override=False):
+    if guild is discord.utils.MISSING and command.name in CVS_COMMAND_NAMES:
+        for gid in CVS_ALLOWED_GUILD_IDS:
+            _orig_tree_add_command(command, guild=discord.Object(id=gid), override=override)
+        return command
+    return _orig_tree_add_command(command, guild=guild, override=override)
+
+bot.tree.add_command = _scoped_tree_add_command
+
+_orig_bot_add_command = bot.add_command
+
+def _scoped_bot_add_command(command, /):
+    if command.name in CVS_COMMAND_NAMES:
+        async def _cvs_guild_check(ctx: commands.Context) -> bool:
+            return bool(ctx.guild and is_cvs_guild(ctx.guild))
+        command.add_check(_cvs_guild_check)
+    return _orig_bot_add_command(command)
+
+bot.add_command = _scoped_bot_add_command
 
 def is_primary_bot_owner(user: Any) -> bool:
     """Checks strictly if the user is Cody (the bot creator) or bot.owner_id."""
@@ -5786,7 +5956,7 @@ def build_staff_modpanel_embed(guild: Optional[discord.Guild] = None) -> discord
             "**Channel & Server Security:**\n"
             "• Lock, Unlock, Slowmode, Server Lockdown *(Admin Only)*\n\n"
             "**Server & Ticket Tools:**\n"
-            "• Refresh Tickets, Direct Message Member, Server Info, Sync Commands"
+            "• Refresh Tickets, Direct Message Member, Server Info"
         )
     embed = discord.Embed(
         title="🎛️ Staff Control Center",
@@ -5888,7 +6058,8 @@ class StaffModPanelButtonView(discord.ui.View):
                 "modpanel_refresh_food",
                 "modpanel_refresh_coupon",
                 "modpanel_open_shop",
-                "modpanel_close_shop"
+                "modpanel_close_shop",
+                "modpanel_clear_slash_dupes"
             }
             self._children = [item for item in self._children if getattr(item, "custom_id", None) not in store_button_ids]
             for item in self._children:
@@ -5897,7 +6068,7 @@ class StaffModPanelButtonView(discord.ui.View):
                     item.row = 0
                 elif cid in ("modpanel_lock", "modpanel_unlock", "modpanel_slowmode", "modpanel_lockdown"):
                     item.row = 1
-                elif cid in ("modpanel_refresh_tickets", "modpanel_dm", "modpanel_serverinfo", "modpanel_clear_slash_dupes"):
+                elif cid in ("modpanel_refresh_tickets", "modpanel_dm", "modpanel_serverinfo"):
                     item.row = 2
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -6115,6 +6286,9 @@ class StaffModPanelButtonView(discord.ui.View):
 
     @discord.ui.button(label="Clear Slash Dupes", style=discord.ButtonStyle.secondary, emoji="🧹", custom_id="modpanel_clear_slash_dupes", row=4)
     async def btn_clear_slash_dupes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_cvs_guild(interaction.guild):
+            await interaction.response.send_message("⛔ This feature is not enabled in this server.", ephemeral=True)
+            return
         if not is_admin_member(interaction.user):
             await interaction.response.send_message("⛔ **Admin Only**: Only Server Founders and Administrators can sync commands.", ephemeral=True)
             return
@@ -6136,6 +6310,119 @@ class StaffModPanelButtonView(discord.ui.View):
             )
         except Exception as e:
             await interaction.followup.send(f"⚠️ Error syncing slash commands: `{e}`", ephemeral=True)
+
+
+# --- SERVER-ISOLATED ACCOUNT & COUPON DISPENSER UI ---
+
+class AddAccountModal(discord.ui.Modal, title="Stock Dispenser Accounts"):
+    accounts_input = discord.ui.TextInput(
+        label="Account & Coupon Details",
+        placeholder="Paste account info, phone, barcodes, and coupons...\nSeparate multiple accounts with '---' or blank lines.",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000
+    )
+
+    def __init__(self, guild_id: int):
+        super().__init__()
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        entries = parse_dispenser_entries(self.accounts_input.value)
+        if not entries:
+            await interaction.response.send_message("❌ No valid accounts provided.", ephemeral=True)
+            return
+        added = add_guild_dispenser_accounts(self.guild_id, entries, interaction.user)
+        stats = get_guild_dispenser_stats(self.guild_id)
+        embed = discord.Embed(
+            title="✅ Dispenser Stock Added",
+            description=f"Successfully loaded **{added}** new account(s) into this server's dispenser pool!",
+            color=COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="📦 Available In Stock", value=f"**{stats['available']}** accounts", inline=True)
+        embed.add_field(name="🏷️ Total Stocked", value=f"**{stats['total']}** accounts", inline=True)
+        embed.set_footer(text="AIO Bot • Account Dispenser")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+def build_dispenser_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
+    guild_name = guild.name if guild else "Server"
+    stats = get_guild_dispenser_stats(guild.id) if guild else {"available": 0, "dispensed": 0, "total": 0}
+    embed = discord.Embed(
+        title=f"🎁 {guild_name} • Account & Coupon Dispenser",
+        description=(
+            "Welcome to the automated account and coupon dispenser!\n\n"
+            "Click **🎁 Claim Account** below to instantly receive a CVS account with loaded coupons.\n\n"
+            f"📦 **In Stock:** `{stats['available']}` accounts available\n"
+            f"🏷️ **Total Distributed:** `{stats['dispensed']}` accounts claimed\n\n"
+            "🔒 *Your account details will be sent directly to you in a private message.*"
+        ),
+        color=COLOR_PRIMARY,
+        timestamp=datetime.now(timezone.utc)
+    )
+    if guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    embed.set_footer(text=f"{guild_name} • Account Dispenser • Click below to claim")
+    return embed
+
+
+class ServerDispenserLaunchView(discord.ui.View):
+    """Persistent button view for the public account dispenser."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Claim Account", style=discord.ButtonStyle.success, emoji="🎁", custom_id="dispenser_claim_btn", row=0)
+    async def btn_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        ok, msg, account = dispense_guild_account(guild.id, interaction.user)
+        if not ok or not account:
+            await interaction.response.send_message(msg, ephemeral=True)
+            return
+
+        content = account.get("content", "").strip()
+        account_id = account.get("id", 1)
+        dm_embed = discord.Embed(
+            title="🎉 Your Account & Coupons Have Arrived!",
+            description=(
+                f"Here are your dispensed account details:\n\n"
+                f"```text\n{content}\n```\n"
+                f"⚠️ **Important Note:** Save these details right now. Do not share or redistribute your account credentials."
+            ),
+            color=COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc)
+        )
+        dm_embed.set_footer(text=f"{guild.name} • Dispenser ID #{account_id}")
+        await interaction.response.send_message(embed=dm_embed, ephemeral=True)
+
+        try:
+            new_embed = build_dispenser_embed(guild)
+            await interaction.message.edit(embed=new_embed, view=self)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="View Stock", style=discord.ButtonStyle.secondary, emoji="📦", custom_id="dispenser_stock_btn", row=0)
+    async def btn_stock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        stats = get_guild_dispenser_stats(guild.id)
+        embed = discord.Embed(
+            title=f"📦 {guild.name} • Dispenser Stock",
+            color=COLOR_PRIMARY,
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Available In Stock", value=f"**{stats['available']}** accounts", inline=True)
+        embed.add_field(name="Total Dispensed", value=f"**{stats['dispensed']}** accounts", inline=True)
+        embed.add_field(name="Total Stocked", value=f"**{stats['total']}** accounts", inline=True)
+        embed.set_footer(text="AIO Bot • Account Dispenser")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def refresh_channel_content(channel: discord.TextChannel, author_id: int, clear_history: bool = True) -> str:
@@ -6192,6 +6479,12 @@ async def refresh_channel_content(channel: discord.TextChannel, author_id: int, 
         mod_embed = build_staff_modpanel_embed(guild)
         await channel.send(embed=mod_embed, view=StaffModPanelButtonView(guild))
         return "🎛️ Staff Control Center & Moderation Panel"
+
+    elif "dispenser" in ch_name or "free-account" in ch_name:
+        guild = getattr(channel, "guild", None)
+        disp_embed = build_dispenser_embed(guild)
+        await channel.send(embed=disp_embed, view=ServerDispenserLaunchView())
+        return "🎁 Account & Coupon Dispenser"
 
     elif "rule" in ch_name:
         rules_embed = build_rules_embed(getattr(channel, "guild", None))
@@ -7049,6 +7342,7 @@ async def on_ready():
         bot.add_view(StaffModPanelButtonView())
         bot.add_view(TicketReviewLaunchView())
         bot.add_view(GiveawayEntryView())
+        bot.add_view(ServerDispenserLaunchView())
         print('✅ Persistent interactive views registered successfully.', flush=True)
     except Exception as e:
         print(f"ℹ️ Note on persistent views registration: {e}", file=sys.stderr, flush=True)
@@ -10247,6 +10541,257 @@ async def setup_food_store_cmd(ctx: commands.Context):
     await target_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
     await ctx.send(f"✅ Food Rewards Store panel ready at {target_ch.mention}!", delete_after=8)
 
+# --- STAFF CHANNEL & SERVER-ISOLATED DISPENSER COMMANDS ---
+
+@bot.hybrid_command(
+    name="setup-staff-channel",
+    aliases=["setupstaff", "staffchannel", "createstaffchat"],
+    description="Create a secure, private staff-only channel with restricted permissions"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def setup_staff_channel_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ **Access Denied**: You need Staff or Manage Channels permissions to run setup.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    cat_name = "🛡️ STAFF ZONE"
+    cat = discord.utils.get(guild.categories, name=cat_name)
+    if not cat:
+        try:
+            cat = await guild.create_category(cat_name)
+        except Exception:
+            pass
+
+    channel_name = "🔒-staff-chat"
+    existing = discord.utils.get(guild.text_channels, name=channel_name)
+
+    staff_overwrites = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=False,
+            send_messages=False,
+            read_message_history=False
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            embed_links=True,
+            attach_files=True,
+            read_message_history=True,
+            manage_channels=True
+        )
+    }
+    for role in guild.roles:
+        if role.permissions.administrator or role.permissions.manage_guild or role.permissions.manage_messages:
+            staff_overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            )
+        elif any(name in role.name.lower() for name in ["staff", "mod", "admin", "founder", "owner"]):
+            staff_overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            )
+
+    if isinstance(ctx.author, discord.Member):
+        staff_overwrites[ctx.author] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True
+        )
+
+    welcome_embed = discord.Embed(
+        title="🛡️ Private Staff Coordination Channel",
+        description=(
+            "Welcome to your server's private staff channel!\n\n"
+            "This channel is strictly restricted to server staff and administrators."
+        ),
+        color=COLOR_PRIMARY,
+        timestamp=datetime.now(timezone.utc)
+    )
+    welcome_embed.add_field(
+        name="🔒 Privacy & Security",
+        value="Hidden from `@everyone`. Only members with Staff, Moderator, or Admin permissions can view or send messages here.",
+        inline=False
+    )
+    welcome_embed.add_field(
+        name="🎛️ Staff Control Center",
+        value="Run `/modpanel` to open the Staff Control Center with quick moderation and management buttons.",
+        inline=False
+    )
+    welcome_embed.add_field(
+        name="🎁 Account Dispenser",
+        value="Use `/addaccount` to stock your server's account dispenser, and `/dispenserstock` to inspect your inventory.",
+        inline=False
+    )
+    welcome_embed.set_footer(text=f"{guild.name} • Staff Operations")
+
+    if existing:
+        try:
+            await existing.edit(overwrites=staff_overwrites)
+            await existing.send(embed=welcome_embed)
+            await ctx.send(f"✅ Private staff channel refreshed at {existing.mention}!", delete_after=8)
+            return
+        except Exception as e:
+            await ctx.send(f"⚠️ Channel exists at {existing.mention}, but encountered an error updating permissions: {e}", delete_after=8)
+            return
+
+    try:
+        new_channel = await guild.create_text_channel(
+            name=channel_name,
+            category=cat,
+            topic="Private staff-only coordination and administration channel.",
+            overwrites=staff_overwrites
+        )
+        await new_channel.send(embed=welcome_embed)
+        await ctx.send(f"✅ Private staff channel created at {new_channel.mention}!", delete_after=8)
+    except Exception as e:
+        await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
+
+
+@bot.hybrid_command(
+    name="addaccount",
+    aliases=["addcoupons", "stockaccount", "dispenseradd", "addstock"],
+    description="Add accounts or coupons to this server's account dispenser pool"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(account_info="Optional account details to add directly, or leave blank to open modal")
+async def add_account_cmd(ctx: commands.Context, *, account_info: Optional[str] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ **Access Denied**: Only server staff and administrators can stock the dispenser.", delete_after=6)
+        return
+
+    if not account_info:
+        if ctx.interaction:
+            await ctx.interaction.response.send_modal(AddAccountModal(ctx.guild.id))
+            return
+        else:
+            await ctx.send("ℹ️ Please provide the account details or use `/addaccount` to open the interactive input window.", delete_after=8)
+            return
+
+    entries = parse_dispenser_entries(account_info)
+    if not entries:
+        await ctx.send("❌ No valid account information detected.", delete_after=6)
+        return
+
+    added = add_guild_dispenser_accounts(ctx.guild.id, entries, ctx.author)
+    stats = get_guild_dispenser_stats(ctx.guild.id)
+    embed = discord.Embed(
+        title="✅ Dispenser Stock Added",
+        description=f"Successfully loaded **{added}** new account(s) into this server's dispenser pool!",
+        color=COLOR_SUCCESS,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="📦 Available In Stock", value=f"**{stats['available']}** accounts", inline=True)
+    embed.add_field(name="🏷️ Total Stocked", value=f"**{stats['total']}** accounts", inline=True)
+    embed.set_footer(text="AIO Bot • Account Dispenser")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="dispenser",
+    aliases=["dispensershop", "accountdispenser", "getaccount"],
+    description="Post the interactive CVS account & coupon dispenser panel"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+async def dispenser_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ **Access Denied**: Only server staff can deploy the dispenser panel.", delete_after=6)
+        return
+
+    embed = build_dispenser_embed(ctx.guild)
+    view = ServerDispenserLaunchView()
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
+    name="dispenserstock",
+    aliases=["dispenserstats", "dispenserlist"],
+    description="Check stock levels and dispense logs for this server's dispenser"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_messages=True)
+@app_commands.default_permissions(manage_messages=True)
+async def dispenser_stock_cmd(ctx: commands.Context):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ **Access Denied**: Only staff can view dispenser statistics.", delete_after=6)
+        return
+
+    stats = get_guild_dispenser_stats(ctx.guild.id)
+    embed = discord.Embed(
+        title=f"📦 {ctx.guild.name} • Dispenser Inventory & Stats",
+        color=COLOR_PRIMARY,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="📦 Available In Stock", value=f"**{stats['available']}** accounts", inline=True)
+    embed.add_field(name="🏷️ Total Dispensed", value=f"**{stats['dispensed']}** accounts", inline=True)
+    embed.add_field(name="📊 Total Loaded", value=f"**{stats['total']}** accounts", inline=True)
+
+    recent = stats.get("recent_dispensed", [])
+    if recent:
+        lines = []
+        for r in recent:
+            user_str = r.get("dispensed_to_name") or f"<@{r.get('dispensed_to')}>"
+            time_str = str(r.get("dispensed_at", "Unknown"))[:19].replace("T", " ")
+            lines.append(f"• Account #{r.get('id')} ➔ **{user_str}** at `{time_str}`")
+        embed.add_field(name="🕒 Recent Claims", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="🕒 Recent Claims", value="No accounts have been claimed yet.", inline=False)
+
+    embed.set_footer(text="AIO Bot • Use /addaccount to restock")
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(
+    name="cleardispenser",
+    aliases=["resetdispenser"],
+    description="Admin command: Reset or clear this server's account dispenser pool"
+)
+@commands.guild_only()
+@commands.has_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(action="Choose whether to reset claimed status or wipe all accounts")
+@app_commands.choices(action=[
+    app_commands.Choice(name="Reset Claimed Status (Restock All)", value="reset"),
+    app_commands.Choice(name="Wipe Entire Dispenser (Delete All)", value="wipe")
+])
+async def clear_dispenser_cmd(ctx: commands.Context, action: str = "reset"):
+    await safely_delete_message(ctx)
+    if not is_admin_member(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ **Admin Only**: Only server administrators can reset the dispenser.", delete_after=6)
+        return
+
+    dispenser = get_guild_dispenser(ctx.guild.id)
+    if action == "wipe":
+        dispenser["accounts"] = []
+        save_server_dispensers()
+        await ctx.send(f"🗑️ All dispenser accounts for **{ctx.guild.name}** have been completely deleted.", delete_after=8)
+    else:
+        for a in dispenser.get("accounts", []):
+            a["dispensed"] = False
+            a["dispensed_to"] = None
+            a["dispensed_to_name"] = None
+            a["dispensed_at"] = None
+        save_server_dispensers()
+        count = len(dispenser.get("accounts", []))
+        await ctx.send(f"🔄 Dispenser reset! **{count}** account(s) have been returned to available stock.", delete_after=8)
+
+
 @bot.hybrid_command(
     name="setup-rules",
     aliases=["rules", "postrules", "setuprules"],
@@ -12038,23 +12583,9 @@ async def automod_toggle_cmd(ctx: commands.Context, setting: Literal["invites", 
         automod_config_db["scams_blocked"] = new_val
         save_automod_config()
         state_str = "🟢 **Enabled**" if new_val else "🔴 **Disabled**"
-# --- MULTI-SERVER ISOLATION & GUEST SERVER RESTRICTION ---
-
-CVS_COMMAND_NAMES: Set[str] = {
-    "accounts", "stock", "organizecoupons", "used", "unusecoupon",
-    "optimize", "calc", "cart", "checkout", "additem", "add", "remove", "undo", "clear",
-    "coupons", "deals", "finddeals", "savings", "history", "trips", "delete-last-trip",
-    "massdm", "tacobell", "foodpanel", "shop", "invoice", "addorder", "orderstats",
-    "clearorder", "paid", "deliver", "complete", "setup-food-store", "setup-vault",
-    "setup-all-features", "formatserver", "deletechannels", "resetchannel",
-    "setup-rules", "setup-welcome", "setup-status-channel", "setup-giveaways",
-    "balance", "pay", "daily", "leaderboard", "slots", "blackjack", "rps", "connect4", "trivia", "case",
-    "otp", "vouch", "testwelcome", "run-stress-test", "permit", "revoke", "giveaway", "giverole", "removerole", "role", "note"
-}
-
 def setup_command_scoping():
     """
-    Partitions bot commands so private CVS tools, accounts, and server formats
+    Safeguard ensuring private CVS tools, accounts, and server formats
     are strictly scoped to CVS_ALLOWED_GUILD_IDS, leaving only Moderation and
     the Ticket System accessible globally in guest/friend servers.
     """
@@ -12062,20 +12593,13 @@ def setup_command_scoping():
         cmd = bot.get_command(cmd_name)
         if not cmd:
             continue
-
-        # 1. Prefix command guard: drops execution if called outside authorized servers
-        def _make_guild_check():
-            async def _cvs_guild_check(ctx: commands.Context) -> bool:
-                return bool(ctx.guild and is_cvs_guild(ctx.guild))
-            return _cvs_guild_check
-
-        cmd.add_check(_make_guild_check())
-
-        # 2. Discord Slash Tree Scoping: Remove from global autocomplete, bind only to authorized server IDs
         if cmd.app_command:
             bot.tree.remove_command(cmd_name)
             for gid in CVS_ALLOWED_GUILD_IDS:
-                bot.tree.add_command(cmd.app_command, guild=discord.Object(id=gid))
+                try:
+                    _orig_tree_add_command(cmd.app_command, guild=discord.Object(id=gid))
+                except Exception:
+                    pass
 
 setup_command_scoping()
 

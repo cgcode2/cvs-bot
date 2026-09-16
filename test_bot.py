@@ -2527,11 +2527,123 @@ class TestAIOBot(unittest.TestCase):
 
         guest_mod_view = main.StaffModPanelButtonView(guest_g)
         guest_button_labels = [b.label for b in guest_mod_view.children]
-        self.assertEqual(len(guest_button_labels), 13)
-        for leak_btn in ["Create Invoice", "Add Order", "Order Stats", "Refresh Store", "Refresh Hub", "Open Shop", "Close Shop"]:
+        self.assertEqual(len(guest_button_labels), 12)
+        for leak_btn in ["Create Invoice", "Add Order", "Order Stats", "Refresh Store", "Refresh Hub", "Open Shop", "Close Shop", "Clear Slash Dupes"]:
             self.assertNotIn(leak_btn, guest_button_labels)
-        for expected_btn in ["Warn", "Timeout", "Kick", "Ban", "Purge", "Lock Channel", "Unlock Channel", "Slowmode", "Server Lockdown", "Refresh Tickets", "DM Member", "Server Info", "Clear Slash Dupes"]:
+        for expected_btn in ["Warn", "Timeout", "Kick", "Ban", "Purge", "Lock Channel", "Unlock Channel", "Slowmode", "Server Lockdown", "Refresh Tickets", "DM Member", "Server Info"]:
             self.assertIn(expected_btn, guest_button_labels)
+
+    def test_setup_staff_channel_and_server_isolated_dispenser(self):
+        """Verify staff channel command and 100% server-isolated account/coupon dispenser."""
+        import asyncio
+
+        # 1. Verify Global Availability of Guest Server Commands
+        global_cmd_names = {c.name for c in main.bot.tree.get_commands()}
+        for expected_global in ["setup-staff-channel", "dispenser", "addaccount", "dispenserstock", "cleardispenser"]:
+            self.assertIn(expected_global, global_cmd_names, f"Expected {expected_global} to be globally accessible!")
+            cmd_obj = main.bot.get_command(expected_global)
+            self.assertIsNotNone(cmd_obj)
+
+        # Verify aliases
+        self.assertIn("staffchannel", main.bot.get_command("setup-staff-channel").aliases)
+        self.assertIn("setupstaff", main.bot.get_command("setup-staff-channel").aliases)
+        self.assertIn("addcoupons", main.bot.get_command("addaccount").aliases)
+        self.assertIn("stockaccount", main.bot.get_command("addaccount").aliases)
+        self.assertIn("dispensershop", main.bot.get_command("dispenser").aliases)
+        self.assertIn("getaccount", main.bot.get_command("dispenser").aliases)
+
+        # 2. Verify Complete Database Isolation between Guest Server and Personal Accounts
+        guest_guild_id = 9999999999
+        cody_guild_id = 731326405937201183
+
+        # Clean test state in memory
+        main.server_dispensers_db.pop(str(guest_guild_id), None)
+        main.server_dispensers_db.pop(str(cody_guild_id), None)
+        cody_accounts_before = len(main.cvs_accounts_db)
+
+        # Add accounts to Guest Server
+        sample_accounts = [
+            "Phone: 555-0199 | ExtraCare: 444455556666 | $5 off $25, 40% off coupon",
+            "Phone: 555-0188 | ExtraCare: 111122223333 | $10 off $40, $3 Extrabucks"
+        ]
+        mock_user = MagicMock()
+        mock_user.id = 12345
+        mock_user.name = "FriendOwner"
+
+        added = main.add_guild_dispenser_accounts(guest_guild_id, sample_accounts, mock_user)
+        self.assertEqual(added, 2)
+
+        # Verify Guest Server Stats
+        guest_stats = main.get_guild_dispenser_stats(guest_guild_id)
+        self.assertEqual(guest_stats["total"], 2)
+        self.assertEqual(guest_stats["available"], 2)
+        self.assertEqual(guest_stats["dispensed"], 0)
+
+        # ZERO CROSS-TALK: Verify Cody's guild has ZERO dispenser accounts
+        cody_stats = main.get_guild_dispenser_stats(cody_guild_id)
+        self.assertEqual(cody_stats["total"], 0)
+        self.assertEqual(cody_stats["available"], 0)
+
+        # ZERO CROSS-TALK: Verify Cody's personal CVS accounts database was NOT touched
+        self.assertEqual(len(main.cvs_accounts_db), cody_accounts_before)
+
+        # 3. Test Dispensing an account in Guest Server
+        mock_buyer = MagicMock()
+        mock_buyer.id = 77777
+        mock_buyer.name = "LuckyShopper"
+
+        ok, msg, account = main.dispense_guild_account(guest_guild_id, mock_buyer)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "success")
+        self.assertIsNotNone(account)
+        self.assertIn("Phone: 555-0199", account["content"])
+        self.assertTrue(account["dispensed"])
+        self.assertEqual(account["dispensed_to"], 77777)
+
+        # Check stock decreased to 1 in Guest Server, Cody's server still 0
+        self.assertEqual(main.get_guild_dispenser_stats(guest_guild_id)["available"], 1)
+        self.assertEqual(main.get_guild_dispenser_stats(cody_guild_id)["available"], 0)
+
+        # Dispense second account
+        mock_buyer2 = MagicMock()
+        mock_buyer2.id = 88888
+        mock_buyer2.name = "Shopper2"
+        ok2, msg2, account2 = main.dispense_guild_account(guest_guild_id, mock_buyer2)
+        self.assertTrue(ok2)
+        self.assertIn("Phone: 555-0188", account2["content"])
+
+        # Try to dispense when out of stock
+        ok3, msg3, account3 = main.dispense_guild_account(guest_guild_id, mock_buyer2)
+        self.assertFalse(ok3)
+        self.assertIn("Out of Stock", msg3)
+        self.assertIsNone(account3)
+
+        # 4. Test Multi-Line / Delimited Account Parser
+        delimited_text = "Account A | Barcode 1\n---\nAccount B | Barcode 2\n---\nAccount C | Barcode 3"
+        parsed = main.parse_dispenser_entries(delimited_text)
+        self.assertEqual(len(parsed), 3)
+        self.assertEqual(parsed[0], "Account A | Barcode 1")
+        self.assertEqual(parsed[1], "Account B | Barcode 2")
+        self.assertEqual(parsed[2], "Account C | Barcode 3")
+
+        # 5. Verify Dispenser View Buttons and Embed
+        guest_g = MagicMock()
+        guest_g.name = "Friend's Bargains"
+        guest_g.id = guest_guild_id
+        guest_g.icon = None
+
+        disp_embed = main.build_dispenser_embed(guest_g)
+        self.assertIn("Friend's Bargains", disp_embed.title)
+        self.assertIn("In Stock", disp_embed.description)
+
+        disp_view = main.ServerDispenserLaunchView()
+        btn_labels = [b.label for b in disp_view.children]
+        self.assertIn("Claim Account", btn_labels)
+        self.assertIn("View Stock", btn_labels)
+
+        # Clean up test keys
+        main.server_dispensers_db.pop(str(guest_guild_id), None)
+        main.server_dispensers_db.pop(str(cody_guild_id), None)
 
 
 if __name__ == '__main__':
