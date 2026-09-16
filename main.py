@@ -4692,29 +4692,25 @@ class FoodAccountOrderModal(discord.ui.Modal):
 
 def build_food_accounts_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🌮 Taco Bell Preloaded Rewards Accounts",
+        title="🛍️ Rewards Store • Coming Soon",
         description=(
-            "Preloaded food accounts with free items and discounts ready to use.\n\n"
-            "Click **Buy Taco Bell** below to open an order ticket."
+            "🚧 **Shop Updating — New Methods Coming Soon!**\n\n"
+            "The previous rewards method was recently patched. We are actively working on and testing fresh new food and rewards deals!\n\n"
+            "✨ **What to Expect:**\n"
+            "• New working rewards methods\n"
+            "• High-value accounts and discounts\n"
+            "• Instant support ticket delivery\n\n"
+            "📢 *Keep an eye on announcements for when stock and new methods drop!*"
         ),
-        color=0xFF7B00,
+        color=0xFFA500,
         timestamp=datetime.now(timezone.utc)
     )
-
-    tb_value = (
-        "**Price:** **$10.00 each** (15 rewards preloaded)\n\n"
-        "**Included Rewards:**\n"
-        "• $15 off your entire order & $10 off\n"
-        "• $5 off & extra $5 off\n"
-        "• Free Chalupa Supreme (x2)\n"
-        "• Free quesadilla & individual items\n"
-        "• Fire & Hot tier rewards + Free large drink\n"
-        "• Birthday Baja Blast Freeze\n\n"
-        "*Open a ticket, choose quantity (1–10). Staff sends email, tap send code in app, then staff provides OTP.*"
+    embed.add_field(
+        name="⏳ Current Status",
+        value="*Previous method patched. Developing and testing replacement methods — coming soon!*",
+        inline=False
     )
-    embed.add_field(name="🌮 Taco Bell Rewards", value=tb_value, inline=False)
-
-    embed.set_footer(text="AIO Rewards Store • Click below to open an order ticket")
+    embed.set_footer(text="AIO Rewards Store • New methods coming soon")
     return embed
 
 
@@ -4722,9 +4718,9 @@ class FoodAccountPurchaseView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Buy Taco Bell ($10)", style=discord.ButtonStyle.primary, emoji="🌮", custom_id="aio_buy_tacobell_btn")
-    async def btn_tacobell(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(FoodAccountOrderModal(brand="Taco Bell", price=10.0))
+    @discord.ui.button(label="Coming Soon", style=discord.ButtonStyle.secondary, emoji="⏳", disabled=True, custom_id="aio_shop_coming_soon_btn")
+    async def btn_coming_soon(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("⏳ New rewards methods and stock are currently in testing. Stay tuned to announcements!", ephemeral=True)
 
 
 # --- SHOP STATUS SYSTEM ---
@@ -4982,7 +4978,7 @@ FORMAT_SERVER_BLUEPRINT = [
         "category": "🛍️ SAVINGS & REWARDS",
         "channels": [
             {"name": "🟢-shop-open", "type": "text", "topic": "Live shop opening status and operational hours. Check here to see if orders are being accepted!"},
-            {"name": "🌮-food-rewards", "type": "text", "topic": "Preloaded Taco Bell rewards accounts store. Order below!"},
+            {"name": "🌮-food-rewards", "type": "text", "topic": "Official rewards store — new methods coming soon!"},
             {"name": "⭐-vouches", "type": "text", "topic": "Customer vouches, reviews, feedback, and 5-star ratings."},
             {"name": "🏷️-deals-and-savings", "type": "text", "topic": "Share latest store deals, coupons, and discounts."}
         ]
@@ -6219,7 +6215,7 @@ class StaffModPanelButtonView(discord.ui.View):
         if ch:
             if ch.name != "🌮-food-rewards" and ("pizza" in ch.name.lower() or "🌮🍕" in ch.name):
                 try:
-                    await ch.edit(name="🌮-food-rewards", topic="Preloaded Taco Bell rewards accounts store. Order below!", reason="Updated food store channel name")
+                    await ch.edit(name="🌮-food-rewards", topic="Official rewards store — new methods coming soon!", reason="Updated food store channel name")
                 except Exception:
                     pass
             name = await refresh_channel_content(ch, interaction.user.id)
@@ -6520,12 +6516,12 @@ async def refresh_channel_content(channel: discord.TextChannel, author_id: int, 
     elif "food" in ch_name or "rewards" in ch_name:
         if channel.name != "🌮-food-rewards" and ("pizza" in ch_name or "🌮🍕" in channel.name):
             try:
-                await channel.edit(name="🌮-food-rewards", topic="Preloaded Taco Bell rewards accounts store. Order below!")
+                await channel.edit(name="🌮-food-rewards", topic="Official rewards store — new methods coming soon!")
             except Exception:
                 pass
         food_embed = build_food_accounts_embed()
         await channel.send(embed=food_embed, view=FoodAccountPurchaseView())
-        return "🌮 Taco Bell Rewards Store"
+        return "🛍️ Rewards Store (Coming Soon)"
 
     elif ("ticket" in ch_name or "open-a-ticket" in ch_name) and not any(k in ch_name for k in ("shop", "status", "store", "log", "mod", "coupon", "optimizer")):
         panel_embed = build_ticket_panel_embed()
@@ -7484,19 +7480,19 @@ async def on_ready():
             if food_ch:
                 if food_ch.name != "🌮-food-rewards" and ("pizza" in food_ch.name.lower() or "🌮🍕" in food_ch.name):
                     try:
-                        await food_ch.edit(name="🌮-food-rewards", topic="Preloaded Taco Bell rewards accounts store. Order below!", reason="Auto-renaming food store to Taco Bell on startup")
+                        await food_ch.edit(name="🌮-food-rewards", topic="Official rewards store — new methods coming soon!", reason="Auto-updating food store on startup")
                         print(f"🔧 Auto-renamed channel #{food_ch.name} -> #🌮-food-rewards in {g.name}", flush=True)
                     except Exception:
                         pass
 
-                # Scan messages in food_ch for outdated Pizza Hut or delivery mentions and auto-refresh
+                # Scan messages in food_ch for outdated Taco Bell or Pizza Hut mentions and auto-refresh
                 try:
                     outdated_found = False
                     async for msg in food_ch.history(limit=10):
                         if msg.author == bot.user and msg.embeds:
                             for emb in msg.embeds:
                                 emb_text = f"{emb.title} {emb.description} {' '.join(f.name + ' ' + f.value for f in emb.fields)}".lower()
-                                if "pizza" in emb_text or "delivery is preferred" in emb_text:
+                                if "taco bell" in emb_text or "chalupa" in emb_text or "pizza" in emb_text or "delivery is preferred" in emb_text:
                                     outdated_found = True
                                     break
                         if outdated_found:
@@ -7504,7 +7500,7 @@ async def on_ready():
                     if outdated_found:
                         print(f"🔄 Outdated store embed found in #{food_ch.name} ({g.name}) - auto-refreshing...", flush=True)
                         await refresh_channel_content(food_ch, bot.user.id if bot.user else 0, clear_history=True)
-                        print(f"✅ Auto-refreshed store panel in #{food_ch.name} with clean Taco Bell embed.", flush=True)
+                        print(f"✅ Auto-refreshed store panel in #{food_ch.name} with Coming Soon embed.", flush=True)
                 except Exception as fe:
                     print(f"ℹ️ Notice on food store embed scan in {g.name}: {fe}", file=sys.stderr, flush=True)
         except Exception as ge:
@@ -10585,7 +10581,7 @@ async def setup_food_store_cmd(ctx: commands.Context):
             target_ch = await guild.create_text_channel(
                 channel_name,
                 category=cat,
-                topic="Preloaded Taco Bell rewards accounts store. Order below!"
+                topic="Official rewards store — new methods coming soon!"
             )
         except Exception as e:
             await ctx.send(f"❌ Error creating channel #{channel_name}: {e}", delete_after=8)
@@ -10593,7 +10589,7 @@ async def setup_food_store_cmd(ctx: commands.Context):
     else:
         if target_ch.name != channel_name:
             try:
-                await target_ch.edit(name=channel_name, topic="Preloaded Taco Bell rewards accounts store. Order below!")
+                await target_ch.edit(name=channel_name, topic="Official rewards store — new methods coming soon!")
             except Exception:
                 pass
         try:
@@ -10603,7 +10599,7 @@ async def setup_food_store_cmd(ctx: commands.Context):
 
     food_embed = build_food_accounts_embed()
     await target_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
-    await ctx.send(f"✅ Food Rewards Store panel ready at {target_ch.mention}!", delete_after=8)
+    await ctx.send(f"✅ Rewards Store panel (Coming Soon) ready at {target_ch.mention}!", delete_after=8)
 
 # --- STAFF CHANNEL & SERVER-ISOLATED DISPENSER COMMANDS ---
 
@@ -11089,17 +11085,17 @@ async def fix_channels_cmd(ctx: commands.Context):
             elif ("food" in cname or "reward" in cname) and ("pizza" in cname or "🌮🍕" in ch.name):
                 old = ch.name
                 try:
-                    await ch.edit(name="🌮-food-rewards", topic="Preloaded Taco Bell rewards accounts store. Order below!", reason=f"Updated store channel name by {ctx.author}")
+                    await ch.edit(name="🌮-food-rewards", topic="Official rewards store — new methods coming soon!", reason=f"Updated store channel name by {ctx.author}")
                     repaired.append(f"#{old} -> #🌮-food-rewards")
                 except Exception as e:
                     repaired.append(f"#{old} (Error: {e})")
 
-        # Also ensure store panel is refreshed with clean Taco Bell embed
+        # Also ensure store panel is refreshed with Coming Soon embed
         food_ch = find_food_rewards_channel(guild)
         if food_ch:
             try:
                 await refresh_channel_content(food_ch, ctx.author.id, clear_history=True)
-                repaired.append(f"Refreshed store panel in {food_ch.mention} (Taco Bell only)")
+                repaired.append(f"Refreshed store panel in {food_ch.mention} (Coming Soon)")
             except Exception:
                 pass
 
@@ -11541,7 +11537,7 @@ async def say_cmd(
 @bot.hybrid_command(
     name="foodpanel",
     aliases=["rewardsstore", "fastfood", "foodaccounts"],
-    description="Deploy the Taco Bell preloaded account purchase panel"
+    description="Deploy the rewards store coming soon panel"
 )
 @commands.guild_only()
 @commands.has_permissions(administrator=True)
@@ -11554,7 +11550,7 @@ async def post_food_panel(ctx, channel: Optional[discord.TextChannel] = None):
     view = FoodAccountPurchaseView()
     await target.send(embed=embed, view=view)
     if target.id != ctx.channel.id:
-        await ctx.send(f"✅ Taco Bell rewards purchase panel deployed to {target.mention}!", delete_after=5)
+        await ctx.send(f"✅ Rewards store coming soon panel deployed to {target.mention}!", delete_after=5)
 
 # ============================================================
 # STAFF TICKET & ORDER FULFILLMENT COMMANDS

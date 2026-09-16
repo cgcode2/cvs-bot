@@ -138,8 +138,8 @@ class TestAIOBot(unittest.TestCase):
         self.assertIn("Staff Control Center", mod_embed.title)
         food_embed = main.build_food_accounts_embed()
         self.assertEqual(len(food_embed.fields), 1)
-        self.assertIn("Taco Bell", food_embed.fields[0].name)
-        self.assertIn("$10.00", food_embed.fields[0].value)
+        self.assertIn("Current Status", food_embed.fields[0].name)
+        self.assertIn("coming soon", food_embed.fields[0].value.lower())
         self.assertNotIn("Pizza Hut", food_embed.description)
 
     def test_smart_items_parser(self):
@@ -565,13 +565,12 @@ class TestAIOBot(unittest.TestCase):
     def test_food_accounts_embed_content(self):
         embed = main.build_food_accounts_embed()
         self.assertEqual(len(embed.fields), 1)
-        self.assertIn("Taco Bell", embed.fields[0].name)
-        self.assertIn("15 off your entire order", embed.fields[0].value)
-        self.assertIn("Free Chalupa Supreme", embed.fields[0].value)
+        self.assertIn("Current Status", embed.fields[0].name)
+        self.assertIn("patched", embed.fields[0].value.lower())
+        self.assertIn("coming soon", embed.title.lower())
         self.assertNotIn("Pizza Hut", [f.name for f in embed.fields])
         self.assertNotIn("Pizza Hut", embed.description)
-        self.assertIn("Open a ticket", embed.fields[0].value)
-        self.assertTrue("send code" in embed.fields[0].value.lower())
+        self.assertNotIn("taco bell preloaded", embed.title.lower())
 
         modal = main.FoodAccountOrderModal(brand="Taco Bell", price=10.0)
         self.assertEqual(modal.brand, "Taco Bell")
@@ -963,10 +962,10 @@ class TestAIOBot(unittest.TestCase):
         food_ch = MockChannel("🌮-food-rewards")
         res_food = asyncio.run(main.refresh_channel_content(food_ch, author_id=123, clear_history=True))
         self.assertTrue(food_ch.purged)
-        self.assertIn("Taco Bell Rewards", res_food)
+        self.assertIn("Rewards Store", res_food)
         self.assertEqual(len(food_ch.messages_sent), 1)
         self.assertIsInstance(food_ch.messages_sent[0]["view"], main.FoodAccountPurchaseView)
-        self.assertIn("Taco Bell", food_ch.messages_sent[0]["embed"].title)
+        self.assertIn("Coming Soon", food_ch.messages_sent[0]["embed"].title)
 
         # 3. Ticket channel deploys TicketLaunchView
         ticket_ch = MockChannel("📩-open-a-ticket")
@@ -2203,10 +2202,11 @@ class TestAIOBot(unittest.TestCase):
         g2 = MockG([MockChan("🧾-receipt-brags"), MockChan("general-chat")])
         self.assertEqual(main.get_vouches_channel(g2).name, "🧾-receipt-brags")
 
-        # 3. build_food_accounts_embed contains ONLY Taco Bell, NO Pizza Hut, NO "delivery is preferred"
+        # 3. build_food_accounts_embed contains Coming Soon notice, patched method info, and NO Pizza Hut
         food_embed = main.build_food_accounts_embed()
         embed_str = f"{food_embed.title} {food_embed.description} {' '.join(f.name + ' ' + f.value for f in food_embed.fields)}".lower()
-        self.assertIn("taco bell", embed_str)
+        self.assertIn("coming soon", embed_str)
+        self.assertIn("patched", embed_str)
         self.assertNotIn("pizza", embed_str)
         self.assertNotIn("hut", embed_str)
         self.assertNotIn("delivery is preferred", embed_str)
