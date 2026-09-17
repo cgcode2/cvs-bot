@@ -641,7 +641,7 @@ def is_admin_member(member: Optional[Any]) -> bool:
             return True
     return False
 
-CVS_ALLOWED_GUILD_IDS: Set[int] = {731326405937201183}
+CVS_ALLOWED_GUILD_IDS: Set[int] = {731326405937201183, 1514110480346513470}
 _extra_cvs_env = os.environ.get("CVS_ALLOWED_GUILDS", "")
 if _extra_cvs_env:
     for _gid in _extra_cvs_env.split(","):
