@@ -7667,23 +7667,33 @@ async def on_ready():
         except Exception as ge:
             print(f"ℹ️ Auto-repair channel scan notice in {g.name}: {ge}", file=sys.stderr, flush=True)
 
-    # Auto-leave any unauthorized guilds so the bot only stays in Cody's server
+    # Auto-detect and authorize Bargain Bites, and auto-leave White Box
     for g in list(bot.guilds):
-        if not is_cvs_guild(g):
-            print(f"🚪 Auto-leaving unauthorized guild: {g.name} ({g.id})", flush=True)
+        if "bargain" in g.name.lower() or "bites" in g.name.lower():
+            CVS_ALLOWED_GUILD_IDS.add(g.id)
+        if g.id == 1549628130988269618 or "white box" in g.name.lower():
+            print(f"🚪 Auto-leaving White Box guild: {g.name} ({g.id})", flush=True)
             try:
                 await g.leave()
             except Exception as e:
-                print(f"⚠️ Error leaving unauthorized guild {g.name}: {e}", file=sys.stderr, flush=True)
+                print(f"⚠️ Error leaving White Box {g.name}: {e}", file=sys.stderr, flush=True)
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    if not is_cvs_guild(guild):
-        print(f"🚪 Auto-leaving unauthorized joined guild: {guild.name} ({guild.id})", flush=True)
+    print(f"📥 Joined server: {guild.name} (ID: {guild.id})", flush=True)
+    # Strictly block and leave White Box
+    if guild.id == 1549628130988269618 or "white box" in guild.name.lower():
+        print(f"🚪 Auto-leaving White Box guild: {guild.name} ({guild.id})", flush=True)
         try:
             await guild.leave()
         except Exception as e:
-            print(f"⚠️ Error auto-leaving unauthorized guild {guild.name}: {e}", file=sys.stderr, flush=True)
+            print(f"⚠️ Error auto-leaving White Box {guild.name}: {e}", file=sys.stderr, flush=True)
+        return
+
+    # Automatically authorize Bargain Bites
+    if "bargain" in guild.name.lower() or "bites" in guild.name.lower():
+        CVS_ALLOWED_GUILD_IDS.add(guild.id)
+        print(f"✅ Authorized Bargain Bites ({guild.id}) for CVS features.", flush=True)
 
 @bot.event
 async def on_member_join(member: discord.Member):
