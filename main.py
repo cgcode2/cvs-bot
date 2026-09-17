@@ -2503,35 +2503,32 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     extracare_link = "https://www.cvs.com/extracare/home"
     deals_link = "https://www.cvs.com/deals/coupons"
 
-    embed = discord.Embed(
-        title=f"💳 CVS ExtraCare • #{acc_id} {name}",
-        description=(
-            f"🎯 **[Open Deals & Rewards (Send to Card)]({coupon_link})** • 🎟️ **[Digital Coupons]({deals_link})** • 💰 **[Dashboard]({extracare_link})**\n"
-            "Scannable barcode generated below for register & self-checkout."
-        ),
-        color=COLOR_PRIMARY,
-        timestamp=datetime.now(timezone.utc)
-    )
-    embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
-
     formatted_card = " ".join([raw_card[i:i+4] for i in range(0, len(raw_card), 4)])
     phone = acc.get("phone", "")
     phone_fmt = f"({phone[:3]}) {phone[3:6]}-{phone[6:]}" if len(phone) == 10 else (phone or "—")
 
-    embed.add_field(name="🔢 ExtraCare Number", value=f"`{formatted_card}`", inline=True)
-    embed.add_field(name="👤 Cardholder", value=f"**{name}**", inline=True)
-    embed.add_field(name="📞 Phone", value=f"`{phone_fmt}`", inline=True)
+    embed = discord.Embed(
+        title=f"💳 ExtraCare #{acc_id} • {name}",
+        description=(
+            f"📞 `{phone_fmt}`  ⏐  Card ends `{raw_card[-4:]}`\n"
+            f"🔗 [Open Deals & Rewards (Send to Card)]({coupon_link}) • [Coupons]({deals_link})\n"
+            "Scannable barcode generated below."
+        ),
+        color=COLOR_PRIMARY,
+        timestamp=datetime.now(timezone.utc)
+    )
 
+    # Compact account details
+    details = [f"🔢 **Card:** `{formatted_card}`"]
     if acc.get("extrabucks"):
-        embed.add_field(name="💰 ExtraBucks Rewards", value=f"**{acc['extrabucks']}**", inline=True)
+        details.append(f"💰 **ExtraBucks:** {acc['extrabucks']}")
     if acc.get("birthday"):
-        embed.add_field(name="🎂 Birthday", value=f"`{acc['birthday']}`", inline=True)
+        details.append(f"🎂 **Birthday:** `{acc['birthday']}`")
+    if email or pwd:
+        cred = f"📧 `{email or '—'}`" + (f" ⏐ 🔑 ||`{pwd}`||" if pwd else "")
+        details.append(cred)
 
-    val = f"📧 `{email}`" if email else ""
-    if pwd:
-        val += f" • 🔑 ||`{pwd}`||"
-    if val:
-        embed.add_field(name="🔐 Account Credentials", value=val, inline=False)
+    embed.add_field(name="📋 Account Details", value="  •  ".join(details) if len(details) <= 2 else "\n".join(details), inline=False)
 
     active_coupons = acc.get("coupons", [])
     if active_coupons:
@@ -2541,22 +2538,19 @@ def format_account_card(acc: Dict[str, Any]) -> Tuple[discord.Embed, discord.Fil
     used_coupons = acc.get("used_coupons", [])
     if used_coupons:
         u_lines = []
-        for u in used_coupons[-6:]:
+        for u in used_coupons[-4:]:
             if isinstance(u, dict):
                 cname = u.get("coupon", "Coupon")
-                dt = u.get("date", "")
-                sav = u.get("savings", 0.0)
-                sav_str = f" (${sav:.2f})" if sav > 0 else ""
-                u_lines.append(f"• ~~{cname}~~{sav_str}" + (f" *({dt})*" if dt else ""))
+                u_lines.append(f"• ~~{cname}~~")
             else:
                 u_lines.append(f"• ~~{u}~~")
         embed.add_field(name=f"✅ Used / Redeemed Coupons ({len(used_coupons)})", value="\n".join(u_lines)[:1024], inline=False)
 
     if acc.get("notes"):
-        embed.add_field(name="📝 Account Notes", value=acc['notes'][:1000], inline=False)
+        embed.add_field(name="📝 Notes", value=acc['notes'][:500], inline=False)
 
     embed.set_image(url="attachment://cvs_barcode.png")
-    embed.set_footer(text=f"AIO Bot • Card #{acc_id} of {len(cvs_accounts_db)}")
+    embed.set_footer(text=f"Card #{acc_id} of {len(cvs_accounts_db)}")
     return embed, file
 
 
@@ -2681,10 +2675,10 @@ def build_coupon_organizer_embed(category_filter: Optional[str] = None) -> disco
             lines = []
             for a in acc_list:
                 phone_raw = a.get('phone', '')
-                phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else phone_raw
+                phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else (phone_raw or "—")
                 card = str(a.get('extraCareNumber', ''))
                 last4 = card[-4:] if len(card) >= 4 else card
-                lines.append(f"`#{a['id']:02d}` **{a.get('name', 'Account')}** ⏐ 📞 `{phone_fmt}` ⏐ Card ends `{last4}`")
+                lines.append(f"`#{a['id']:02d}` **{a.get('name', 'Account')}** (`{phone_fmt}` • `*{last4}`)")
 
             val_text = "\n".join(lines)
             if len(val_text) > 1000:
@@ -2714,29 +2708,26 @@ def build_coupon_organizer_embed(category_filter: Optional[str] = None) -> disco
 
         embed = discord.Embed(
             title=f"{icon} {matched_category}",
-            description=f"> Showing **{len(acc_list)}** account(s) matching this category.\nUse `/accounts id:<number>` to view scannable barcodes.",
+            description=f"> Showing **{len(acc_list)}** account(s) matching this category.\nUse `/accounts id:<number>` to view barcodes.",
             color=COLOR_SUCCESS if not is_none else COLOR_WARN,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
 
         for a in acc_list[:25]:
             phone_raw = a.get('phone', '')
-            phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else phone_raw
+            phone_fmt = f"({phone_raw[:3]}) {phone_raw[3:6]}-{phone_raw[6:]}" if len(phone_raw) == 10 else (phone_raw or "—")
             card = str(a.get('extraCareNumber', ''))
-            formatted_card = " ".join([card[i:i+4] for i in range(0, len(card), 4)])
+            last4 = card[-4:] if len(card) >= 4 else card
+            link_str = f" • [Send to Card]({a['coupon_link']})" if a.get('coupon_link') else ""
 
-            val = f"📞 **Phone:** `{phone_fmt}`\n🔢 **Card:** `{formatted_card}` (ends `{card[-4:]}`)\n📧 **Email:** `{a.get('email', '')}`"
-            if a.get('coupon_link'):
-                val += f"\n🔗 **[1-Click Send to Card]({a['coupon_link']})**"
-
+            val = f"`{phone_fmt}` • Card `*{last4}`{link_str}"
             embed.add_field(
                 name=f"#{a['id']:02d} • {a.get('name', 'Account')}",
                 value=val,
                 inline=True
             )
 
-        embed.set_footer(text=f"AIO Bot • Showing {len(acc_list)} accounts in category")
+        embed.set_footer(text=f"Showing {len(acc_list)} accounts in category")
         return embed
 
 
@@ -2831,14 +2822,10 @@ def build_stock_embed(page: int = 0, filter_type: str = "all", per_page: int = 1
 
     embed = discord.Embed(
         title=f"📦 CVS Coupon Stock • {filter_title}",
-        description=(
-            f"> 🎟️ **Available In Stock:** `{total_items}` accounts loaded with active coupons\n"
-            "> 💡 **To Mark Used:** Pick an account from the dropdown below or run `/used account:<name>`"
-        ),
+        description=f"🎟️ **In Stock:** `{total_items}`  •  Select from dropdown below to mark used.",
         color=COLOR_SUCCESS if total_items > 0 else COLOR_WARN,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.set_thumbnail(url="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/CVS_Pharmacy_logo.svg/320px-CVS_Pharmacy_logo.svg.png")
 
     if not page_items:
         embed.description = "📭 No active coupons found in this category."
@@ -2854,15 +2841,15 @@ def build_stock_embed(page: int = 0, filter_type: str = "all", per_page: int = 1
             exp_m = re.search(r'Exp:?\s*([A-Za-z0-9\s\,]+?)\)', c_str)
             exp = exp_m.group(1).strip() if exp_m else "Active"
 
-            link_str = f" • [1-Click Link]({a['coupon_link']})" if a.get('coupon_link') else ""
-            val = f"📞 **Phone:** `{phone_fmt}` ⏐ **Card:** `ends {last4}`\n🎟️ **Coupon:** `{clean_c}`\n⏳ **Expires:** `{exp}`{link_str}"
+            link_str = f" • [Link]({a['coupon_link']})" if a.get('coupon_link') else ""
+            val = f"Phone: `{phone_fmt}` • Card: `ends {last4}`\nCoupon: **{clean_c}** (Expires: `{exp}`){link_str}"
             embed.add_field(
                 name=f"`{idx:02d}.` {a.get('name', 'Account')}",
                 value=val,
                 inline=False
             )
 
-    embed.set_footer(text=f"AIO Bot • Page {current_page + 1} of {total_pages} • Total in Stock: {total_items}")
+    embed.set_footer(text=f"Page {current_page + 1} of {total_pages} • Total: {total_items}")
     return embed, current_page, total_pages
 
 
@@ -6517,12 +6504,10 @@ class ServerDispenserLaunchView(discord.ui.View):
         stats = get_guild_dispenser_stats(guild.id)
         embed = discord.Embed(
             title=f"📦 {guild.name} • Dispenser Stock",
+            description=f"📦 **Available:** `{stats['available']}`  •  🏷️ **Sold:** `{stats['dispensed']}`  •  📊 **Total Loaded:** `{stats['total']}`",
             color=COLOR_PRIMARY,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="Available In Stock", value=f"**{stats['available']}** accounts", inline=True)
-        embed.add_field(name="Total Sold / Dispensed", value=f"**{stats['dispensed']}** accounts", inline=True)
-        embed.add_field(name="Total Loaded", value=f"**{stats['total']}** accounts", inline=True)
         embed.set_footer(text="AIO Bot • Account Store")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -11002,17 +10987,17 @@ async def dispense_cmd(
     account_id = account.get("id", 1)
     stats = get_guild_dispenser_stats(guild.id)
 
+    cust_text = f"👤 **Customer:** {customer.mention}  ⏐  " if customer else ""
     delivery_embed = discord.Embed(
         title=f"🎁 Dispensed Account #{account_id}",
-        description=f"```text\n{content}\n```",
+        description=(
+            f"{cust_text}📦 **Stock Left:** `{stats['available']}`\n\n"
+            f"```text\n{content}\n```"
+        ),
         color=COLOR_SUCCESS,
         timestamp=datetime.now(timezone.utc)
     )
-    if customer:
-        delivery_embed.add_field(name="👤 Customer", value=customer.mention, inline=True)
-    delivery_embed.add_field(name="🛡️ Dispensed By", value=ctx.author.mention, inline=True)
-    delivery_embed.add_field(name="📦 Remaining In Stock", value=f"**{stats['available']}** accounts", inline=True)
-    delivery_embed.set_footer(text=f"{guild.name} • Account Delivery • ID #{account_id}")
+    delivery_embed.set_footer(text=f"Dispensed by {ctx.author.display_name} • Click 'Mark as used' below when done")
 
     view = DispensedAccountView(
         buyer_id=customer.id if customer else None,
@@ -11042,24 +11027,26 @@ async def dispenser_stock_cmd(ctx: commands.Context):
 
     stats = get_guild_dispenser_stats(ctx.guild.id)
     embed = discord.Embed(
-        title=f"📦 {ctx.guild.name} • Dispenser Inventory & Stats",
+        title=f"📦 {ctx.guild.name} • Dispenser Stock",
+        description=(
+            f"📦 **Available:** `{stats['available']}`  •  "
+            f"🏷️ **Sold:** `{stats['dispensed']}`  •  "
+            f"📊 **Total Loaded:** `{stats['total']}`"
+        ),
         color=COLOR_PRIMARY,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.add_field(name="📦 Available In Stock", value=f"**{stats['available']}** accounts", inline=True)
-    embed.add_field(name="🏷️ Total Dispensed", value=f"**{stats['dispensed']}** accounts", inline=True)
-    embed.add_field(name="📊 Total Loaded", value=f"**{stats['total']}** accounts", inline=True)
 
     recent = stats.get("recent_dispensed", [])
     if recent:
         lines = []
-        for r in recent:
+        for r in recent[-5:]:
             user_str = r.get("dispensed_to_name") or f"<@{r.get('dispensed_to')}>"
-            time_str = str(r.get("dispensed_at", "Unknown"))[:19].replace("T", " ")
-            lines.append(f"• Account #{r.get('id')} ➔ **{user_str}** at `{time_str}`")
+            time_str = str(r.get("dispensed_at", ""))[:16].replace("T", " ")
+            lines.append(f"`#{r.get('id')}` ➔ **{user_str}** *({time_str})*")
         embed.add_field(name="🕒 Recent Claims", value="\n".join(lines), inline=False)
     else:
-        embed.add_field(name="🕒 Recent Claims", value="No accounts have been claimed yet.", inline=False)
+        embed.add_field(name="🕒 Recent Claims", value="No accounts claimed yet.", inline=False)
 
     embed.set_footer(text="AIO Bot • Use /addaccount to restock")
     await ctx.send(embed=embed)
