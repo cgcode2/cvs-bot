@@ -2769,6 +2769,131 @@ class TestAIOBot(unittest.TestCase):
         # Cleanup
         main.server_dispensers_db.pop(str(guest_guild_id), None)
 
+    def test_is_read_only_channel_name(self):
+        # Read-only board channels
+        read_only_names = [
+            "📢-announcements", "announcements", "official-announcements",
+            "📜-rules", "rules", "server-rules",
+            "👋-welcome", "welcome",
+            "🎉-giveaways", "giveaways",
+            "🟢-shop-open", "🔴-shop-closed", "shop-status",
+            "🌮-food-rewards", "rewards-store",
+            "📩-open-a-ticket", "open-a-ticket",
+            "🛒-coupon-optimizer"
+        ]
+        for name in read_only_names:
+            self.assertTrue(main.is_read_only_channel_name(name), f"Expected '{name}' to be read-only")
+
+        # Chat channels that general members should be able to type in
+        interactive_names = [
+            "💬-general-chat", "general-chat", "chat",
+            "🤖-bot-commands", "bot-commands",
+            "💡-suggestions", "suggestions",
+            "⭐-vouches", "vouches",
+            "🏷️-deals-and-savings", "deals-and-savings"
+        ]
+        for name in interactive_names:
+            self.assertFalse(main.is_read_only_channel_name(name), f"Expected '{name}' to NOT be read-only")
+
+    def test_apply_read_only_overwrites_permissions(self):
+        mock_guild = MagicMock()
+        mock_guild.default_role = MagicMock()
+        mock_guild.me = MagicMock()
+        mock_founder = MagicMock()
+        mock_mod = MagicMock()
+
+        mock_channel = MagicMock()
+        mock_channel.name = "📢-announcements"
+        mock_channel.guild = mock_guild
+        mock_channel.set_permissions = AsyncMock()
+
+        ok = asyncio.run(main.apply_read_only_overwrites(mock_channel, mock_founder, mock_mod))
+        self.assertTrue(ok)
+        self.assertEqual(mock_channel.set_permissions.call_count, 4)
+
+        # Inspect default role permissions (1st call)
+        call_default = mock_channel.set_permissions.call_args_list[0]
+        self.assertEqual(call_default[0][0], mock_guild.default_role)
+        default_kwargs = call_default[1]
+        self.assertFalse(default_kwargs.get("send_messages"))
+        self.assertFalse(default_kwargs.get("send_messages_in_threads"))
+        self.assertFalse(default_kwargs.get("create_public_threads"))
+        self.assertFalse(default_kwargs.get("create_private_threads"))
+        self.assertTrue(default_kwargs.get("view_channel"))
+        self.assertTrue(default_kwargs.get("add_reactions"))
+
+        # Inspect guild.me bot permissions (2nd call)
+        call_me = mock_channel.set_permissions.call_args_list[1]
+        self.assertEqual(call_me[0][0], mock_guild.me)
+        self.assertTrue(call_me[1].get("send_messages"))
+
+        # Inspect founder permissions (3rd call)
+        call_founder = mock_channel.set_permissions.call_args_list[2]
+        self.assertEqual(call_founder[0][0], mock_founder)
+        self.assertTrue(call_founder[1].get("send_messages"))
+
+        # Inspect mod permissions (4th call)
+        call_mod = mock_channel.set_permissions.call_args_list[3]
+        self.assertEqual(call_mod[0][0], mock_mod)
+        self.assertTrue(call_mod[1].get("send_messages"))
+
+    def test_audit_and_enforce_read_only_channels(self):
+        mock_guild = MagicMock()
+        mock_guild.default_role = MagicMock()
+        mock_guild.me = MagicMock()
+        mock_guild.roles = []
+
+        # 1. Protected channel (#form-automation) - must NEVER be modified
+        ch_form = MagicMock()
+        ch_form.name = "form-automation"
+        ch_form.guild = mock_guild
+        ch_form.set_permissions = AsyncMock()
+
+        # 2. General chat - interactive, should NOT be locked down
+        ch_general = MagicMock()
+        ch_general.name = "💬-general-chat"
+        ch_general.guild = mock_guild
+        ch_general.set_permissions = AsyncMock()
+
+        # 3. Announcements channel with open permissions - SHOULD be locked down
+        ch_announcements = MagicMock()
+        ch_announcements.name = "📢-announcements"
+        ch_announcements.guild = mock_guild
+        perms_announcements = MagicMock()
+        perms_announcements.send_messages = True
+        perms_announcements.send_messages_in_threads = True
+        ch_announcements.overwrites_for.return_value = perms_announcements
+        ch_announcements.set_permissions = AsyncMock()
+
+        # 4. Rules channel with open permissions - SHOULD be locked down
+        ch_rules = MagicMock()
+        ch_rules.name = "📜-rules"
+        ch_rules.guild = mock_guild
+        perms_rules = MagicMock()
+        perms_rules.send_messages = None
+        perms_rules.send_messages_in_threads = None
+        ch_rules.overwrites_for.return_value = perms_rules
+        ch_rules.set_permissions = AsyncMock()
+
+        mock_guild.text_channels = [ch_form, ch_general, ch_announcements, ch_rules]
+
+        locked = asyncio.run(main.audit_and_enforce_read_only_channels(mock_guild))
+        self.assertIn("📢-announcements", locked)
+        self.assertIn("📜-rules", locked)
+        self.assertNotIn("💬-general-chat", locked)
+        self.assertNotIn("form-automation", locked)
+
+        # Confirm form-automation was untouched
+        ch_form.set_permissions.assert_not_called()
+        ch_general.set_permissions.assert_not_called()
+        ch_announcements.set_permissions.assert_called()
+        ch_rules.set_permissions.assert_called()
+
+    def test_setup_announcements_command_registered(self):
+        cmd = main.bot.get_command("setup-announcements")
+        self.assertIsNotNone(cmd)
+        self.assertIn("setup-announcements", main.CVS_COMMAND_NAMES)
+
 
 if __name__ == '__main__':
     unittest.main()

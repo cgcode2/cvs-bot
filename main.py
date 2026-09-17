@@ -663,7 +663,7 @@ CVS_COMMAND_NAMES: Set[str] = {
     "massdm", "tacobell", "foodpanel", "shop", "invoice", "addorder", "orderstats",
     "clearorder", "paid", "deliver", "complete", "setup-food-store", "setup-vault",
     "setup-all-features", "formatserver", "deletechannels", "resetchannel",
-    "setup-rules", "setup-welcome", "setup-status-channel", "setup-giveaways",
+    "setup-rules", "setup-welcome", "setup-status-channel", "setup-giveaways", "setup-announcements",
     "balance", "pay", "daily", "leaderboard", "slots", "blackjack", "rps", "connect4", "trivia", "case",
     "otp", "vouch", "testwelcome", "run-stress-test", "permit", "revoke", "giveaway", "giverole", "removerole", "role", "note"
 }
@@ -1356,19 +1356,122 @@ def build_welcome_embed(member: discord.Member) -> discord.Embed:
     embed.set_footer(text=f"AIO Bot • Member #{getattr(guild, 'member_count', 1):,}", icon_url=icon_url)
     return embed
 
+
+def is_read_only_channel_name(name: Optional[str]) -> bool:
+    """Returns True if the channel name corresponds to an announcement, rules, welcome, or other read-only board channel."""
+    if not name:
+        return False
+    n = name.lower()
+    return any(k in n for k in (
+        "announcement", "rule", "welcome", "giveaway",
+        "shop-open", "shop-closed", "shop-status",
+        "food-rewards", "rewards-store",
+        "open-a-ticket", "coupon-optimizer"
+    ))
+
+
+async def apply_read_only_overwrites(
+    channel: discord.TextChannel,
+    founder_role: Optional[discord.Role] = None,
+    mod_role: Optional[discord.Role] = None
+) -> bool:
+    """
+    Enforces read-only permissions on a channel:
+    - General members (@everyone) CANNOT type, cannot send threads, cannot create threads.
+    - General members CAN view and add reactions.
+    - Server staff, founders, administrators, and the bot CAN send messages, embeds, and attachments.
+    """
+    if not channel or not getattr(channel, "guild", None):
+        return False
+    guild = channel.guild
+    founder = founder_role or get_founder_role(guild)
+    mod = mod_role or get_moderator_role(guild)
+    try:
+        # Default role (@everyone): viewable, but strictly NO sending messages or threads
+        await channel.set_permissions(
+            guild.default_role,
+            view_channel=True,
+            send_messages=False,
+            send_messages_in_threads=False,
+            create_public_threads=False,
+            create_private_threads=False,
+            add_reactions=True,
+            read_message_history=True,
+            reason="Enforcing read-only channel permissions for general members"
+        )
+        # Bot permissions
+        if guild.me:
+            await channel.set_permissions(
+                guild.me,
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                attach_files=True,
+                manage_messages=True,
+                manage_channels=True,
+                reason="Enforcing bot permissions in read-only channel"
+            )
+        # Staff / Founder roles
+        if founder:
+            await channel.set_permissions(
+                founder,
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                attach_files=True,
+                manage_messages=True,
+                reason="Enforcing founder send permissions in read-only channel"
+            )
+        if mod:
+            await channel.set_permissions(
+                mod,
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                attach_files=True,
+                manage_messages=True,
+                reason="Enforcing moderator send permissions in read-only channel"
+            )
+        return True
+    except Exception as e:
+        print(f"⚠️ Could not set read-only permissions on #{getattr(channel, 'name', 'unknown')}: {e}", file=sys.stderr)
+        return False
+
+
+async def audit_and_enforce_read_only_channels(guild: discord.Guild) -> List[str]:
+    """Audits all channels in guild and locks down announcements, rules, welcome, giveaways, etc. so members cannot type."""
+    updated = []
+    if not guild:
+        return updated
+    founder = get_founder_role(guild)
+    mod = get_moderator_role(guild)
+    for ch in getattr(guild, "text_channels", []):
+        if is_protected_channel(ch):
+            continue
+        cname = getattr(ch, "name", "").lower()
+        if is_read_only_channel_name(cname):
+            perms = ch.overwrites_for(guild.default_role)
+            if perms.send_messages is not False or perms.send_messages_in_threads is not False:
+                ok = await apply_read_only_overwrites(ch, founder, mod)
+                if ok:
+                    updated.append(ch.name)
+    return updated
+
+
 async def setup_welcome_channel(guild: discord.Guild) -> Tuple[Optional[discord.TextChannel], bool]:
-    """Creates or locates a dedicated #👋-welcome channel for new member join announcements."""
+    """Creates or locates a dedicated #👋-welcome channel for new member join announcements with read-only permissions."""
     existing = get_welcome_channel(guild)
     if existing:
+        await apply_read_only_overwrites(existing)
         return existing, False
 
     cat = (
-        discord.utils.get(guild.categories, name="📢 INFORMATION") or
+        discord.utils.get(guild.categories, name="📌 INFORMATION") or
         discord.utils.get(guild.categories, name="💬 COMMUNITY")
     )
     if not cat:
         try:
-            cat = await guild.create_category("📢 INFORMATION")
+            cat = await guild.create_category("📌 INFORMATION")
         except Exception:
             cat = None
 
@@ -1376,6 +1479,9 @@ async def setup_welcome_channel(guild: discord.Guild) -> Tuple[Optional[discord.
         guild.default_role: discord.PermissionOverwrite(
             view_channel=True,
             send_messages=False,
+            send_messages_in_threads=False,
+            create_public_threads=False,
+            create_private_threads=False,
             add_reactions=True,
             read_message_history=True
         ),
@@ -1387,6 +1493,12 @@ async def setup_welcome_channel(guild: discord.Guild) -> Tuple[Optional[discord.
             manage_messages=True
         )
     }
+    founder_r = get_founder_role(guild)
+    mod_r = get_moderator_role(guild)
+    if founder_r:
+        overwrites[founder_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, attach_files=True)
+    if mod_r:
+        overwrites[mod_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, attach_files=True)
 
     try:
         new_ch = await guild.create_text_channel(
@@ -1395,14 +1507,17 @@ async def setup_welcome_channel(guild: discord.Guild) -> Tuple[Optional[discord.
             topic="Welcome new members to the server!",
             overwrites=overwrites
         )
+        await apply_read_only_overwrites(new_ch, founder_r, mod_r)
         return new_ch, True
     except Exception:
         return None, False
+
 
 async def setup_giveaways_channel(guild: discord.Guild) -> Tuple[Optional[discord.TextChannel], bool]:
     """Creates or configures a dedicated #🎉-giveaways channel with read-only permissions for members."""
     existing = get_giveaways_channel(guild)
     if existing:
+        await apply_read_only_overwrites(existing)
         return existing, False
 
     cat = (
@@ -1420,6 +1535,9 @@ async def setup_giveaways_channel(guild: discord.Guild) -> Tuple[Optional[discor
         guild.default_role: discord.PermissionOverwrite(
             view_channel=True,
             send_messages=False,
+            send_messages_in_threads=False,
+            create_public_threads=False,
+            create_private_threads=False,
             add_reactions=True,
             read_message_history=True
         ),
@@ -1435,9 +1553,9 @@ async def setup_giveaways_channel(guild: discord.Guild) -> Tuple[Optional[discor
     founder_r = get_founder_role(guild)
     mod_r = get_moderator_role(guild)
     if founder_r:
-        overwrites[founder_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        overwrites[founder_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, attach_files=True)
     if mod_r:
-        overwrites[mod_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        overwrites[mod_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, attach_files=True)
 
     try:
         new_ch = await guild.create_text_channel(
@@ -1446,6 +1564,8 @@ async def setup_giveaways_channel(guild: discord.Guild) -> Tuple[Optional[discor
             topic="Official server giveaways and rewards! Enter active drops below.",
             overwrites=overwrites
         )
+        await apply_read_only_overwrites(new_ch, founder_r, mod_r)
+        return new_ch, True
     except Exception as e:
         print(f"⚠️ Error creating giveaways channel: {e}", file=sys.stderr)
         return None, False
@@ -4906,6 +5026,9 @@ async def update_shop_status(
         except Exception as e:
             return False, f"❌ Could not create status channel #{init_name}: {e}", None, None
 
+    if ch:
+        await apply_read_only_overwrites(ch)
+
     shop_ch = find_food_rewards_channel(guild)
     shop_mention = shop_ch.mention if shop_ch else "#🌮-food-rewards"
 
@@ -6629,16 +6752,41 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                 if role.permissions.administrator or role.permissions.manage_channels or role.name.lower() in ("moderator", "moderators", "mod", "mods", "admin", "administrator", "founder", "founders", "owner"):
                     cat_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         elif section.get("read_only"):
-            cat_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
-            cat_overwrites[guild.me] = discord.PermissionOverwrite(send_messages=True, manage_channels=True)
+            cat_overwrites[guild.default_role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=False,
+                send_messages_in_threads=False,
+                create_public_threads=False,
+                create_private_threads=False,
+                add_reactions=True,
+                read_message_history=True
+            )
+            cat_overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                attach_files=True,
+                manage_messages=True,
+                manage_channels=True
+            )
+            if founder_role:
+                cat_overwrites[founder_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, attach_files=True)
+            if mod_role:
+                cat_overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, attach_files=True)
 
         if not cat:
             cat = await guild.create_category(cat_name, overwrites=cat_overwrites)
             created_cats += 1
+        elif section.get("staff_only") or section.get("private") or section.get("read_only"):
+            try:
+                await cat.edit(overwrites=cat_overwrites)
+            except Exception:
+                pass
 
         for ch_def in section["channels"]:
             ch_name = ch_def["name"]
             ch_type = ch_def["type"]
+            is_ch_read_only = bool(section.get("read_only") or ch_def.get("read_only") or is_read_only_channel_name(ch_name))
 
             if ch_type == "text":
                 existing = discord.utils.get(guild.text_channels, name=ch_name)
@@ -6652,6 +6800,8 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                             await existing.edit(category=cat)
                         except Exception:
                             pass
+                    if is_ch_read_only:
+                        await apply_read_only_overwrites(existing, founder_role, mod_role)
                     # Refresh existing blueprint panel channels with latest info
                     if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮-food-rewards", "🌮🍕-food-rewards", "🎛️-mod-panel"):
                         try:
@@ -6662,8 +6812,8 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                     ch_overwrites = {}
                     if section.get("private") or section.get("staff_only"):
                         ch_overwrites = dict(cat_overwrites)
-                    elif section.get("read_only"):
-                        ch_overwrites[guild.default_role] = discord.PermissionOverwrite(send_messages=False, add_reactions=True)
+                    elif is_ch_read_only:
+                        ch_overwrites = dict(cat_overwrites)
                     new_ch = await guild.create_text_channel(
                         name=ch_name,
                         category=cat,
@@ -6671,6 +6821,9 @@ async def execute_format_server(guild: discord.Guild, author: discord.Member, cl
                         overwrites=ch_overwrites
                     )
                     created_channels += 1
+
+                    if is_ch_read_only:
+                        await apply_read_only_overwrites(new_ch, founder_role, mod_role)
 
                     if ch_name in ("📩-open-a-ticket", "🛒-coupon-optimizer", "🌮-food-rewards", "🌮🍕-food-rewards", "🎛️-mod-panel"):
                         try:
@@ -7503,6 +7656,14 @@ async def on_ready():
                         print(f"✅ Auto-refreshed store panel in #{food_ch.name} with Coming Soon embed.", flush=True)
                 except Exception as fe:
                     print(f"ℹ️ Notice on food store embed scan in {g.name}: {fe}", file=sys.stderr, flush=True)
+
+            # Audit and enforce read-only permissions on announcements, rules, welcome, giveaways, store, etc.
+            try:
+                locked = await audit_and_enforce_read_only_channels(g)
+                if locked:
+                    print(f"🔒 Auto-enforced read-only permissions on {len(locked)} board channel(s) in {g.name}: {', '.join('#' + c for c in locked)}", flush=True)
+            except Exception as le:
+                print(f"ℹ️ Read-only channel audit notice in {g.name}: {le}", file=sys.stderr, flush=True)
         except Exception as ge:
             print(f"ℹ️ Auto-repair channel scan notice in {g.name}: {ge}", file=sys.stderr, flush=True)
 
@@ -10414,7 +10575,14 @@ async def setup_channel(ctx: commands.Context):
 
     channel_name = "🛒-coupon-optimizer"
     hub_overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=False,
+            send_messages_in_threads=False,
+            create_public_threads=False,
+            create_private_threads=False,
+            read_message_history=True
+        ),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True, embed_links=True)
     }
     founder_role = get_founder_role(guild)
@@ -10434,6 +10602,7 @@ async def setup_channel(ctx: commands.Context):
                 await existing.edit(category=cat, overwrites=hub_overwrites)
             except Exception:
                 pass
+        await apply_read_only_overwrites(existing, founder_role, mod_role)
         try:
             await existing.purge(limit=10)
         except Exception:
@@ -10450,6 +10619,7 @@ async def setup_channel(ctx: commands.Context):
             topic="CVS & retail coupon optimizer hub. Click the button below to open your private room!",
             overwrites=hub_overwrites
         )
+        await apply_read_only_overwrites(new_channel, founder_role, mod_role)
         hub_embed = build_coupon_hub_embed()
         await new_channel.send(embed=hub_embed, view=CouponHubLaunchView())
         await ctx.send(f"✅ Secure Private Coupon Optimizer Hub created at {new_channel.mention}! Members can click the button to open their personal room.", delete_after=8)
@@ -10596,6 +10766,8 @@ async def setup_food_store_cmd(ctx: commands.Context):
             await target_ch.purge(limit=25)
         except Exception:
             pass
+    if target_ch:
+        await apply_read_only_overwrites(target_ch)
 
     food_embed = build_food_accounts_embed()
     await target_ch.send(embed=food_embed, view=FoodAccountPurchaseView())
@@ -10928,10 +11100,57 @@ async def setup_rules_cmd(ctx: commands.Context, channel: Optional[discord.TextC
     except Exception:
         pass
 
+    try:
+        await apply_read_only_overwrites(target_ch)
+    except Exception:
+        pass
+
     embed = build_rules_embed(guild)
     await target_ch.send(embed=embed)
     if target_ch.id != ctx.channel.id:
         await ctx.send(f"✅ Rules successfully posted in {target_ch.mention}!", delete_after=5)
+
+
+@bot.hybrid_command(
+    name="setup-announcements",
+    aliases=["setupannouncements", "announcementschannel", "lockannouncements"],
+    description="Staff command: Set up and lock down #📢-announcements so general members cannot type"
+)
+@commands.guild_only()
+@commands.has_permissions(manage_channels=True)
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.describe(channel="Channel to configure as announcements (defaults to #📢-announcements)")
+async def setup_announcements_cmd(ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+    await safely_delete_message(ctx)
+    if not is_staff_or_admin(ctx.author) and not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ Permission Denied: Staff permissions required to configure announcements channel.", delete_after=6)
+        return
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    target_ch = channel
+    if not target_ch:
+        target_ch = discord.utils.get(guild.text_channels, name="📢-announcements") or discord.utils.get(guild.text_channels, name="announcements")
+    if not target_ch:
+        cat = discord.utils.get(guild.categories, name="📌 INFORMATION") or discord.utils.get(guild.categories, name="📢 INFORMATION")
+        try:
+            target_ch = await guild.create_text_channel(
+                "📢-announcements",
+                category=cat,
+                topic="Official server announcements and updates."
+            )
+        except Exception as e:
+            await ctx.send(f"❌ Error creating announcements channel: {e}", delete_after=8)
+            return
+
+    ok = await apply_read_only_overwrites(target_ch)
+    if ok:
+        await ctx.send(f"✅ Successfully configured {target_ch.mention} as a read-only announcements channel (members cannot type).", delete_after=8)
+    else:
+        await ctx.send(f"⚠️ Channel found at {target_ch.mention}, but encountered an issue applying permissions.", delete_after=8)
+
 
 @bot.hybrid_command(
     name="setup-tickets",
@@ -10975,6 +11194,12 @@ async def setup_tickets_cmd(ctx: commands.Context):
     else:
         try:
             await target_ch.purge(limit=10)
+        except Exception:
+            pass
+
+    if target_ch:
+        try:
+            await apply_read_only_overwrites(target_ch)
         except Exception:
             pass
 
@@ -11099,6 +11324,14 @@ async def fix_channels_cmd(ctx: commands.Context):
             except Exception:
                 pass
 
+        # Lock down announcement and board channels so general members cannot type
+        try:
+            locked = await audit_and_enforce_read_only_channels(guild)
+            for lch in locked:
+                repaired.append(f"Locked down #{lch} (read-only for members)")
+        except Exception:
+            pass
+
     if repaired:
         await ctx.send(f"✅ Successfully restored channels:\n" + "\n".join(f"• {r}" for r in repaired), delete_after=10)
     else:
@@ -11124,6 +11357,7 @@ async def setup_status_channel_cmd(ctx: commands.Context):
 
     existing = find_shop_status_channel(guild)
     if existing:
+        await apply_read_only_overwrites(existing)
         await update_shop_status(
             guild=guild,
             is_open=True,
@@ -11151,6 +11385,7 @@ async def setup_status_channel_cmd(ctx: commands.Context):
             category=cat,
             topic="Live shop opening status and operational hours. Check here to see if orders are being accepted!"
         )
+        await apply_read_only_overwrites(new_ch)
         await update_shop_status(
             guild=guild,
             is_open=True,
