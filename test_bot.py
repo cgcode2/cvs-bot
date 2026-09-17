@@ -2275,9 +2275,9 @@ class TestAIOBot(unittest.TestCase):
     def test_coupon_organizer(self):
         grouped = main.group_accounts_by_coupon()
         self.assertIn("$4 off your entire purchase (Exp: Sep 21, 2026)", grouped)
-        self.assertIn("$3 off your entire purchase (Exp: Sep 21, 2026)", grouped)
+        self.assertIn("$3 off your entire purchase (Exp: Oct 11, 2026)", grouped)
         self.assertGreaterEqual(len(grouped["$4 off your entire purchase (Exp: Sep 21, 2026)"]), 9)
-        self.assertGreaterEqual(len(grouped["$3 off your entire purchase (Exp: Sep 21, 2026)"]), 13)
+        self.assertGreaterEqual(len(grouped["$3 off your entire purchase (Exp: Oct 11, 2026)"]), 13)
 
         # Overview embed test
         overview_embed = main.build_coupon_organizer_embed("all")
